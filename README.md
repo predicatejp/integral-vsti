@@ -95,8 +95,9 @@ sh scripts/build-vst3.sh
 target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3
 ```
 
-確認済み環境: Linux x86_64、Rust 1.85.0 / 1.99.1、GCC 12.2、VST3 SDK 3.8.1配布構成
-（インターフェース定義3.8.0）。Rustテスト3件、ABI検証、Validator 47件が成功しています。
+確認済み環境: Linux x86_64、Rust 1.85.0 / 1.99.1、GCC 12.2、VST3 SDK 3.8.1
+（インターフェース定義も3.8.1）。Rustテスト3件、ABI検証、Validator 47件が成功しています。
+参照した公式SDKヘッダのライセンスはMITです。ライセンス本文はSDK付属の `pluginterfaces/LICENSE.txt` を参照してください。
 GUIを持つDAW上での認識・操作は未確認です。
 
 ## Rust CI

@@ -133,7 +133,7 @@ unsafe extern "C" fn class_info2(_: This, index: i32, out: *mut ClassInfo2) -> T
             sub_categories: ascii("Instrument|Synth"),
             vendor: ascii("sample-vsti"),
             version: ascii(env!("CARGO_PKG_VERSION")),
-            sdk_version: ascii("VST 3.8.0"),
+            sdk_version: ascii("VST 3.8.1"),
         });
     }
     OK
