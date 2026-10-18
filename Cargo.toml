@@ -1,0 +1,19 @@
+[package]
+name = "sample-vsti"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "A silent VST3 instrument implemented directly in Rust"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
