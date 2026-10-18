@@ -1,0 +1,51 @@
+Third-party notices for sample-vsti
+
+VST3 interface definitions
+
+The ABI types, interface identifiers and virtual method layouts in src/abi.rs
+are adapted from the official Steinberg VST3 SDK 3.8.1 headers. Their use by
+src/lib.rs and src/plugin.rs implements those interfaces directly in Rust.
+tests/abi-smoke.cpp uses the official headers for independent ABI validation.
+
+SDK revision: 3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96
+Interface revision: 4f547e8e102b47de4a8b8aaf343c73b700786372
+Source: https://github.com/steinbergmedia/vst3_pluginterfaces/tree/4f547e8e102b47de4a8b8aaf343c73b700786372
+License source: https://github.com/steinbergmedia/vst3_pluginterfaces/blob/4f547e8e102b47de4a8b8aaf343c73b700786372/LICENSE.txt
+
+Referenced headers (relative to pluginterfaces/):
+- base/fplatform.h
+- base/ftypes.h
+- base/funknown.h
+- base/ipluginbase.h
+- vst/vsttypes.h
+- vst/ivstcomponent.h
+- vst/ivstaudioprocessor.h
+- vst/ivsteditcontroller.h
+- vst/vstspeaker.h
+
+The following original copyright and license notice applies to the portions
+adapted from those headers. It is preserved independently of the AGPL-3.0-only
+license for sample-vsti's original code.
+
+MIT License
+
+Copyright (c) 2026, Steinberg Media Technologies GmbH
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+

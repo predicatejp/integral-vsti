@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Yusuke Oda
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! 発音しない最小VST3音源。公開するABIの実装はすべてRustで完結する。
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]

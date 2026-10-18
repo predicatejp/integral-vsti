@@ -14,4 +14,8 @@ bundle_dir="$project_dir/target/vst3/SampleVsti.vst3"
 mkdir -p "$bundle_dir/Contents/x86_64-linux"
 cp "$project_dir/target/x86_64-unknown-linux-gnu/release/libsample_vsti.so" \
     "$bundle_dir/Contents/x86_64-linux/SampleVsti.so"
+license_dir="$bundle_dir/Contents/Resources/Licenses"
+mkdir -p "$license_dir"
+cp "$project_dir/LICENSE" "$project_dir/COPYRIGHT" \
+    "$project_dir/THIRD_PARTY_NOTICES.txt" "$license_dir/"
 echo "$bundle_dir"

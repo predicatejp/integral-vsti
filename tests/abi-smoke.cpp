@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Yusuke Oda
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // 検証専用。SDKのC++インターフェースからRust共有ライブラリを直接呼び出す。
 // このコードとSDKはプラグイン本体にリンクしない。
 #include "pluginterfaces/base/ipluginbase.h"

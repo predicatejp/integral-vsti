@@ -36,8 +36,13 @@ sh scripts/build-vst3.sh
 ```text
 target/vst3/SampleVsti.vst3/
 └── Contents/
-    └── x86_64-linux/
-        └── SampleVsti.so
+    ├── x86_64-linux/
+    │   └── SampleVsti.so
+    └── Resources/
+        └── Licenses/
+            ├── LICENSE
+            ├── COPYRIGHT
+            └── THIRD_PARTY_NOTICES.txt
 ```
 
 ビルドスクリプトはリリースビルドを行い、ホストが読み込めるバンドルを作成します。
@@ -97,7 +102,7 @@ target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3
 
 確認済み環境: Linux x86_64、Rust 1.85.0 / 1.99.1、GCC 12.2、VST3 SDK 3.8.1
 （インターフェース定義も3.8.1）。Rustテスト3件、ABI検証、Validator 47件が成功しています。
-参照した公式SDKヘッダのライセンスはMITです。ライセンス本文はSDK付属の `pluginterfaces/LICENSE.txt` を参照してください。
+参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
 GUIを持つDAW上での認識・操作は未確認です。
 
 ## Rust CI
@@ -155,3 +160,15 @@ cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path 
 - `scripts/install-ci-tools.sh`: CI用Rustツールの一括インストーラー。
 - `scripts/ci-versions.sh`: CI用ツールと検証SDKの固定バージョン。
 - `deny.toml`: 依存関係の監査ポリシー。
+
+## ライセンス
+
+Copyright (C) 2026 Yusuke Oda
+
+本プロジェクトは **GNU Affero General Public License version 3（AGPL-3.0-only）** で提供します。
+ライセンス全文は [LICENSE](LICENSE)、著作権表示と無保証の説明は [COPYRIGHT](COPYRIGHT) を参照してください。
+ソースコードの取得先は [本プロジェクトのリポジトリ](https://github.com/predicatejp/sample-vsti) です。
+
+ABI定義の参照・移植元であるSteinberg公式VST3ヘッダのMITライセンスと著作権表示は、
+[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) に保持しています。
+ビルドスクリプトはこれら3つの通知ファイルをバンドルの `Contents/Resources/Licenses/` に同梱します。

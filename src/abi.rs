@@ -1,5 +1,9 @@
+// Copyright (C) 2026 Yusuke Oda
+// SPDX-License-Identifier: AGPL-3.0-only AND MIT
+
 //! Linux x86_64向けのVST3 ABI定義。必要なインターフェースだけを直接定義する。
 //! 型・順序・IDは公式VST3インターフェース仕様と対応させる。
+//! 参照・移植元、固定リビジョン、MITライセンス全文はルートのTHIRD_PARTY_NOTICES.txtを参照。
 
 use std::ffi::c_void;
 

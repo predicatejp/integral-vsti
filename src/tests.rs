@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Yusuke Oda
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use super::*;
 use std::mem::{align_of, offset_of, size_of};
 

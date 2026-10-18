@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Yusuke Oda
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use crate::abi::*;
 use std::ffi::c_void;
 use std::ptr;
