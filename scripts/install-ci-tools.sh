@@ -4,9 +4,15 @@ set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$project_dir/scripts/ci-versions.sh"
 
+case "$(uname -s)" in
+    Linux) native_target=x86_64-unknown-linux-gnu ;;
+    MINGW*|MSYS*) native_target=x86_64-pc-windows-msvc ;;
+    *) echo '対応対象はLinux/Windows x86_64です。' >&2; exit 2 ;;
+esac
+
 install_core() {
     rustup toolchain install stable --profile minimal --no-self-update \
-        --component rustfmt,clippy --target x86_64-unknown-linux-gnu
+        --component rustfmt,clippy --target "$native_target"
 }
 install_msrv() {
     rustup toolchain install "$CI_MSRV" --profile minimal --no-self-update

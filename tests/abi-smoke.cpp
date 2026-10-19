@@ -12,7 +12,12 @@
 #include <cassert>
 #include <cstddef>
 #include <cstring>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
+#include <string>
 #include <iostream>
 #include <type_traits>
 
@@ -98,14 +103,28 @@ void checkSilence(IComponent* component, IAudioProcessor* processor, int32 preci
     assert(processor->process(flush) == kResultOk);
 }
 
+#ifdef _WIN32
+int wmain(int argc, wchar_t** argv) {
+    assert(argc == 3);
+    HMODULE module = LoadLibraryW(argv[1]);
+    if (!module) { std::cerr << "LoadLibrary failed: " << GetLastError() << '\n'; return 1; }
+    const auto entry = reinterpret_cast<bool (PLUGIN_API*)()>(GetProcAddress(module, "InitDll"));
+    const auto exit = reinterpret_cast<bool (PLUGIN_API*)()>(GetProcAddress(module, "ExitDll"));
+    const auto getFactory = reinterpret_cast<IPluginFactory* (PLUGIN_API*)()>(GetProcAddress(module, "GetPluginFactory"));
+    assert(entry && exit && getFactory && entry());
+    const std::wstring wideVersion(argv[2]);
+    const std::string expectedVersion(wideVersion.begin(), wideVersion.end());
+#else
 int main(int argc, char** argv) {
-    assert(argc == 2);
+    assert(argc == 3);
     void* module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!module) { std::cerr << dlerror() << '\n'; return 1; }
     const auto entry = reinterpret_cast<bool (*)(void*)>(dlsym(module, "ModuleEntry"));
     const auto exit = reinterpret_cast<bool (*)()>(dlsym(module, "ModuleExit"));
     const auto getFactory = reinterpret_cast<IPluginFactory* (*)()>(dlsym(module, "GetPluginFactory"));
     assert(entry && exit && getFactory && entry(module));
+    const std::string expectedVersion(argv[2]);
+#endif
     auto* factory = getFactory();
     auto* factory2 = query<IPluginFactory2>(factory, IPluginFactory2_iid);
     auto* factoryIdentity = query<FUnknown>(factory2, FUnknown_iid);
@@ -118,6 +137,13 @@ int main(int argc, char** argv) {
     PClassInfo2 info;
     assert(factory2->getClassInfo2(0, &info) == kResultOk);
     assert(std::strcmp(info.subCategories, "Instrument|Synth") == 0);
+    assert(std::strcmp(info.version, expectedVersion.c_str()) == 0);
+    assert(std::strcmp(info.sdkVersion, kVstVersionString) == 0);
+    const TUID expectedClassId = INLINE_UID(0x9ad1ae8c, 0xb51b4aac, 0xa13c85c0, 0xb023ab4d);
+    assert(std::memcmp(info.cid, expectedClassId, sizeof(TUID)) == 0);
+    void* invalid = factory;
+    const TUID unknown = {};
+    assert(factory->queryInterface(unknown, &invalid) == kNoInterface && invalid == nullptr);
     assert(factory2->getClassInfo2(1, &info) == kInvalidArgument);
     factory2->release();
 
@@ -156,6 +182,11 @@ int main(int argc, char** argv) {
     }
     assert(factory->release() == 0);
     assert(exit());
+#ifdef _WIN32
+    assert(FreeLibrary(module));
+#else
     assert(dlclose(module) == 0);
+#endif
+    std::cout << "Verified plug-in version: " << expectedVersion << '\n';
     std::cout << "ABI smoke test passed (100 instances, float32/64, silence, lifecycle)\n";
 }

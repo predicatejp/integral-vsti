@@ -25,7 +25,7 @@
 - プラグイン形式: VST3。
 - 実装言語: 原則Rust。
 - VST3連携: バインディング層を介さず、Rustから音源に必要なAPI・ABIを直接公開する。
-- 対応OS・アーキテクチャ: 現時点ではLinux x86_64（GNU環境）。
+- 対応OS・アーキテクチャ: Linux x86_64（GNU環境）とWindows x86_64（MSVC環境）。
 - 音源方式・主要機能: ホストが認識・生成できる無音の音源。発音方式は未定。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（受信イベントは無視）。float32/float64対応。
 - 現在の操作・保存: パラメーター0個、独自GUIなし、保存状態は空。
@@ -47,7 +47,8 @@
 
 - `README.md`: プロジェクト概要。環境構築や利用手順もここに記載する。
 - `AGENTS.md`: エージェント向けの作業指針。
-- `src/abi.rs`: Rustで直接定義したABI型・vtable・識別子。
+- `build.rs`: Gitコミットと正式リリース指定からホスト向けのバージョンとビルド情報を生成。
+- `src/abi.rs`: Rustで直接定義したABI型・vtable・OS別の識別子表現と戻り値。
 - `src/lib.rs`: モジュール公開関数とファクトリー。
 - `src/plugin.rs`: 音源インスタンスとホストからの呼び出し処理。
 - `src/tests.rs`: Rust側のABIレイアウト・参照管理テスト。
@@ -64,10 +65,10 @@ VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体の
 
 | 項目 | 手順・コマンド |
 | --- | --- |
-| 必要なツールとバージョン | Rust 1.85以上、LinuxのCリンカー。検証にはC++17・CMake 3.25以上 |
+| 必要なツールとバージョン | Rust 1.85以上。LinuxはCリンカー、WindowsはMSVCとWindows SDK。梱包にはPython 3・Git、検証にはC++17・CMake 3.25以上 |
 | SDK・依存関係のセットアップ | 本体の依存クレートなし。検証時は公式SDKの展開先を `VST3_SDK_DIR` に指定 |
 | 開発用ビルド | `cargo build --locked` |
-| リリース用ビルド・バンドル生成 | `sh scripts/build-vst3.sh` |
+| リリース用ビルド・バンドル生成 | `python3 scripts/build-vst3.py`（Windowsは `python`） |
 | 自動テスト | `cargo test --locked`、`sh scripts/check-abi.sh` |
 | フォーマット・静的解析 | `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings` |
 | VST3 SDK Validatorによる検証 | READMEの手順で構築後、`target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3` |
@@ -78,9 +79,13 @@ VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体の
 | 依存関係監査 | `cargo +stable deny --locked check` |
 | カバレッジ | READMEのLCOV生成手順を参照 |
 
-CIはpush・プルリクエスト・手動・週次で実行する。変更時は該当ジョブをローカルでも検証し、
+CIはmainへのpush・リリースタグ・プルリクエスト・手動・週次で実行する。変更時は該当ジョブをローカルでも検証し、
 GitHub上での実行結果とローカルでの確認を区別して報告すること。
 CI用ツールの固定バージョンは `scripts/ci-versions.sh` で更新し、MSRVは `Cargo.toml` の `rust-version` と一致させること。
+開発版は `dev-<完全なコミットID>`、正式版はCargo.tomlのSemantic Versioningとする。
+PRでは先頭コミットをビルドし、成果物名・ホスト向けバージョン・build-info.jsonのコミットを一致させること。
+最適化ビルドと正式リリースを区別し、正式版は `SAMPLE_VSTI_RELEASE_VERSION` で明示すること。
+バンドルZIPにはライセンス通知とビルド情報を含める。バージョン生成の変更時は `python3 tests/build-metadata.py` を実行すること。
 MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済みとしないこと。
 
 ## 音源実装の指針

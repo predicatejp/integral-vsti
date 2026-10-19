@@ -2,6 +2,8 @@ name: Rust CI
 
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
   schedule:
@@ -21,6 +23,7 @@ defaults:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: '1'
+  SAMPLE_VSTI_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
 
 jobs:
   quality:
@@ -31,7 +34,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: sh scripts/install-ci-tools.sh core
+      - run: python3 tests/build-metadata.py
       - run: cargo +stable fmt --all --check
       - run: cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo +stable doc --locked --workspace --all-features --no-deps
@@ -39,17 +44,19 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   test:
-    name: Build and test (${{ matrix.toolchain }})
-    runs-on: ubuntu-24.04
+    name: Build and test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         toolchain: [msrv, stable]
+        os: [ubuntu-24.04, windows-2022]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install toolchain
         env:
           TOOLCHAIN: ${{ matrix.toolchain }}
@@ -75,6 +82,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: sh scripts/install-ci-tools.sh miri
       - run: |
           source scripts/ci-versions.sh
@@ -88,6 +96,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: sh scripts/install-ci-tools.sh core
       - run: sh scripts/install-ci-tools.sh coverage
       - run: |
@@ -108,19 +117,41 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: sh scripts/install-ci-tools.sh core
       - run: sh scripts/install-ci-tools.sh audit
       - run: cargo +stable deny --locked check
 
   vst3:
-    name: VST3 ABI and Validator
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    name: VST3 ABI and Validator (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: sh scripts/install-ci-tools.sh core
+      - name: Configure MSVC for ABI validation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw 'MSVC build tools not found' }
+          & cmd.exe /d /s /c "call `"$installation\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul && set" |
+            Where-Object { $_ -match '^(PATH|INCLUDE|LIB|LIBPATH|VSCMD_ARG_TGT_ARCH)=' } |
+            ForEach-Object { $_ >> $env:GITHUB_ENV }
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed' }
+      - name: Windows static analysis
+        if: runner.os == 'Windows'
+        run: cargo +stable clippy --locked --all-targets -- -D warnings
       - name: Fetch official SDK for validation
         run: |
           source scripts/ci-versions.sh
@@ -131,10 +162,11 @@ jobs:
           git -C "$sdk_dir" checkout --detach FETCH_HEAD
           git -C "$sdk_dir" submodule update --init --depth 1 base cmake pluginterfaces public.sdk
           echo "VST3_SDK_DIR=$sdk_dir" >> "$GITHUB_ENV"
-      - name: Verify ABI and silent processing
+      - name: Verify ABI, version and silent processing
+        id: bundle
         env:
           RUSTUP_TOOLCHAIN: stable
-        run: sh scripts/check-abi.sh
+        run: python scripts/check-abi.py
       - name: Build Validator
         run: |
           cmake -S "$VST3_SDK_DIR" -B target/vst3-sdk \
@@ -143,7 +175,17 @@ jobs:
             -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \
             -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF \
             -DSMTG_CREATE_PLUGIN_LINK=OFF
-          cmake --build target/vst3-sdk --target validator --parallel 4
+          cmake --build target/vst3-sdk --config Release --target validator --parallel 4
+      - name: Check Windows runtime dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dependencies = & dumpbin /dependents target/vst3/SampleVsti.vst3/Contents/x86_64-win/SampleVsti.vst3
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed' }
+          $dependencies | Tee-Object -FilePath target/windows-dependencies.log
+          if ($dependencies -match '(?i)(VCRUNTIME|MSVCP)\d[^\s]*\.dll') {
+            throw 'Unexpected dynamic VC runtime dependency'
+          }
       - name: Run Validator
         run: |
           target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3 |& tee target/validator.log
@@ -154,18 +196,27 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: vst3-validation-log
+          name: vst3-validation-log-${{ runner.os }}
           path: target/validator.log
           if-no-files-found: warn
           retention-days: 14
-      - name: Archive bundle
-        run: tar -czf target/SampleVsti-linux-x86_64.tar.gz -C target/vst3 SampleVsti.vst3
+      # upload-artifactのZIPにバンドルを直接格納し、ZIPの二重梱包を避ける。
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: artifact
         with:
-          name: SampleVsti-linux-x86_64
-          path: target/SampleVsti-linux-x86_64.tar.gz
+          name: ${{ steps.bundle.outputs.artifact_name }}
+          path: target/vst3/
           if-no-files-found: error
           retention-days: 14
+      - name: Download information
+        env:
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+          PLUGIN_VERSION: ${{ steps.bundle.outputs.version }}
+          BUILD_COMMIT: ${{ steps.bundle.outputs.commit }}
+        run: |
+          echo "[Download VST3 bundle ZIP]($ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version: $PLUGIN_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "Commit: $BUILD_COMMIT" >> "$GITHUB_STEP_SUMMARY"
 
   ci:
     name: CI result
