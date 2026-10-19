@@ -4,17 +4,21 @@
 // 検証専用。SDKのC++インターフェースからRust共有ライブラリを直接呼び出す。
 // このコードとSDKはプラグイン本体にリンクしない。
 #include "pluginterfaces/base/ipluginbase.h"
+#include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstevents.h"
+#include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/vstspeaker.h"
 
 #include <array>
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <cmath>
 #include <vector>
+#include <utility>
 #include <limits>
 #ifdef _WIN32
 #include <windows.h>
@@ -33,6 +37,9 @@ static_assert(sizeof(PFactoryInfo) == 452);
 static_assert(sizeof(PClassInfo) == 116);
 static_assert(sizeof(PClassInfo2) == 440);
 static_assert(sizeof(BusInfo) == 276);
+static_assert(sizeof(ParameterInfo) == 792 && alignof(ParameterInfo) == 8);
+static_assert(offsetof(ParameterInfo, defaultNormalizedValue) == 776);
+static_assert(offsetof(ParameterInfo, flags) == 788);
 static_assert(sizeof(RoutingInfo) == 12);
 static_assert(sizeof(ProcessSetup) == 24);
 static_assert(offsetof(ProcessSetup, sampleRate) == 16);
@@ -199,6 +206,194 @@ void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precisi
     assert(component->setActive(false) == kResultOk);
 }
 
+// ここからも検証専用のホスト模擬。プラグインは標準VST3 ABIだけでアクセスする。
+constexpr ParamID waveformId = 0x57415645;
+class Points final : public IParamValueQueue {
+public:
+    ParamID id = waveformId;
+    std::vector<std::pair<int32, ParamValue>> values;
+    int32 failedIndex = -1;
+    tresult PLUGIN_API queryInterface(const TUID, void** out) override { *out = nullptr; return kNoInterface; }
+    uint32 PLUGIN_API addRef() override { assert(false); return 1; }
+    uint32 PLUGIN_API release() override { assert(false); return 1; }
+    ParamID PLUGIN_API getParameterId() override { return id; }
+    int32 PLUGIN_API getPointCount() override { return static_cast<int32>(values.size()); }
+    tresult PLUGIN_API getPoint(int32 index, int32& offset, ParamValue& value) override {
+        if (index == failedIndex) return kResultFalse;
+        const auto& point = values.at(static_cast<size_t>(index));
+        offset = point.first; value = point.second; return kResultOk;
+    }
+    tresult PLUGIN_API addPoint(int32, ParamValue, int32&) override { assert(false); return kNotImplemented; }
+};
+class Changes final : public IParameterChanges {
+public:
+    std::vector<IParamValueQueue*> queues;
+    tresult PLUGIN_API queryInterface(const TUID, void** out) override { *out = nullptr; return kNoInterface; }
+    uint32 PLUGIN_API addRef() override { assert(false); return 1; }
+    uint32 PLUGIN_API release() override { assert(false); return 1; }
+    int32 PLUGIN_API getParameterCount() override { return static_cast<int32>(queues.size()); }
+    IParamValueQueue* PLUGIN_API getParameterData(int32 index) override { return queues.at(static_cast<size_t>(index)); }
+    IParamValueQueue* PLUGIN_API addParameterData(const ParamID&, int32&) override { assert(false); return nullptr; }
+};
+class StateStream final : public IBStream {
+public:
+    std::vector<uint8> bytes;
+    size_t position = 0;
+    int32 chunk = 3; // 短いread/writeを繰り返しても正しい状態を構成できることを確認する。
+    bool fail = false;
+    tresult PLUGIN_API queryInterface(const TUID, void** out) override { *out = nullptr; return kNoInterface; }
+    uint32 PLUGIN_API addRef() override { assert(false); return 1; }
+    uint32 PLUGIN_API release() override { assert(false); return 1; }
+    tresult PLUGIN_API read(void* out, int32 size, int32* actual) override {
+        *actual = 0;
+        if (fail) return kInternalError;
+        const auto count = std::min(static_cast<size_t>(std::min(size, chunk)), bytes.size() - position);
+        if (count == 0) return kResultFalse;
+        std::memcpy(out, bytes.data() + position, count);
+        position += count; *actual = static_cast<int32>(count); return kResultOk;
+    }
+    tresult PLUGIN_API write(void* input, int32 size, int32* actual) override {
+        *actual = 0;
+        if (fail) return kInternalError;
+        const auto count = static_cast<size_t>(std::min(size, chunk));
+        const auto* first = static_cast<const uint8*>(input);
+        bytes.insert(bytes.end(), first, first + count);
+        *actual = static_cast<int32>(count); return kResultOk;
+    }
+    tresult PLUGIN_API seek(int64, int32, int64*) override { assert(false); return kNotImplemented; }
+    tresult PLUGIN_API tell(int64*) override { assert(false); return kNotImplemented; }
+};
+
+template <typename Sample>
+void checkParameters(IComponent* component, IAudioProcessor* processor, IEditController* controller,
+                     int32 precision, int32 mode) {
+    ParameterInfo info {};
+    assert(controller->getParameterInfo(0, info) == kResultOk);
+    assert(info.id == waveformId && info.stepCount == 3 && info.defaultNormalizedValue == 0.0);
+    assert(info.unitId == 0 && info.flags == (ParameterInfo::kCanAutomate | ParameterInfo::kIsList));
+    assert(std::u16string(info.title) == u"Waveform");
+    assert(controller->getParameterInfo(1, info) == kInvalidArgument);
+    const std::array<std::u16string, 4> names {u"Sine", u"Triangle", u"Square", u"Sawtooth"};
+    for (size_t i = 0; i < names.size(); ++i) {
+        const double normalized = static_cast<double>(i) / 3.0;
+        String128 text {};
+        assert(controller->getParamStringByValue(waveformId, normalized, text) == kResultOk);
+        assert(std::u16string(text) == names[i]);
+        double parsed = -1;
+        assert(controller->getParamValueByString(waveformId, text, parsed) == kResultOk && parsed == normalized);
+        assert(controller->normalizedParamToPlain(waveformId, normalized) == static_cast<double>(i));
+        assert(controller->plainParamToNormalized(waveformId, static_cast<double>(i)) == normalized);
+        assert(controller->setParamNormalized(waveformId, normalized) == kResultOk);
+        assert(controller->getParamNormalized(waveformId) == normalized);
+    }
+    assert(controller->setParamNormalized(waveformId, std::numeric_limits<double>::quiet_NaN()) == kInvalidArgument);
+    assert(controller->setParamNormalized(waveformId, -0.1) == kInvalidArgument);
+    assert(controller->setParamNormalized(0, 0.0) == kInvalidArgument);
+    StateStream initial;
+    assert(component->getState(&initial) == kResultOk);
+    assert(initial.bytes == (std::vector<uint8>{'S','V','S','T',1,0,0,0,0,0,0,0}));
+    // Controllerへの表示更新だけではProcessorの値は変わらない。
+    assert(controller->getParamNormalized(waveformId) == 1.0);
+
+    ProcessSetup setup {mode, precision, 8, 3520.0}; // A4は8サンプルで1周期。
+    assert(processor->setupProcessing(setup) == kResultOk);
+    assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
+    Points ignored, points;
+    ignored.id = 123; ignored.values = {{0, 1.0}};
+    Changes changes; changes.queues = {nullptr, &ignored, &points};
+    Events events; events.values = {note(true, 0, 1)};
+    std::array<Sample, 10> buffer;
+    Sample* channels[] = {buffer.data() + 1, buffer.data() + 1};
+    AudioBusBuffers bus; bus.numChannels = 2;
+    if constexpr (std::is_same_v<Sample, float>) bus.channelBuffers32 = channels;
+    else bus.channelBuffers64 = channels;
+    ProcessData data; data.processMode = mode; data.symbolicSampleSize = precision;
+    data.inputParameterChanges = &changes;
+    // 処理開始前、出力のない0サンプルのフラッシュで矩形波へ切り替える。
+    points.values = {{0, 2.0 / 3.0}};
+    assert(processor->process(data) == kResultOk);
+    assert(component->setActive(true) == kResultOk);
+    assert(processor->setProcessing(true) == kResultOk);
+    data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
+    auto check = [&](std::initializer_list<double> expected) {
+        data.numSamples = static_cast<int32>(expected.size());
+        buffer.fill(Sample(9));
+        assert(processor->process(data) == kResultOk);
+        size_t i = 1;
+        bool nonzero = false;
+        for (double value : expected) {
+            assert(std::abs(buffer[i++] - Sample(value)) < 1e-6);
+            nonzero |= value != 0.0;
+        }
+        assert(buffer[0] == Sample(9) && buffer[i] == Sample(9));
+        assert(bus.silenceFlags == (nonzero ? 0u : 3u));
+    };
+    points.values.clear();
+    check({0.5, 0.5}); // 位相0, 1/8。
+    events.values.clear();
+    const double triangle = 0.5 * std::sqrt(3.0);
+    // 変更点までは矩形波を保持。最後のサンプルでノコギリ波へ切り替える。
+    points.values = {{1, 1.0 / 3.0}, {4, 1.0}};
+    check({0.5, triangle * 0.5, 0.0, -triangle * 0.5, triangle * 0.5});
+    points.values.clear(); check({triangle * 0.75}); // 次ブロックにも最後の値を保持、位相7/8。
+    // 同位置の変更はキュー順、ノートより先に処理。波形変更で位相はリセットしない。
+    points.values = {{0, 1.0 / 3.0}, {0, 2.0 / 3.0}};
+    events.values = {note(false, 0, 1), note(true, 0, 2, 81)};
+    check({0.5}); // 位相0から1/4へ。
+    events.values.clear();
+    points.values = {{-1, 0.0}, {3, 0.0}, {0, std::numeric_limits<double>::quiet_NaN()},
+                     {0, 1.1}, {0, 0.0}, {2, 1.0 / 3.0}, {1, 0.0}};
+    points.failedIndex = 4;
+    check({0.5, -0.5, -triangle}); // 無効・範囲外・逆順・取得失敗の点は無視。
+    points.failedIndex = -1;
+    // サイン波への単一点変更。その後の値を保持し、線形補間はしない。
+    points.values = {{0, 0.0}};
+    check({0.0, 0.5 * std::sqrt(2.0), 0.0, -0.5 * std::sqrt(2.0)});
+    events.values = {note(false, 0, 2, 81)};
+    points.values = {{0, 1.0}}; check({0.0});
+    events.values.clear(); points.values.clear();
+    StateStream saved;
+    assert(component->getState(&saved) == kResultOk && saved.bytes[8] == 3);
+    assert(controller->setComponentState(&saved) == kResultOk);
+    assert(controller->getParamNormalized(waveformId) == 1.0);
+    // 空状態は旧版のサイン波として移行。ComponentとControllerの設定を独立に同期する。
+    StateStream empty;
+    assert(component->setState(&empty) == kResultOk);
+    assert(controller->setComponentState(&empty) == kResultOk);
+    assert(controller->getParamNormalized(waveformId) == 0.0);
+    saved.position = 0;
+    assert(component->setState(&saved) == kResultOk);
+    saved.position = 0;
+    assert(controller->setComponentState(&saved) == kResultOk);
+    StateStream own;
+    assert(controller->getState(&own) == kResultOk && own.bytes.empty());
+    assert(controller->setState(&own) == kResultOk);
+    // 途中切れ、未対応バージョン、波形番号、magic、I/O失敗は既存の状態を壊さない。
+    for (int error = 0; error < 5; ++error) {
+        StateStream broken; broken.bytes = saved.bytes;
+        if (error == 0) broken.bytes.resize(11);
+        if (error == 1) broken.bytes[4] = 2;
+        if (error == 2) broken.bytes[8] = 4;
+        if (error == 3) broken.bytes[0] = 0;
+        if (error == 4) broken.fail = true;
+        assert(component->setState(&broken) != kResultOk);
+        broken.position = 0;
+        assert(controller->setComponentState(&broken) != kResultOk);
+        assert(controller->getParamNormalized(waveformId) == 1.0);
+        StateStream current;
+        assert(component->getState(&current) == kResultOk && current.bytes == saved.bytes);
+    }
+    StateStream failedWrite; failedWrite.fail = true;
+    assert(component->getState(&failedWrite) != kResultOk);
+    assert(component->getState(nullptr) == kInvalidArgument);
+    assert(component->setState(nullptr) == kInvalidArgument);
+    assert(controller->setComponentState(nullptr) == kInvalidArgument);
+    events.values = {note(true, 0, 3)};
+    check({-triangle}); // 復元で位相を変えず、保存したノコギリ波を発音。
+    assert(processor->setProcessing(false) == kResultOk);
+    assert(component->setActive(false) == kResultOk);
+}
+
 template <typename T>
 T* query(FUnknown* object, const TUID iid) {
     void* result = nullptr;
@@ -328,7 +523,7 @@ int main(int argc, char** argv) {
         assert(bus.channelCount == 2 && bus.name[0] == u'S');
         SpeakerArrangement output = SpeakerArr::kStereo;
         assert(processor->setBusArrangements(nullptr, 0, &output, 1) == kResultOk);
-        assert(controller->getParameterCount() == 0);
+        assert(controller->getParameterCount() == 1);
         assert(controller->createView("editor") == nullptr);
         assert(controller->setComponentHandler(nullptr) == kResultOk);
         assert(processor->getLatencySamples() == 0 && processor->getTailSamples() == 0);
@@ -339,6 +534,8 @@ int main(int argc, char** argv) {
             if (iteration % 2 == 0) checkNotes<float>(component, processor, kSample32, rate, iteration % 3, iteration < 6);
             else checkNotes<double>(component, processor, kSample64, rate, iteration % 3, iteration < 6);
         }
+        if (iteration == 12) checkParameters<float>(component, processor, controller, kSample32, kRealtime);
+        if (iteration == 13) checkParameters<double>(component, processor, controller, kSample64, kOffline);
         assert(component->terminate() == kResultOk);
         component->release();
         controller->release();
@@ -352,5 +549,5 @@ int main(int argc, char** argv) {
     assert(dlclose(module) == 0);
 #endif
     std::cout << "Verified plug-in version: " << expectedVersion << '\n';
-    std::cout << "ABI smoke test passed (100 instances, float32/64, notes, phase continuity, silence, lifecycle)\n";
+    std::cout << "ABI smoke test passed (100 instances, float32/64, notes, phase continuity, waveform automation, state, silence, lifecycle)\n";
 }
