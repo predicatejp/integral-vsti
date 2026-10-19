@@ -6,10 +6,10 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <fstream>
 #ifndef _WIN32
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <fstream>
 #endif
 
 static_assert(sizeof(ViewRect) == 16);
@@ -41,7 +41,30 @@ struct NativeParent {
         SendMessageW(child, WM_LBUTTONDOWN, MK_LBUTTON, position);
         SendMessageW(child, WM_LBUTTONUP, 0, position);
     }
-    void screenshot() {}
+    bool drawn(int width, int height) {
+        HWND child = GetWindow(window, GW_CHILD);
+        if (!child) return false;
+        RECT rect; assert(GetClientRect(child, &rect));
+        if (rect.right != width || rect.bottom != height) return false;
+        HDC dc = GetDC(child); assert(dc);
+        COLORREF pixel = GetPixel(dc, 20, height - 10);
+        ReleaseDC(child, dc);
+        return pixel != CLR_INVALID && pixel != RGB(0, 0, 0);
+    }
+    void screenshot() {
+        HWND child = GetWindow(window, GW_CHILD); assert(child);
+        RECT rect; assert(GetClientRect(child, &rect));
+        HDC dc = GetDC(child); assert(dc);
+        std::ofstream file("target/gui-smoke.ppm", std::ios::binary);
+        file << "P6\n" << rect.right << ' ' << rect.bottom << "\n255\n";
+        for (int y = 0; y < rect.bottom; ++y) for (int x = 0; x < rect.right; ++x) {
+            COLORREF pixel = GetPixel(dc, x, y);
+            const char rgb[] = {static_cast<char>(GetRValue(pixel)),
+                                static_cast<char>(GetGValue(pixel)), static_cast<char>(GetBValue(pixel))};
+            file.write(rgb, 3);
+        }
+        ReleaseDC(child, dc);
+    }
 #else
     Display* display;
     ::Window window;
@@ -72,6 +95,16 @@ struct NativeParent {
         XSendEvent(display, target, False, ButtonReleaseMask, &event);
         XFlush(display);
     }
+    bool drawn(int width, int height) {
+        auto target = child(); XWindowAttributes attributes;
+        assert(XGetWindowAttributes(display, target, &attributes));
+        if (attributes.width != width || attributes.height != height) return false;
+        XImage* image = XGetImage(display, target, 20, height - 10, 1, 1, AllPlanes, ZPixmap);
+        assert(image);
+        bool result = (XGetPixel(image, 0, 0) & 0xffffff) != 0;
+        XDestroyImage(image);
+        return result;
+    }
     void screenshot() {
         const auto target = child(); XWindowAttributes attributes;
         assert(XGetWindowAttributes(display, target, &attributes));
@@ -101,12 +134,12 @@ public:
 #ifndef _WIN32
     std::vector<Linux::ITimerHandler*> timers;
 #endif
-    tresult PLUGIN_API queryInterface(const TUID iid, void** out) override {
+    tresult PLUGIN_API queryInterface(const TUID requested, void** out) override {
         *out = nullptr;
-        if (std::memcmp(iid, IPlugFrame_iid, 16) == 0 || std::memcmp(iid, FUnknown_iid, 16) == 0)
+        if (std::memcmp(requested, IPlugFrame_iid, 16) == 0 || std::memcmp(requested, FUnknown_iid, 16) == 0)
             *out = static_cast<IPlugFrame*>(this);
 #ifndef _WIN32
-        if (std::memcmp(iid, Linux::IRunLoop_iid, 16) == 0) *out = static_cast<Linux::IRunLoop*>(this);
+        if (std::memcmp(requested, Linux::IRunLoop_iid, 16) == 0) *out = static_cast<Linux::IRunLoop*>(this);
 #endif
         if (!*out) return kNoInterface;
         addRef(); return kResultOk;
@@ -208,6 +241,17 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             parent.pump(); frame.tick(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     };
+    auto waitFor = [&](auto condition, const char* description) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        do {
+            parent.pump(); frame.tick();
+            if (condition()) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } while (std::chrono::steady_clock::now() < deadline);
+        parent.screenshot();
+        std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size() << std::endl;
+        assert(false);
+    };
     for (int cycle = 0; cycle < 2; ++cycle) {
         assert(scale->setContentScaleFactor(1.0f) == kResultOk);
 #ifdef _WIN32
@@ -215,15 +259,19 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
+        waitFor([&] { return parent.drawn(360, 180); }, "first rendered frame");
         pump();
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
-        parent.click(300, 100); pump();
+        parent.click(300, 100);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "Sawtooth click");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.value == 1.0 && controller->getParamNormalized(waveformId) == 1.0);
         handler.sequence.clear();
         assert(scale->setContentScaleFactor(1.5f) == kResultOk);
-        pump(); parent.click(70, 150); pump();
+        waitFor([&] { return parent.drawn(540, 270); }, "scaled rendered frame");
+        pump(); parent.click(70, 150);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "Sine click after scaling");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.value == 0.0);
         handler.sequence.clear();

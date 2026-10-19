@@ -31,7 +31,7 @@ if sys.platform == "win32":
     test = ROOT / "target/abi-smoke.exe"
     command = ["cl", "/nologo", "/std:c++17", "/EHsc", "/W4", "/WX", "/utf-8",
                "/UNDEBUG", "/DNOMINMAX", f"/I{sdk}", source,
-               f"/Fo{ROOT / 'target/abi-smoke.obj'}", f"/Fe{test}", "user32.lib"]
+               f"/Fo{ROOT / 'target/abi-smoke.obj'}", f"/Fe{test}", "user32.lib", "gdi32.lib"]
 else:
     test = ROOT / "target/abi-smoke"
     command = [os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
