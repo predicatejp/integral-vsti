@@ -536,38 +536,110 @@ unsafe extern "system" fn tick(this: This) {
 #[cfg(target_os = "windows")]
 mod windows_timer {
     use super::*;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
+    use windows_sys::Win32::{
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, HWND_MESSAGE, KillTimer,
+            RegisterClassW, SetTimer, UnregisterClassW, WM_TIMER, WNDCLASSW,
+        },
+    };
     thread_local! {
         static TIMERS: RefCell<std::collections::HashMap<usize, Weak<ViewState>>> = RefCell::new(std::collections::HashMap::new());
     }
     pub(super) struct Ticker {
-        /// このUIスレッドに登録したWin32タイマーID。
-        id: usize,
+        /// ホストUIスレッドに作成する非表示のメッセージ専用ウィンドウ。
+        window: This,
+        /// この登録を他のインスタンスから区別するNUL終端クラス名。
+        class_name: Vec<u16>,
+        /// クラス登録で使用したプロセスのモジュールハンドル。所有権は持たない。
+        instance: This,
     }
     impl Ticker {
         pub(super) fn new(state: &Rc<ViewState>) -> Result<Self, ()> {
-            // SAFETY: 現在のホストUIスレッドのメッセージループへ登録する。
-            let id = unsafe { SetTimer(ptr::null_mut(), 0, 16, Some(tick)) };
-            if id == 0 {
-                return Err(());
+            let class_name: Vec<u16> = format!("SampleVstiTimer-{:p}\0", Rc::as_ptr(state))
+                .encode_utf16()
+                .collect();
+            // SAFETY: UIスレッドで専用クラスとウィンドウを作成し、同じスレッドで解放する。
+            unsafe {
+                let instance = GetModuleHandleW(ptr::null());
+                let class = WNDCLASSW {
+                    lpfnWndProc: Some(dispatch),
+                    hInstance: instance,
+                    lpszClassName: class_name.as_ptr(),
+                    ..Default::default()
+                };
+                if RegisterClassW(&class) == 0 {
+                    return Err(());
+                }
+                let window = CreateWindowExW(
+                    0,
+                    class_name.as_ptr(),
+                    ptr::null(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    HWND_MESSAGE,
+                    ptr::null_mut(),
+                    instance,
+                    ptr::null(),
+                );
+                if window.is_null() {
+                    UnregisterClassW(class_name.as_ptr(), instance);
+                    return Err(());
+                }
+                let ticker = Self {
+                    window,
+                    class_name,
+                    instance,
+                };
+                // TIMERPROCを渡さず、配送先の寿命を専用HWNDに結び付ける。
+                if SetTimer(window, 1, 16, None) == 0 {
+                    return Err(()); // tickerのDropがウィンドウとクラスを回収する。
+                }
+                TIMERS.with(|timers| {
+                    timers
+                        .borrow_mut()
+                        .insert(window as usize, Rc::downgrade(state))
+                });
+                Ok(ticker)
             }
-            TIMERS.with(|timers| timers.borrow_mut().insert(id, Rc::downgrade(state)));
-            Ok(Self { id })
         }
     }
     impl Drop for Ticker {
         fn drop(&mut self) {
-            TIMERS.with(|timers| timers.borrow_mut().remove(&self.id));
-            // SAFETY: 登録した同じUIスレッドで解除する。遅延メッセージはmapから取得できず無視される。
+            TIMERS.with(|timers| timers.borrow_mut().remove(&(self.window as usize)));
+            // SAFETY: 登録したUIスレッドで解除する。KillTimerだけでは既存WM_TIMERが残るため、
+            // HWNDも破棄し、DLL解放後にTIMERPROCのアドレスへ配送されないようにする。
+            // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-killtimer
             unsafe {
-                KillTimer(ptr::null_mut(), self.id);
+                KillTimer(self.window, 1);
+                DestroyWindow(self.window);
+                UnregisterClassW(self.class_name.as_ptr(), self.instance);
             }
         }
     }
-    unsafe extern "system" fn tick(_: This, _: u32, id: usize, _: u32) {
-        let state = TIMERS.with(|timers| timers.borrow().get(&id).and_then(Weak::upgrade));
-        if let Some(state) = state {
-            state.poll();
+    unsafe extern "system" fn dispatch(
+        window: This,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize {
+        if message == WM_TIMER && wparam == 1 {
+            let state = TIMERS.with(|timers| {
+                timers
+                    .borrow()
+                    .get(&(window as usize))
+                    .and_then(Weak::upgrade)
+            });
+            if let Some(state) = state {
+                state.poll();
+            }
+            0
+        } else {
+            // SAFETY: Windowsから受けたウィンドウメッセージを既定処理へ委譲する。
+            unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
     }
 }
