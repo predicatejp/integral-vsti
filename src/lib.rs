@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 単音サイン波のVST3音源。公開するABIの実装はすべてRustで完結する。
+//! 単一オシレータによる単音VST3音源。公開するABIの実装はすべてRustで完結する。
 
 #[cfg(not(all(
     target_arch = "x86_64",

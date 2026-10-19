@@ -1,10 +1,10 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::oscillator::{OscillatorInput, OscillatorState};
+use crate::oscillator::{OscillatorInput, OscillatorState, Waveform};
 
-/// velocityが1のサイン波で実効値（RMS）が0.5になる基準ピーク振幅。
-const BASE_PEAK_AMPLITUDE: f64 = 0.5 * std::f64::consts::SQRT_2;
+/// 全波形共通のvelocityが1のときの基準実効値（RMS）。
+const BASE_RMS_AMPLITUDE: f64 = 0.5;
 
 #[derive(Clone, Copy)]
 pub struct Note {
@@ -17,7 +17,7 @@ pub struct Note {
 }
 
 pub struct Synth {
-    /// 発振器へ継続的に与える周波数・振幅・ゲート。ノートイベントはこの入力だけを更新する。
+    /// 発振器へ継続的に与える波形・周波数・目標実効値・ゲート。ノートイベントはこの入力だけを更新する。
     oscillator_input: OscillatorInput,
     /// 発振器の内部状態。サンプル生成後にだけ更新し、ノート切り替え時にも作り直さない。
     oscillator_state: OscillatorState,
@@ -31,6 +31,7 @@ impl Synth {
     pub fn new() -> Self {
         Self {
             oscillator_input: OscillatorInput {
+                waveform: Waveform::Sine,
                 frequency_hz: 440.0,
                 amplitude: 0.0,
                 gate: false,
@@ -56,8 +57,9 @@ impl Synth {
         let frequency_hz =
             440.0 * 2.0_f64.powf((f64::from(note.pitch) - 69.0 + f64::from(tuning) / 100.0) / 12.0);
         let input = OscillatorInput {
+            waveform: self.oscillator_input.waveform,
             frequency_hz,
-            amplitude: BASE_PEAK_AMPLITUDE * f64::from(velocity),
+            amplitude: BASE_RMS_AMPLITUDE * f64::from(velocity),
             gate: true,
         };
         if input.is_valid() {
@@ -99,6 +101,47 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn every_waveform_has_half_scale_rms_at_maximum_velocity() {
+        // 通常は各レートで440 Hzを1秒間測定。Miriでは256点で1周期となる条件に縮小する。
+        let measurements: &[(i32, i32)] = if cfg!(miri) {
+            &[(112640, 256)]
+        } else {
+            &[(44100, 44100), (48000, 48000), (96000, 96000)]
+        };
+        for waveform in [
+            Waveform::Sine,
+            Waveform::Triangle,
+            Waveform::Square,
+            Waveform::Sawtooth,
+        ] {
+            for &(rate, samples) in measurements {
+                for velocity in [0.0, 0.25, 0.5, 1.0] {
+                    let mut synth = Synth::new();
+                    synth.oscillator_input.waveform = waveform;
+                    synth.set_sample_rate(f64::from(rate));
+                    assert!(synth.note_on(note(1, 0, 69), 0.0, velocity));
+                    let mut energy = 0.0;
+                    for _ in 0..samples {
+                        let sample = synth.next_sample();
+                        assert!(sample.is_finite() && sample.abs() <= 1.0);
+                        energy += sample * sample;
+                    }
+                    let rms = (energy / f64::from(samples)).sqrt();
+                    // 理想波形のRMSに対し、有限個の離散サンプルによる誤差を許容する。
+                    assert!(
+                        (rms - 0.5 * f64::from(velocity)).abs() < 1e-4,
+                        "{waveform:?}, rate={rate}, velocity={velocity}, rms={rms}"
+                    );
+                    synth.note_off(note(1, 0, 69));
+                    for _ in 0..8 {
+                        assert_eq!(synth.next_sample(), 0.0);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

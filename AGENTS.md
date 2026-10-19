@@ -26,7 +26,7 @@
 - 実装言語: 原則Rust。
 - VST3連携: バインディング層を介さず、Rustから音源に必要なAPI・ABIを直接公開する。
 - 対応OS・アーキテクチャ: Linux x86_64（GNU環境）とWindows x86_64（MSVC環境）。
-- 音源方式・主要機能: 単一のサイン波オシレータによる単音音源。エンベロープなし。
+- 音源方式・主要機能: 単一オシレータによる単音音源。内部でサイン波・三角波・矩形波・ノコギリ波に対応。既定はサイン波でホストからの波形選択は未実装。エンベロープなし。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
 - 現在の操作・保存: パラメーター0個、独自GUIなし、保存状態は空。
 
@@ -75,7 +75,7 @@ VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体の
 | 自動テスト | `cargo test --locked`、`sh scripts/check-abi.sh` |
 | フォーマット・静的解析 | `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings` |
 | VST3 SDK Validatorによる検証 | READMEの手順で構築後、`target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3` |
-| テスト用ホストへの導入・起動 | READMEの導入手順を参照。以前の無音版はFL Studioで認識報告あり。発音版の無音報告を診断中 |
+| テスト用ホストへの導入・起動 | READMEの導入手順を参照。有効化通知への互換性対応後、サイン波はFL Studioで発音報告あり。追加波形は内部テストまで |
 | CI用Rustツールの導入 | `sh scripts/install-ci-tools.sh` |
 | MSRVの検証 | `cargo +1.85.0 test --locked`、`cargo +1.85.0 build --locked --release` |
 | Miri | `. scripts/ci-versions.sh` の後に `cargo +"$CI_NIGHTLY" miri test --locked --lib` |
@@ -118,6 +118,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 ### ノートとパラメーター
 
 - オシレータを独立したコンポーネントとし、回路の定常入力を `OscillatorInput`、内部状態を `OscillatorState` として分離すること。当面は単一オシレータ・最大1音とし、多重化しないこと。
+- 波形は `OscillatorInput.waveform`、目標実効値は `amplitude` に保持すること。全波形でベロシティ最大時の理想波形の実効値を0.5とし、ピークへの倍率はオシレータ内で適用すること。現在は帯域制限なし。
 - イベント処理は `OscillatorInput` だけを更新し、内部状態には触れないこと。サンプルごとに「現在の入力と状態からサンプル生成 → 入力を用いてState更新」の順で処理すること。将来のエンベロープの目標値はInput、現在値はStateに保持すること。
 - 位相はオシレータ自身の状態として保持すること。同じオシレータへの追加指示や音程変更で初期化せず、前回の位相から波形を生成すること。消音中は位相を止め、再発音時にも引き継ぐこと。
 - 重複ノートは後着優先とし、現在のノートに対応するNote Offだけで消音する。古いノートへの復帰は行わない。
