@@ -149,10 +149,11 @@ impl WindowHandler for Editor {
                                     i,
                                     if edited { tick / max } else { selected[i] },
                                 );
-                                ui.label(if time {
-                                    format!("{value:.2} ms")
+                                // 等幅・固定桁数で整数部を右寄せし、1の位と小数点を揃える。
+                                ui.monospace(if time {
+                                    format!("{value:7.2} ms")
                                 } else {
-                                    format!("{value:.3}")
+                                    format!("{value:8.3}")
                                 });
                                 ui.end_row();
                             }
