@@ -27,7 +27,8 @@ macOS・Windows ARM64・32ビット環境は未対応です。
 
 - 後から届いたNote Onを優先し、単一オシレータの周波数と振幅を更新します。古いノートには戻りません。
 - 音程は12平均律（ノート番号69 = 440 Hz）とイベントのtuning（セント）で決めます。
-  基準振幅は0.5で、出力振幅は `0.5 × velocity` です。velocityが0のNote Onもノートを更新し、出力振幅が0になります。
+  基準実効値（RMS）は0.5です。`BASE_PEAK_AMPLITUDE = 0.5 × √2` と定義し、
+  ピーク振幅を `BASE_PEAK_AMPLITUDE × velocity` とします。velocityが0のNote Onもノートを更新し、出力振幅が0になります。
 - Note Offは、両イベントにnoteIdがあればIDで照合します。どちらかが `-1` の場合はチャンネルと音高で照合します。
   IDがない同チャンネル・同音高の重複は識別できません。
 - `OscillatorParams` が周波数・振幅を管理し、`Oscillator` 自身が次のサンプルの位相を保持します。

@@ -220,7 +220,7 @@ fn processes_host_events_and_preserves_phase_through_retrigger() {
         (*events_ptr).event.payload.note_on.pitch = 81;
         data.num_samples = 1;
         assert_eq!((pt.process)(processor, &mut data), OK);
-        assert!((*sample_ptr - 0.5).abs() < 1e-14);
+        assert!((*sample_ptr - 0.5 * std::f64::consts::SQRT_2).abs() < 1e-14);
         (*events_ptr).event.event_type = 1;
         (*events_ptr).event.payload = EventPayload {
             note_off: NoteOffEvent {
@@ -245,7 +245,7 @@ fn processes_host_events_and_preserves_phase_through_retrigger() {
             },
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
-        assert!((*sample_ptr + 0.5).abs() < 1e-14);
+        assert!((*sample_ptr + 0.5 * std::f64::consts::SQRT_2).abs() < 1e-14);
         assert_eq!((pt.set_processing)(processor, 0), OK);
         assert_eq!((ct.set_active)(component, 0), OK);
         assert_eq!((ct.terminate)(component), OK);

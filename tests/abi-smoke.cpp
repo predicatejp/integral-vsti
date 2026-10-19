@@ -123,14 +123,14 @@ void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precisi
     };
     using Tone = std::array<double, 2>;
     auto silence = [](int32) { return Tone {0.0, 0.0}; };
-    auto high = [](int32) { return Tone {880.0, 0.25}; };
-    auto low = [](int32) { return Tone {440.0, 0.5}; };
+    auto high = [](int32) { return Tone {880.0, 0.25 * std::sqrt(2.0)}; };
+    auto low = [](int32) { return Tone {440.0, 0.5 * std::sqrt(2.0)}; };
     events.values = {note(true, 0, 10), note(true, 3, 11, 81, 0, 0.5f), note(false, 5, 10),
                      note(false, 7, 11, 81), note(true, 10, 12), note(false, 15, 12),
                      note(true, 16, 13, 81, 0, 0.5f)};
     check(17, [](int32 i) {
-        if (i < 3 || (i >= 10 && i < 15)) return Tone {440.0, 0.5};
-        if ((i >= 3 && i < 7) || i == 16) return Tone {880.0, 0.25};
+        if (i < 3 || (i >= 10 && i < 15)) return Tone {440.0, 0.5 * std::sqrt(2.0)};
+        if ((i >= 3 && i < 7) || i == 16) return Tone {880.0, 0.25 * std::sqrt(2.0)};
         return Tone {0.0, 0.0};
     });
     data.inputEvents = nullptr;
