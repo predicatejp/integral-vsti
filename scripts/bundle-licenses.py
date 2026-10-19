@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parent.parent
 FALLBACKS = {
     **{(name, "0.37.0"): "egui" for name in
        ("egui", "ecolor", "emath", "epaint", "egui_glow")},
-    ("clipboard-win", "5.4.1"): "clipboard-win",
     ("accesskit", "0.25.1"): "accesskit",
     ("profiling", "1.0.18"): "profiling",
 }

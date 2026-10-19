@@ -53,7 +53,6 @@ pub const PROCESSOR_IID: Tuid = tuid(0x42043f99_b7da453c_a569e79d_9aaec33d);
 pub const CONTROLLER_IID: Tuid = tuid(0xdcd7bbe3_7742448d_a874aacc_979c759e);
 pub const CONTEXT_REQUIREMENTS_IID: Tuid = tuid(0x2a654303_ef764e3d_95b5fe83_730ef6d0);
 pub const VIEW_IID: Tuid = tuid(0x5bc32507_d06049ea_a6151b52_2b755b29);
-pub const SCALE_IID: Tuid = tuid(0x65ed9690_8ac44525_8aadef7a_72ea703f);
 #[cfg(target_os = "linux")]
 pub const RUN_LOOP_IID: Tuid = tuid(0x18c35366_97764f1a_9c5b8385_7a871389);
 #[cfg(target_os = "linux")]
@@ -229,28 +228,12 @@ pub struct ViewVTable {
     pub on_size: unsafe extern "system" fn(This, *const ViewRect) -> TResult,
     /// フォーカス変更の通知。
     pub on_focus: unsafe extern "system" fn(This, u8) -> TResult,
-    /// リサイズ通知先のIPlugFrameを保持する。
+    /// ホストのIPlugFrameを保持する（LinuxではIRunLoopの取得元）。
     pub set_frame: unsafe extern "system" fn(This, This) -> TResult,
     /// ユーザーによる自由なサイズ変更の可否。
     pub can_resize: unsafe extern "system" fn(This) -> TResult,
-    /// 固定の論理サイズに制限する。
+    /// 固定の物理サイズに制限する。
     pub check_size_constraint: unsafe extern "system" fn(This, *mut ViewRect) -> TResult,
-}
-
-#[repr(C)]
-pub struct ScaleVTable {
-    /// Viewと参照数・identityを共有するFUnknown。
-    pub unknown: UnknownVTable,
-    /// ホスト指定の内容拡大率。UIスレッド限定。
-    pub set_content_scale_factor: unsafe extern "system" fn(This, f32) -> TResult,
-}
-
-#[repr(C)]
-pub struct FrameVTable {
-    /// ホスト所有のIPlugFrameの共通メソッド。
-    pub unknown: UnknownVTable,
-    /// 希望サイズを通知する。ホストは同期的にView.onSizeを呼び返す。
-    pub resize_view: unsafe extern "system" fn(This, This, *mut ViewRect) -> TResult,
 }
 
 #[repr(C)]

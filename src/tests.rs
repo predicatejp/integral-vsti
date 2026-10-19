@@ -10,7 +10,6 @@ fn x86_64_layout() {
     assert_eq!(size_of::<FactoryInfo>(), 452);
     assert_eq!(size_of::<ViewRect>(), 16);
     assert_eq!(size_of::<ViewVTable>(), 15 * 8);
-    assert_eq!(size_of::<ScaleVTable>(), 4 * 8);
     assert_eq!(size_of::<ComponentHandlerVTable>(), 7 * 8);
     assert_eq!(size_of::<ClassInfo>(), 116);
     assert_eq!(size_of::<ClassInfo2>(), 440);
@@ -505,9 +504,9 @@ fn gui_gesture_keeps_handler_alive_during_reentrant_replacement() {
 }
 
 #[test]
-fn editor_owns_controller_and_shares_identity_with_scale_interface() {
+fn editor_owns_controller_and_has_fixed_size() {
     let factory = GetPluginFactory();
-    // SAFETY: 画面をattachせずABI・参照管理・サイズ変更だけを検証する。OS APIは呼ばない。
+    // SAFETY: 画面をattachせずABI・参照管理・固定サイズだけを検証する。OS APIは呼ばない。
     unsafe {
         let ft = &**factory.cast::<*const FactoryVTable>();
         let mut controller = ptr::null_mut();
@@ -521,35 +520,27 @@ fn editor_owns_controller_and_shares_identity_with_scale_interface() {
         assert!(!view.is_null());
         let vt = &**view.cast::<*const ViewVTable>();
         assert_eq!((ct.unknown.release)(controller), 1);
-        let mut scale = ptr::null_mut();
-        assert_eq!(
-            (vt.unknown.query_interface)(view, &SCALE_IID, &mut scale),
-            OK
-        );
-        let st = &**scale.cast::<*const ScaleVTable>();
         let mut identity = ptr::null_mut();
         assert_eq!(
-            (st.unknown.query_interface)(scale, &UNKNOWN_IID, &mut identity),
+            (vt.unknown.query_interface)(view, &UNKNOWN_IID, &mut identity),
             OK
         );
         assert_eq!(view, identity);
-        assert_eq!((vt.unknown.release)(identity), 2);
+        assert_eq!((vt.unknown.release)(identity), 1);
         let mut rect = ViewRect {
             left: 0,
             top: 0,
             right: 0,
             bottom: 0,
         };
-        assert_eq!((st.set_content_scale_factor)(scale, 2.0), OK);
         assert_eq!((vt.get_size)(view, &mut rect), OK);
-        assert_eq!((rect.right, rect.bottom), (720, 360));
-        assert_eq!(
-            (st.set_content_scale_factor)(scale, f32::NAN),
-            INVALID_ARGUMENT
-        );
+        assert_eq!((rect.right, rect.bottom), (360, 180));
+        rect.right = 720;
+        assert_eq!((vt.on_size)(view, &rect), FALSE);
+        assert_eq!((vt.check_size_constraint)(view, &mut rect), OK);
+        assert_eq!((rect.right, rect.bottom), (360, 180));
         assert_eq!((vt.on_size)(view, &rect), OK);
         assert_eq!((vt.removed)(view), OK);
-        assert_eq!((st.unknown.release)(scale), 1);
         assert_eq!((vt.unknown.release)(view), 0);
         assert_eq!((ft.unknown.release)(factory), 0);
     }

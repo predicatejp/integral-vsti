@@ -212,17 +212,15 @@ void checkViewContract(IEditController* controller) {
     assert(view->isPlatformTypeSupported(platform) == kResultOk);
     assert(view->attached(nullptr, platform) == kInvalidArgument);
     void* result = nullptr;
-    assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kResultOk);
-    auto* scale = static_cast<IPlugViewContentScaleSupport*>(result);
-    assert(scale->setContentScaleFactor(1.5f) == kResultOk);
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 540 && rect.getHeight() == 270);
-    assert(scale->setContentScaleFactor(std::numeric_limits<float>::quiet_NaN()) == kInvalidArgument);
+    assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
+    rect.right = 720;
+    assert(view->onSize(&rect) == kResultFalse);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 360);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
     assert(view->onFocus(true) == kResultOk);
     assert(view->removed() == kResultOk);
-    assert(scale->release() == 1);
     assert(view->release() == 0);
 }
 
@@ -232,9 +230,6 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     GuiHandler handler(controller);
     assert(controller->setComponentHandler(&handler) == kResultOk && handler.refs == 2);
     auto* view = controller->createView("editor"); assert(view);
-    void* result = nullptr;
-    assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kResultOk);
-    auto* scale = static_cast<IPlugViewContentScaleSupport*>(result);
     assert(view->setFrame(&frame) == kResultOk);
     auto pump = [&] {
         for (int i = 0; i < 50; ++i) {
@@ -253,7 +248,6 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     for (int cycle = 0; cycle < 2; ++cycle) {
-        assert(scale->setContentScaleFactor(1.0f) == kResultOk);
 #ifdef _WIN32
         assert(view->attached(parent.handle(), kPlatformTypeHWND) == kResultOk);
 #else
@@ -268,10 +262,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.value == 1.0 && controller->getParamNormalized(waveformId) == 1.0);
         handler.sequence.clear();
-        assert(scale->setContentScaleFactor(1.5f) == kResultOk);
-        waitFor([&] { return parent.drawn(540, 270); }, "scaled rendered frame");
-        pump(); parent.click(70, 150);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "Sine click after scaling");
+        parent.click(45, 100);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "Sine click");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.value == 0.0);
         handler.sequence.clear();
@@ -292,7 +284,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         pump(); assert(handler.sequence.empty());
     }
     assert(view->setFrame(nullptr) == kResultOk && frame.refs == 1);
-    scale->release(); assert(view->release() == 0);
+    assert(view->release() == 0);
     assert(controller->setComponentHandler(nullptr) == kResultOk && handler.refs == 1);
-    std::cout << "GUI: embedded editor, clicks, UI-thread gestures, restore, scaling and reopen passed\n";
+    std::cout << "GUI: embedded editor, clicks, UI-thread gestures, restore and reopen passed\n";
 }

@@ -100,18 +100,20 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ホストのプラグイン画面にSine / Triangle / Square / Sawtoothの4ボタンを表示します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-論理サイズは360×180で、自由なサイズ変更は行いません。`IPlugViewContentScaleSupport` による
-0.5〜8倍の表示倍率変更を受け付け、ホストの `resizeView` / `onSize` を通じて物理サイズを変更します。
+サイズは360×180物理ピクセルで固定です。自由なサイズ変更と
+`IPlugViewContentScaleSupport` による表示倍率変更は未対応です。
 初版の操作はマウスのみです。VST3のキー・ホイール処理は未処理を返します。
 
-描画にはegui 0.37.0、egui-baseview 0.9.0、baseview 0.4.1のOpenGLバックエンドを使用します。
+描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
 対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。
 ソフトウェアOpenGLでも動作検証していますが、ソフトウェアドライバーはバンドルへ同梱しません。
 描画環境を初期化できない場合は画面の取り付けに失敗し、ホストのパラメーター操作と音声処理は引き続き使用できます。
 
+接続処理は左マウスボタンと描画に限定し、クリップボード・URL起動・キーボード編集は実装しません。
 GUIの操作はUI専用の32件キューからホストのUIスレッドへ配送し、
 `IComponentHandler::beginEdit / performEdit / endEdit` を順に通知します。キュー満杯時は新しいクリックを破棄します。
 DSPへの適用は従来どおりホストの変更キュー経由です。ホストからの値更新や状態復元は表示へ反映し、編集通知を送り返しません。
+Windowsはbaseviewの子ウィンドウのタイマー、LinuxはVST3のIRunLoopから編集を配送します。
 画面を閉じるとタイマーと描画資源を解放し、音声処理は継続します。
 
 ## ビルド
@@ -256,7 +258,7 @@ LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a python3 scripts/check-abi.py --gui
 
 WindowsのGUI検証にはOpenGL対応ドライバーが必要です。CIでは固定版のMesaをABIテスト実行ファイルの隣にだけ配置し、
 ソフトウェア描画で検証します。このDLLは配布ZIPへ含めません。
-GUIテストは表示・クリック・UIスレッドでの標準編集通知・保存復元・表示倍率・閉じて再表示する操作を確認します。
+GUIテストは表示・クリック・UIスレッドでの標準編集通知・保存復元・閉じて再表示する操作を確認します。
 
 この検証はSDKのインターフェースで共有ライブラリをロードし、バージョン・ID・戻り値、100回のインスタンス生成・解放、
 複数のブロック長、32/64ビットの発音・消音、音程変更・再発音での位相継承、
@@ -284,7 +286,7 @@ Linuxでの確認済み環境: Linux x86_64、Rust 1.95.0 / 1.99.1、GCC 12.2、
 （インターフェース定義も3.8.1）。Rustテスト17件、ABI検証、Validator 47件が成功しています。
 参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
 イベントバス有効化通知への互換性対応後、サイン波はFL Studioで発音の動作報告があります。
-GUIの表示・クリック・復元・倍率変更・再表示はLinuxのXvfbとMesaで検証しています。
+GUIの表示・クリック・復元・再表示はLinuxのXvfbとMesaで検証しています。
 GUI追加後の実際のDAWでの表示・操作、および実GPUでの描画は未確認です。
 
 ## PRのテスト用ZIP
@@ -348,7 +350,8 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/abi.rs`: 必要なABI型、OS別のID表現・戻り値、vtable定義。
 - `src/lib.rs`: モジュールの公開関数とファクトリー。
 - `src/plugin.rs`: インスタンス、バス、イベント・パラメーター処理、音声出力、Controller。
-- `src/gui.rs`: VST3画面の直接実装とegui/OpenGL描画。
+- `src/gui.rs`: VST3画面の直接実装とホストへの編集通知。
+- `src/editor.rs`: 4つの波形ボタンのマウス入力とegui/OpenGL描画。
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した4波形オシレータ。
