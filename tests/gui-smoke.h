@@ -36,6 +36,11 @@ struct NativeParent {
     }
     void click(int x, int y) {
         HWND child = GetWindow(window, GW_CHILD); assert(child);
+        // キャプチャ解除時のOSのマウス通知も、送信するクリックと同じ座標に揃える。
+        POINT screen {x, y};
+        assert(ClientToScreen(child, &screen));
+        assert(SetCursorPos(screen.x, screen.y));
+        pump();
         LPARAM position = MAKELPARAM(x, y);
         SendMessageW(child, WM_MOUSEMOVE, 0, position);
         SendMessageW(child, WM_LBUTTONDOWN, MK_LBUTTON, position);
