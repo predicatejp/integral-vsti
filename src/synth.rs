@@ -47,7 +47,7 @@ impl Synth {
             440.0 * 2.0_f64.powf((f64::from(note.pitch) - 69.0 + f64::from(tuning) / 100.0) / 12.0);
         if self.oscillator.set_params(OscillatorParams {
             frequency_hz,
-            amplitude: 0.2 * f64::from(velocity),
+            amplitude: 0.5 * f64::from(velocity),
         }) {
             self.note = Some(note);
         }
@@ -95,13 +95,13 @@ mod tests {
         assert_eq!(synth.next_sample(), 0.0); // 位相0 -> 1/4
         synth.note_on(note(2, 0, 81), 0.0, 0.5);
         synth.note_off(note(1, 0, 69)); // 古いノートオフは無視
-        assert!((synth.next_sample() - 0.1).abs() < 1e-14); // 位相1/4 -> 3/4
+        assert!((synth.next_sample() - 0.25).abs() < 1e-14); // 位相1/4 -> 3/4
         synth.note_off(note(2, 0, 81));
         for _ in 0..7 {
             assert_eq!(synth.next_sample(), 0.0);
         }
         synth.note_on(note(3, 0, 69), 0.0, 1.0);
-        assert!((synth.next_sample() + 0.2).abs() < 1e-14); // 消音前の位相3/4から再開
+        assert!((synth.next_sample() + 0.5).abs() < 1e-14); // 消音前の位相3/4から再開
         synth.stop();
         assert_eq!(synth.next_sample(), 0.0);
     }
@@ -118,7 +118,7 @@ mod tests {
         synth.note_on(note(10, 0, 128), 0.0, 1.0);
         synth.note_on(note(10, 0, 69), f32::MAX, 1.0);
         synth.note_on(note(10, 0, 69), 0.0, f32::NAN);
-        assert!((synth.next_sample() - 0.2).abs() < 1e-14);
+        assert!((synth.next_sample() - 0.5).abs() < 1e-14);
         synth.note_off(note(-1, 2, 69));
         assert_eq!(synth.next_sample(), 0.0);
     }
