@@ -3,12 +3,14 @@
 
 use crate::abi::*;
 use crate::diagnostics::{Diagnostics, Metric};
+use crate::host::HostRef;
 use crate::parameters::{self, WAVEFORM_ID, WAVEFORM_NAMES, WAVEFORMS, WaveformPoints};
 use crate::synth::{Note, Synth};
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 // vtableポインターを先頭に置く。ownerはホストに見えない内部データ。
@@ -47,7 +49,9 @@ struct Plugin {
     /// DSPへ適用済み、またはsetStateから次のprocessへ渡す波形番号。保存時にもatomicで読む。
     processor_waveform: AtomicU32,
     /// Controllerが表示する波形番号。ホストのsetParamNormalized/setComponentStateで更新する。
-    controller_waveform: AtomicU32,
+    controller_waveform: Arc<AtomicU32>,
+    /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
+    component_handler: RefCell<Option<HostRef>>,
     /// オシレータ・現在のノート・サンプルレートを所有する可変DSP状態。
     /// processとライフサイクルの更新はVST3規約に従いホストが直列化する。
     /// Controller・照会APIからは触れない。オーディオスレッドでロックしない。
@@ -93,7 +97,7 @@ static CONTEXT_REQUIREMENTS: ContextRequirementsVTable = ContextRequirementsVTab
     unknown: UNKNOWN,
     get_process_context_requirements: zero,
 };
-// 独自GUIは持たず、波形選択をホスト標準のパラメーター操作へ公開する。
+// eguiとホストのパラメーター操作が同じVST3パラメーターを扱う。
 static CONTROLLER: ControllerVTable = ControllerVTable {
     unknown: UNKNOWN,
     initialize,
@@ -150,7 +154,8 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         output_active: AtomicBool::new(false),
         event_active: AtomicBool::new(false),
         processor_waveform: AtomicU32::new(0),
-        controller_waveform: AtomicU32::new(0),
+        controller_waveform: Arc::new(AtomicU32::new(0)),
+        component_handler: RefCell::new(None),
         synth: UnsafeCell::new(Synth::new()),
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
@@ -260,6 +265,8 @@ unsafe extern "system" fn terminate(this: This) -> TResult {
     // SAFETY: terminateはprocessの終了後に呼ばれる。
     unsafe { (*plugin.synth.get()).stop() };
     plugin.diagnostics.finish();
+    let old_handler = plugin.component_handler.replace(None);
+    drop(old_handler);
     OK
 }
 
@@ -537,12 +544,47 @@ unsafe extern "system" fn set_parameter(this: This, id: u32, value: f64) -> TRes
         .store(parameters::waveform_index(waveform), Ordering::Relaxed);
     OK
 }
-unsafe extern "system" fn set_component_handler(_: This, _: This) -> TResult {
-    // 通知を発生させないのでhandlerを保持せず、その参照カウントも変更しない。
+unsafe extern "system" fn set_component_handler(this: This, handler: This) -> TResult {
+    // SAFETY: UIスレッドの呼び出し。新しい所有参照を取ってから古い参照を解放する。
+    let plugin = unsafe { instance(this) };
+    let new_handler = unsafe { HostRef::retain(handler) };
+    let old = plugin.component_handler.replace(new_handler);
+    drop(old); // ホストへ戻る間RefCellの借用を保持しない。
     OK
 }
-unsafe extern "system" fn create_view(_: This, _: *const u8) -> This {
-    ptr::null_mut()
+unsafe extern "system" fn create_view(this: This, name: *const u8) -> This {
+    // SAFETY: nameはnullまたはNUL終端文字列。標準のeditorだけを提供する。
+    if name.is_null() || unsafe { std::ffi::CStr::from_ptr(name.cast()) }.to_bytes() != b"editor" {
+        return ptr::null_mut();
+    }
+    // SAFETY: thisは生存中のController。Viewが独立した所有参照を取る。
+    unsafe { crate::gui::create(this, Arc::clone(&instance(this).controller_waveform)) }
+}
+
+/// SAFETY: GUIの所有参照がthisを保持し、ホストのUIスレッドからのみ呼ぶ。
+pub unsafe fn edit_waveform(this: This, index: u32) -> TResult {
+    let Some(waveform) = WAVEFORMS.get(index as usize).copied() else {
+        return INVALID_ARGUMENT;
+    };
+    // SAFETY: thisはViewが保持する参照。借用はホストコールバック前に終了する。
+    let plugin = unsafe { instance(this) };
+    let Some(handler) = plugin.component_handler.borrow().clone() else {
+        return FALSE;
+    };
+    let handler_ptr = handler.as_ptr();
+    // SAFETY: ローカルの所有参照で、再入時のhandler置換から保護する。
+    let table = unsafe { &**handler_ptr.cast::<*const ComponentHandlerVTable>() };
+    if unsafe { (table.begin_edit)(handler_ptr, WAVEFORM_ID) } != OK {
+        return FALSE;
+    }
+    plugin.controller_waveform.store(index, Ordering::Relaxed);
+    let status =
+        unsafe { (table.perform_edit)(handler_ptr, WAVEFORM_ID, parameters::normalized(waveform)) };
+    // SAFETY: beginEdit成功と対にする。DSPはホストのinputParameterChangesから更新する。
+    unsafe {
+        (table.end_edit)(handler_ptr, WAVEFORM_ID);
+    }
+    status
 }
 
 unsafe extern "system" fn set_bus_arrangements(

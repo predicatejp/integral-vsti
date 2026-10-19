@@ -52,6 +52,11 @@ pub const COMPONENT_IID: Tuid = tuid(0xe831ff31_f2d54301_928ebbee_25697802);
 pub const PROCESSOR_IID: Tuid = tuid(0x42043f99_b7da453c_a569e79d_9aaec33d);
 pub const CONTROLLER_IID: Tuid = tuid(0xdcd7bbe3_7742448d_a874aacc_979c759e);
 pub const CONTEXT_REQUIREMENTS_IID: Tuid = tuid(0x2a654303_ef764e3d_95b5fe83_730ef6d0);
+pub const VIEW_IID: Tuid = tuid(0x5bc32507_d06049ea_a6151b52_2b755b29);
+#[cfg(target_os = "linux")]
+pub const RUN_LOOP_IID: Tuid = tuid(0x18c35366_97764f1a_9c5b8385_7a871389);
+#[cfg(target_os = "linux")]
+pub const TIMER_IID: Tuid = tuid(0x10bdd94f_41424774_821fad8f_eca72ca9);
 
 // 製品固有のクラスID。通常の更新で変更しない。
 pub const COMPONENT_CID: Tuid = tuid(0x9ad1ae8c_b51b4aac_a13c85c0_b023ab4d);
@@ -182,10 +187,91 @@ pub struct ControllerVTable {
     pub get_param_normalized: unsafe extern "system" fn(This, u32) -> f64,
     /// ParamIDに対応する正規化値を更新する。
     pub set_param_normalized: unsafe extern "system" fn(This, u32, f64) -> TResult,
-    /// ホストへの変更通知用handlerを設定する。本実装では保持しない。
+    /// ホストへの変更通知用handlerを所有参照として保持する。UIスレッド限定。
     pub set_component_handler: unsafe extern "system" fn(This, This) -> TResult,
-    /// 指定種類のGUIを生成する。本実装はGUIを持たずnullを返す。
+    /// editorならIPlugViewを生成し、それ以外はnullを返す。
     pub create_view: unsafe extern "system" fn(This, *const u8) -> This,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewRect {
+    /// 左端の物理ピクセル座標。
+    pub left: i32,
+    /// 上端の物理ピクセル座標。
+    pub top: i32,
+    /// 右端の物理ピクセル座標。
+    pub right: i32,
+    /// 下端の物理ピクセル座標。
+    pub bottom: i32,
+}
+
+#[repr(C)]
+pub struct ViewVTable {
+    /// FUnknownの共通メソッド。
+    pub unknown: UnknownVTable,
+    /// HWNDまたはX11EmbedWindowIDへの対応を返す。
+    pub is_platform_type_supported: unsafe extern "system" fn(This, *const u8) -> TResult,
+    /// ホスト所有の親へ子ウィンドウを埋め込む。
+    pub attached: unsafe extern "system" fn(This, This, *const u8) -> TResult,
+    /// 子ウィンドウとUI資源を解放する。
+    pub removed: unsafe extern "system" fn(This) -> TResult,
+    /// ホストからのホイール入力。
+    pub on_wheel: unsafe extern "system" fn(This, f32) -> TResult,
+    /// ホストからのキー押下。未使用キーを消費しない。
+    pub on_key_down: unsafe extern "system" fn(This, u16, i16, i16) -> TResult,
+    /// ホストからのキー解放。
+    pub on_key_up: unsafe extern "system" fn(This, u16, i16, i16) -> TResult,
+    /// 現在の画面サイズを出力する。
+    pub get_size: unsafe extern "system" fn(This, *mut ViewRect) -> TResult,
+    /// ホストが承認した物理サイズを反映する。
+    pub on_size: unsafe extern "system" fn(This, *const ViewRect) -> TResult,
+    /// フォーカス変更の通知。
+    pub on_focus: unsafe extern "system" fn(This, u8) -> TResult,
+    /// ホストのIPlugFrameを保持する（LinuxではIRunLoopの取得元）。
+    pub set_frame: unsafe extern "system" fn(This, This) -> TResult,
+    /// ユーザーによる自由なサイズ変更の可否。
+    pub can_resize: unsafe extern "system" fn(This) -> TResult,
+    /// 固定の物理サイズに制限する。
+    pub check_size_constraint: unsafe extern "system" fn(This, *mut ViewRect) -> TResult,
+}
+
+#[repr(C)]
+pub struct ComponentHandlerVTable {
+    /// ホスト所有のIComponentHandlerの共通メソッド。
+    pub unknown: UnknownVTable,
+    /// UIでのパラメーター編集開始。
+    pub begin_edit: unsafe extern "system" fn(This, u32) -> TResult,
+    /// 正規化値をホストへ通知する。
+    pub perform_edit: unsafe extern "system" fn(This, u32, f64) -> TResult,
+    /// UIでのパラメーター編集終了。
+    pub end_edit: unsafe extern "system" fn(This, u32) -> TResult,
+    /// ホストへ再構成を要求する。本実装は呼び出さない。
+    pub restart_component: unsafe extern "system" fn(This, i32) -> TResult,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+pub struct RunLoopVTable {
+    /// ホスト所有のLinux::IRunLoopの共通メソッド。
+    pub unknown: UnknownVTable,
+    /// ファイル記述子のイベントハンドラーを登録する。本実装は呼び出さない。
+    pub register_event_handler: unsafe extern "system" fn(This, This, i32) -> TResult,
+    /// イベントハンドラーを解除する。
+    pub unregister_event_handler: unsafe extern "system" fn(This, This) -> TResult,
+    /// ホストのUIスレッドで呼ばれる周期タイマーを登録する。
+    pub register_timer: unsafe extern "system" fn(This, This, u64) -> TResult,
+    /// タイマーを解除する。
+    pub unregister_timer: unsafe extern "system" fn(This, This) -> TResult,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+pub struct TimerVTable {
+    /// Viewと参照数・identityを共有するFUnknown。
+    pub unknown: UnknownVTable,
+    /// ホストのUIスレッドでGUI操作を処理する。
+    pub on_timer: unsafe extern "system" fn(This),
 }
 
 #[repr(C)]

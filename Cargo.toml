@@ -2,7 +2,7 @@
 name = "sample-vsti"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 publish = false
 description = "A monophonic VST3 instrument implemented directly in Rust"
 authors = ["Yusuke Oda"]
@@ -11,6 +11,12 @@ repository = "https://github.com/predicatejp/sample-vsti"
 
 [lib]
 crate-type = ["cdylib"]
+
+[dependencies]
+egui = { version = "=0.37.0", default-features = false, features = ["default_fonts"] }
+egui_glow = { version = "=0.37.0", default-features = false }
+baseview = { version = "=0.4.1", default-features = false, features = ["opengl"] }
+raw-window-handle = "=0.6.2"
 
 [profile.dev]
 panic = "abort"

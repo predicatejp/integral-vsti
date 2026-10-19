@@ -152,6 +152,23 @@ jobs:
       - name: Windows static analysis
         if: runner.os == 'Windows'
         run: cargo +stable clippy --locked --all-targets -- -D warnings
+      - name: Install Linux GUI validation dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-x11-0 libgl1-mesa-dri libegl1 xvfb xauth
+      - name: Prepare Windows software OpenGL for GUI validation
+        if: runner.os == 'Windows'
+        run: |
+          source scripts/ci-versions.sh
+          archive="$RUNNER_TEMP/mesa.7z"
+          python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
+            "https://github.com/pal1000/mesa-dist-win/releases/download/$CI_MESA_WINDOWS/mesa3d-$CI_MESA_WINDOWS-release-msvc.7z" "$archive"
+          echo "$CI_MESA_WINDOWS_SHA256  $archive" | sha256sum --check
+          7z x "$archive" "-o$RUNNER_TEMP/mesa" x64/opengl32.dll x64/libgallium_wgl.dll
+          mkdir -p target
+          cp "$RUNNER_TEMP/mesa/x64/"*.dll target/
+          echo 'GALLIUM_DRIVER=llvmpipe' >> "$GITHUB_ENV"
       - name: Validate diagnostic launcher syntax
         if: runner.os == 'Windows'
         shell: pwsh
@@ -171,11 +188,16 @@ jobs:
           git -C "$sdk_dir" checkout --detach FETCH_HEAD
           git -C "$sdk_dir" submodule update --init --depth 1 base cmake pluginterfaces public.sdk
           echo "VST3_SDK_DIR=$sdk_dir" >> "$GITHUB_ENV"
-      - name: Verify ABI, version, audio and diagnostics
+      - name: Verify ABI, version, audio, GUI and diagnostics
         id: bundle
         env:
           RUSTUP_TOOLCHAIN: stable
-        run: python scripts/check-abi.py
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a python scripts/check-abi.py --gui
+          else
+            python scripts/check-abi.py --gui
+          fi
       - name: Build Validator
         run: |
           cmake -S "$VST3_SDK_DIR" -B target/vst3-sdk \
@@ -206,7 +228,9 @@ jobs:
         if: always()
         with:
           name: vst3-validation-log-${{ runner.os }}
-          path: target/validator.log
+          path: |
+            target/validator.log
+            target/gui-smoke.ppm
           if-no-files-found: warn
           retention-days: 14
       # upload-artifactのZIPにバンドルを直接格納し、ZIPの二重梱包を避ける。

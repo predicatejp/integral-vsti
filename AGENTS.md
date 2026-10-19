@@ -11,6 +11,14 @@
 - 未確定の仕様は推測で確定事項として扱わず、仮定や未確認事項を明示すること。
 - ユーザーの既存の変更を上書き・破棄しないこと。
 
+## 実装範囲と規模の制約
+
+- 着手前に、依頼された機能と完了条件を短く明示し、その範囲を超える実装を追加しないこと。
+- 将来の拡張を見越した抽象化、汎用化、未使用の機能、補助機能を、明示的な依頼なしに追加しないこと。
+- 依存関係を追加する前に、用途、有効化する機能、推移的依存、既存機能で代替できない理由を確認すること。実装または依存の規模が大きくなる場合は、採用前に理由と小さい構成の代案を示し、ユーザーの了承を得ること。
+- 完了前に差分を依頼の要件と照合し、対応する要件のない追加を除くこと。ライフサイクル、メモリ安全性、スレッド規約、ライセンス通知、および実装した機能の検証は必要な要件として扱うこと。
+- 完了報告では、本体の変更量と依存関係の追加・削除も示すこと。テスト成功だけをもって最小構成と判断しないこと。
+
 ## 公開を前提とした記述・構成
 
 - このリポジトリは将来的に一般公開する前提で作成すること。
@@ -29,7 +37,7 @@
 - 対応OS・アーキテクチャ: Linux x86_64（GNU環境）とWindows x86_64（MSVC環境）。
 - 音源方式・主要機能: 単一オシレータによる単音音源。サイン波・三角波・矩形波・ノコギリ波に対応。既定はサイン波。エンベロープなし。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
-- 現在の操作・保存: VST3のWaveformパラメーター1個（4択）、独自GUIなし。波形の選択をIBStreamで保存・復元。
+- 現在の操作・保存: VST3のWaveformパラメーター1個（4択）、eguiによる波形選択GUIあり。波形の選択をIBStreamで保存・復元。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。
 バス構成、最大同時発音数、サンプル精度、対応サンプルレート、MIDI機能、独自GUIの有無は、実装時に対応範囲を明記すること。
@@ -52,6 +60,9 @@
 - `src/abi.rs`: Rustで直接定義したABI型・vtable・OS別の識別子表現と戻り値。
 - `src/lib.rs`: モジュール公開関数とファクトリー。
 - `src/plugin.rs`: 音源インスタンスとホストからの呼び出し処理。
+- `src/gui.rs`: IPlugViewの直接実装とUIスレッドへの編集配送。
+- `src/editor.rs`: 波形選択リストのマウス入力とegui/OpenGL描画。
+- `src/host.rs`: UIスレッドに限定したホストインターフェースの所有参照。
 - `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState`、サンプル生成・状態更新。
 - `src/synth.rs`: 単音のノート照合とゲート。
@@ -70,16 +81,16 @@ VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体の
 
 | 項目 | 手順・コマンド |
 | --- | --- |
-| 必要なツールとバージョン | Rust 1.85以上。LinuxはCリンカー、WindowsはMSVCとWindows SDK。梱包にはPython 3・Git、検証にはC++17・CMake 3.25以上 |
-| SDK・依存関係のセットアップ | 本体の依存クレートなし。検証時は公式SDKの展開先を `VST3_SDK_DIR` に指定 |
+| 必要なツールとバージョン | Rust 1.95以上。LinuxはCリンカー、WindowsはMSVCとWindows SDK。梱包にはPython 3・Git、検証にはC++17・CMake 3.25以上 |
+| SDK・依存関係のセットアップ | GUI依存はCargo.lockで固定。検証時は公式SDKの展開先を `VST3_SDK_DIR` に指定 |
 | 開発用ビルド | `cargo build --locked` |
 | リリース用ビルド・バンドル生成 | `python3 scripts/build-vst3.py`（Windowsは `python`） |
-| 自動テスト | `cargo test --locked`、`sh scripts/check-abi.sh` |
+| 自動テスト | `cargo test --locked`、`python3 scripts/check-abi.py --gui`（LinuxはXvfb可） |
 | フォーマット・静的解析 | `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings` |
 | VST3 SDK Validatorによる検証 | READMEの手順で構築後、`target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3` |
-| テスト用ホストへの導入・起動 | READMEの導入手順を参照。有効化通知への互換性対応後、サイン波はFL Studioで発音報告あり。波形選択の追加後は自動テストまで |
+| テスト用ホストへの導入・起動 | READMEの導入手順を参照。有効化通知への互換性対応後、サイン波はFL Studioで発音報告あり。GUI追加後の実際のDAWでの表示・操作は未確認 |
 | CI用Rustツールの導入 | `sh scripts/install-ci-tools.sh` |
-| MSRVの検証 | `cargo +1.85.0 test --locked`、`cargo +1.85.0 build --locked --release` |
+| MSRVの検証 | `cargo +1.95.0 test --locked`、`cargo +1.95.0 build --locked --release` |
 | Miri | `. scripts/ci-versions.sh` の後に `cargo +"$CI_NIGHTLY" miri test --locked --lib` |
 | 依存関係監査 | `cargo +stable deny --locked check` |
 | カバレッジ | READMEのLCOV生成手順を参照 |
@@ -140,6 +151,9 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - Componentの状態とController固有の状態を区別し、`setComponentState` による同期を実装すること。GUIが閉じていても保存・復元できるようにすること。
 - 状態データの読み書き結果、長さ、値の範囲を検証し、破損・途中切れ・未対応バージョンで不正な状態を適用しないこと。
 - 処理中の状態保存・復元とDSPのデータ共有を設計し、音声スレッドをブロックしないこと。設定の復元と、発音中のボイスや残響履歴の完全な復元を同一視しないこと。
+- GUIはegui 0.37.0・egui_glow 0.37.0・baseview 0.4.1のOpenGL描画を使用する。GPUは描画専用とし、DSPでは使用しない。LinuxはX11EmbedWindowIDとIPlugFrameから取得するIRunLoop、WindowsはHWNDを使う。
+- GUIは640×480物理ピクセルの固定サイズ、ライトテーマとする。標準フォントは18px、見出しは24pxとする。左列にパラメーター名、右列に操作欄を置き、縦方向に行を並べる。現在はWaveformのドロップダウン1行だけをマウスで操作する。任意倍率・自由なサイズ変更は未対応。
+- GUIの編集通知はホストのUIスレッドに配送し、描画処理中にはホストを呼ばない。UI専用の32件キューが満杯なら新しいクリックを破棄する。
 - 独自GUIを実装する場合は、表示・取り外し・再表示、サイズ変更、スケーリング、フォーカスと入力の扱いを確認すること。GUIを閉じても音源の処理を継続できるようにすること。
 
 ## 検証方針
