@@ -12,6 +12,9 @@ compile_error!("対応対象はLinux x86_64とWindows x86_64 MSVCです");
 mod abi;
 mod diagnostics;
 mod editor;
+// 独立モジュールとして検証し、音源への接続は別の変更で行う。
+#[allow(dead_code)]
+mod envelope;
 mod gui;
 mod host;
 mod oscillator;

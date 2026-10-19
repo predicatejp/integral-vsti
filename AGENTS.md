@@ -65,6 +65,7 @@
 - `src/host.rs`: UIスレッドに限定したホストインターフェースの所有参照。
 - `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState`、サンプル生成・状態更新。
+- `src/envelope.rs`: AHDSRパラメーターと経過ミリ秒から音量倍率を計算する独立モジュール。音源への接続は未実装。
 - `src/synth.rs`: 単音のノート照合とゲート。
 - `src/diagnostics.rs`: 環境変数で有効化する診断。音声処理中はatomic更新だけとし、終了時にファイルへ出力。
 - `src/tests.rs`: Rust側のABIレイアウト・参照管理・イベント処理テスト。
