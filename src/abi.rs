@@ -216,6 +216,54 @@ pub struct ProcessData {
     pub process_context: This,
 }
 
+#[repr(C)]
+pub struct EventListVTable {
+    pub unknown: UnknownVTable,
+    pub get_event_count: unsafe extern "system" fn(This) -> i32,
+    pub get_event: unsafe extern "system" fn(This, i32, *mut Event) -> TResult,
+    pub add_event: unsafe extern "system" fn(This, *mut Event) -> TResult,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NoteOnEvent {
+    pub channel: i16,
+    pub pitch: i16,
+    pub tuning: f32,
+    pub velocity: f32,
+    pub length: i32,
+    pub note_id: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NoteOffEvent {
+    pub channel: i16,
+    pub pitch: i16,
+    pub velocity: f32,
+    pub note_id: i32,
+    pub tuning: f32,
+}
+
+#[repr(C)]
+pub union EventPayload {
+    pub note_on: NoteOnEvent,
+    pub note_off: NoteOffEvent,
+    // SDKの全variantを格納可能な領域。最大はNoteExpressionTextEventの24バイト、
+    // アラインメント8。未対応variantは読み出さない。
+    pub reserved: [u64; 3],
+}
+
+#[repr(C)]
+pub struct Event {
+    pub bus_index: i32,
+    pub sample_offset: i32,
+    pub ppq_position: f64,
+    pub flags: u16,
+    pub event_type: u16,
+    pub payload: EventPayload,
+}
+
 pub fn ascii<const N: usize>(text: &str) -> [u8; N] {
     let mut result = [0; N];
     for (dst, src) in result

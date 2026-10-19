@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::abi::*;
+use crate::synth::{Note, Synth};
+use std::cell::UnsafeCell;
 use std::ffi::c_void;
+use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
@@ -23,6 +26,10 @@ struct Plugin {
     active: AtomicBool,
     processing: AtomicBool,
     output_active: AtomicBool,
+    event_active: AtomicBool,
+    // processとライフサイクルの更新はVST3規約に従いホストが直列化する。
+    // Controller・照会APIからは触れない。オーディオスレッドでロックしない。
+    synth: UnsafeCell<Synth>,
     max_samples: AtomicI32,
     sample_size: AtomicI32,
 }
@@ -116,6 +123,8 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         active: AtomicBool::new(false),
         processing: AtomicBool::new(false),
         output_active: AtomicBool::new(false),
+        event_active: AtomicBool::new(false),
+        synth: UnsafeCell::new(Synth::new()),
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
     });
@@ -144,7 +153,7 @@ fn interface(plugin: &Plugin, iid: &Tuid) -> This {
 }
 
 // SAFETY契約: thisは公開済みInterfaceで、呼び出し元が所有参照を持つ。
-// 生存中のownerだけを返し、可変共有状態はatomic経由で操作する。
+// 生存中のownerだけを返す。共有状態はatomic、直列化されたDSP状態はUnsafeCellを用いる。
 unsafe fn instance<'a>(this: This) -> &'a Plugin {
     unsafe { &*(*this.cast::<Interface>()).owner }
 }
@@ -212,6 +221,9 @@ unsafe extern "system" fn terminate(this: This) -> TResult {
     plugin.active.store(false, Ordering::Relaxed);
     plugin.output_active.store(false, Ordering::Relaxed);
     plugin.max_samples.store(0, Ordering::Relaxed);
+    plugin.event_active.store(false, Ordering::Relaxed);
+    // SAFETY: terminateはprocessの終了後に呼ばれる。
+    unsafe { (*plugin.synth.get()).stop() };
     OK
 }
 
@@ -289,9 +301,14 @@ unsafe extern "system" fn activate_bus(
         return INVALID_ARGUMENT;
     }
     if media == AUDIO {
-        // SAFETY: thisは生存中のInterface。イベントは有効状態にかかわらず無視する。
+        // SAFETY: thisは生存中のInterface。
         unsafe { instance(this) }
             .output_active
+            .store(state != 0, Ordering::Relaxed);
+    } else {
+        // SAFETY: thisは生存中のInterface。DSPへの反映はprocess内で行う。
+        unsafe { instance(this) }
+            .event_active
             .store(state != 0, Ordering::Relaxed);
     }
     OK
@@ -308,6 +325,8 @@ unsafe extern "system" fn set_active(this: This, state: u8) -> TResult {
     plugin.active.store(state, Ordering::Relaxed);
     if !state {
         plugin.processing.store(false, Ordering::Relaxed);
+        // SAFETY: setActive(false)はprocessの終了後に呼ばれる。
+        unsafe { (*plugin.synth.get()).stop() };
     }
     OK
 }
@@ -419,6 +438,8 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
     {
         return INVALID_ARGUMENT;
     }
+    // SAFETY: setupProcessingは非アクティブ状態で呼ばれ、processと競合しない。
+    unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) };
     plugin
         .max_samples
         .store(setup.max_samples_per_block, Ordering::Relaxed);
@@ -435,6 +456,10 @@ unsafe extern "system" fn set_processing(this: This, state: u8) -> TResult {
         return NOT_INITIALIZED;
     }
     plugin.processing.store(state != 0, Ordering::Relaxed);
+    if state == 0 {
+        // SAFETY: setProcessing(false)は全process呼び出しの終了後に呼ばれる。
+        unsafe { (*plugin.synth.get()).stop() };
+    }
     OK
 }
 
@@ -451,48 +476,129 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     {
         return INVALID_ARGUMENT;
     }
-    // 音声処理停止中にも到着するフラッシュ。処理するパラメーターはない。
-    if data.num_samples == 0 {
-        return OK;
-    }
+    // 停止中のゼロサンプル呼び出しは成功するが、ノートは受け付けない。
     if !plugin.processing.load(Ordering::Relaxed) {
-        return NOT_INITIALIZED;
+        return if data.num_samples == 0 {
+            OK
+        } else {
+            NOT_INITIALIZED
+        };
     }
     if data.num_samples > plugin.max_samples.load(Ordering::Relaxed)
         || data.symbolic_sample_size != plugin.sample_size.load(Ordering::Relaxed)
     {
         return INVALID_ARGUMENT;
     }
-    if data.num_outputs == 0 {
-        return OK;
-    }
-    if data.outputs.is_null() {
-        return INVALID_ARGUMENT;
-    }
-    // SAFETY: ホストは出力バス記述子を提供し、呼び出し中の書き込みを許可する。
-    let bus = unsafe { &mut *data.outputs };
-    if !plugin.output_active.load(Ordering::Relaxed) {
-        return OK;
-    }
-    if bus.num_channels != 2 || bus.channel_buffers.is_null() {
-        return INVALID_ARGUMENT;
-    }
-    // SAFETY: ホストは2チャンネルそれぞれにnum_samples個の書き込み領域を提供する。
-    // チャンネルが同じ領域を指していてもよいので、排他的sliceを作らず順にゼロ化する。
-    unsafe {
-        let left = *bus.channel_buffers;
-        let right = *bus.channel_buffers.add(1);
-        if left.is_null() || right.is_null() {
+    // 出力がなくてもノートと時間を処理する。ゼロサンプル時はバッファを参照しない。
+    let channels = if data.num_samples > 0
+        && data.num_outputs > 0
+        && plugin.output_active.load(Ordering::Relaxed)
+    {
+        if data.outputs.is_null() {
             return INVALID_ARGUMENT;
         }
-        for channel in [left, right] {
-            if data.symbolic_sample_size == SAMPLE32 {
-                ptr::write_bytes(channel.cast::<f32>(), 0, data.num_samples as usize);
+        // SAFETY: ホスト所有のバス記述子と2個のチャンネルポインター。
+        let bus = unsafe { &*data.outputs };
+        if bus.num_channels != 2 || bus.channel_buffers.is_null() {
+            return INVALID_ARGUMENT;
+        }
+        let channels = unsafe { [*bus.channel_buffers, *bus.channel_buffers.add(1)] };
+        if channels.iter().any(|channel| channel.is_null()) {
+            return INVALID_ARGUMENT;
+        }
+        Some(channels)
+    } else {
+        None
+    };
+
+    // SAFETY: 同一インスタンスのprocess（ゼロサンプルも含む）およびDSPを更新する
+    // ライフサイクル呼び出しをホストが直列化する。ホストからの再入processは許されない。
+    // synthの参照・ホストのイベントやバッファのポインターを呼び出し後へ保持しない。
+    let synth = unsafe { &mut *plugin.synth.get() };
+    let event_active = plugin.event_active.load(Ordering::Relaxed);
+    if !event_active {
+        synth.stop();
+    }
+    let mut cursor = 0;
+    let mut nonzero = false;
+    if event_active && !data.input_events.is_null() {
+        // SAFETY: inputEventsはホスト所有のIEventList。vtableの先頭はFUnknown。
+        let table = unsafe { &**data.input_events.cast::<*const EventListVTable>() };
+        let count = unsafe { (table.get_event_count)(data.input_events) };
+        for index in 0..count {
+            let mut event = MaybeUninit::<Event>::zeroed();
+            // SAFETY: Event全体の出力領域を渡す。成功時だけ対応するunion variantを読む。
+            if unsafe { (table.get_event)(data.input_events, index, event.as_mut_ptr()) } != OK {
+                continue;
+            }
+            let event = unsafe { event.assume_init() };
+            if event.bus_index != 0
+                || !matches!(event.event_type, 0 | 1)
+                || event.sample_offset < cursor
+                || (data.num_samples == 0 && event.sample_offset != 0)
+                || (data.num_samples > 0 && event.sample_offset >= data.num_samples)
+            {
+                continue;
+            }
+            // SAFETY: channelsは検証済みで、区間は0..num_samples内。
+            nonzero |= unsafe { render(synth, data, channels, cursor, event.sample_offset) };
+            cursor = event.sample_offset;
+            if event.event_type == 0 {
+                let note = unsafe { event.payload.note_on };
+                synth.note_on(
+                    Note {
+                        id: note.note_id,
+                        channel: note.channel,
+                        pitch: note.pitch,
+                    },
+                    note.tuning,
+                    note.velocity,
+                );
             } else {
-                ptr::write_bytes(channel.cast::<f64>(), 0, data.num_samples as usize);
+                let note = unsafe { event.payload.note_off };
+                synth.note_off(Note {
+                    id: note.note_id,
+                    channel: note.channel,
+                    pitch: note.pitch,
+                });
             }
         }
     }
-    bus.silence_flags = STEREO;
+    // SAFETY: 最後のイベントからブロック末尾まで。バッファがなくても位相を進める。
+    nonzero |= unsafe { render(synth, data, channels, cursor, data.num_samples) };
+    if channels.is_some() {
+        // SAFETY: channelsがSomeのときは有効な出力バスが存在する。
+        unsafe { (*data.outputs).silence_flags = if nonzero { 0 } else { STEREO } };
+    }
     OK
+}
+
+// SAFETY契約: channelsの各要素はnum_samples個の書き込み領域。start/endは範囲内。
+unsafe fn render(
+    synth: &mut Synth,
+    data: &ProcessData,
+    channels: Option<[This; 2]>,
+    start: i32,
+    end: i32,
+) -> bool {
+    let mut nonzero = false;
+    for index in start..end {
+        let sample = synth.next_sample();
+        if let Some(channels) = channels {
+            // 同じ領域を指す左右チャンネルも許す。排他的sliceは作らず、同一サンプルを順に書く。
+            if data.symbolic_sample_size == SAMPLE32 {
+                let sample = sample as f32;
+                nonzero |= sample != 0.0;
+                for channel in channels {
+                    unsafe { channel.cast::<f32>().add(index as usize).write(sample) };
+                }
+            } else {
+                nonzero |= sample != 0.0;
+                for channel in channels {
+                    unsafe { channel.cast::<f64>().add(index as usize).write(sample) };
+                }
+            }
+        }
+    }
+    nonzero
 }
