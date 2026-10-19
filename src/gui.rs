@@ -62,7 +62,7 @@ struct ViewState {
     ticker: RefCell<Option<Ticker>>,
     /// ホストに承認された現在の物理サイズ。
     rect: Cell<ViewRect>,
-    /// ホストまたはOSが指定した表示倍率。描画側はatomic経由で読む。
+    /// VST3ホストが指定した表示倍率。描画側はatomic経由で読む。
     scale: Arc<AtomicU32>,
     /// Controllerと共有する現在の波形番号。
     waveform: Arc<AtomicU32>,
@@ -90,7 +90,17 @@ impl App for EditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut Frame) {
         let scale = f32::from_bits(self.scale.load(Ordering::Relaxed));
         let native_scale = frame.baseview_window().size().scale_factor as f32;
-        ui.ctx().set_zoom_factor(scale / native_scale);
+        let zoom = scale / native_scale;
+        if ui.ctx().zoom_factor() != zoom {
+            ui.ctx().set_zoom_factor(zoom);
+            // egui-baseviewもzoom変更時にサイズを要求する。VST3のonSizeで変更済みの
+            // 物理サイズを再度拡大しないよう、元の論理サイズを明示する。
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                    WIDTH as f32,
+                    HEIGHT as f32,
+                )));
+        }
         // 表示値の同期はUI内で行う。DSP・ホストへの再通知は発生させない。
         ui.ctx().request_repaint_after(Duration::from_millis(33));
         egui::Frame::new()
@@ -191,7 +201,12 @@ impl baseview::host::HostCallbacks for Callbacks {
         let Some(state) = self.0.upgrade() else {
             return Err(std::io::Error::other("view closed").into());
         };
-        if state.resize(size.scale_factor as f32) == OK {
+        let desired = state.desired_rect();
+        // size.scale_factorはOSの倍率であり、VST3が指定したコンテンツ倍率とは異なる。
+        // ホストが承認したサイズだけを受理し、描画側から倍率を書き戻さない。
+        if size.physical.width == desired.right as u32
+            && size.physical.height == desired.bottom as u32
+        {
             Ok(())
         } else {
             Err(std::io::Error::other("host rejected resize").into())
@@ -390,7 +405,9 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
             rect.right as u32,
             rect.bottom as u32,
         ))
-        .with_resizable(false)
+        // 固定サイズの制約はIPlugViewで行う。内部の固定設定はWindowsでホスト由来の
+        // resizeも無効にするため、倍率変更に必要な物理サイズ変更は許可する。
+        .with_resizable(true)
         .with_parent(Some(&parent));
     let host = baseview::host::Host::new()
         .with_main_thread(MainThreadWake)
