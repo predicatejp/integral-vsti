@@ -3,8 +3,11 @@
 
 //! 発音しない最小VST3音源。公開するABIの実装はすべてRustで完結する。
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-compile_error!("現在のABI実装とバンドルはLinux x86_64のみ対応しています");
+#[cfg(not(all(
+    target_arch = "x86_64",
+    any(target_os = "linux", all(target_os = "windows", target_env = "msvc"))
+)))]
+compile_error!("対応対象はLinux x86_64とWindows x86_64 MSVCです");
 
 mod abi;
 mod plugin;
@@ -34,7 +37,7 @@ static FACTORY_VTABLE: FactoryVTable = FactoryVTable {
 
 // SAFETY: ホストは有効な所有参照のthisと、各ABI型の読み書き可能な引数を渡す。
 // nullは各入口で拒否するが、任意の不正アドレスを検証することはできない。
-unsafe extern "C" fn factory_query(this: This, iid: *const Tuid, out: *mut This) -> TResult {
+unsafe extern "system" fn factory_query(this: This, iid: *const Tuid, out: *mut This) -> TResult {
     if out.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -57,13 +60,13 @@ unsafe extern "C" fn factory_query(this: This, iid: *const Tuid, out: *mut This)
     }
 }
 
-unsafe extern "C" fn factory_add_ref(this: This) -> u32 {
+unsafe extern "system" fn factory_add_ref(this: This) -> u32 {
     // SAFETY: thisはGetPluginFactoryから返された生存中のFactory。
     let factory = unsafe { &*this.cast::<Factory>() };
     retain(&factory.refs)
 }
 
-unsafe extern "C" fn factory_release(this: This) -> u32 {
+unsafe extern "system" fn factory_release(this: This) -> u32 {
     // SAFETY: 呼び出し元の所有参照がこの呼び出しの間Factoryを保持する。
     let refs = unsafe { &(*this.cast::<Factory>()).refs };
     let remaining = refs.fetch_sub(1, Ordering::AcqRel) - 1;
@@ -84,7 +87,7 @@ pub(crate) fn retain(refs: &AtomicU32) -> u32 {
     previous + 1
 }
 
-unsafe extern "C" fn factory_info(_: This, out: *mut FactoryInfo) -> TResult {
+unsafe extern "system" fn factory_info(_: This, out: *mut FactoryInfo) -> TResult {
     if out.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -100,7 +103,7 @@ unsafe extern "C" fn factory_info(_: This, out: *mut FactoryInfo) -> TResult {
     OK
 }
 
-unsafe extern "C" fn count_classes(_: This) -> i32 {
+unsafe extern "system" fn count_classes(_: This) -> i32 {
     1
 }
 
@@ -113,7 +116,7 @@ fn metadata() -> ClassInfo {
     }
 }
 
-unsafe extern "C" fn class_info(_: This, index: i32, out: *mut ClassInfo) -> TResult {
+unsafe extern "system" fn class_info(_: This, index: i32, out: *mut ClassInfo) -> TResult {
     if index != 0 || out.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -124,7 +127,7 @@ unsafe extern "C" fn class_info(_: This, index: i32, out: *mut ClassInfo) -> TRe
     OK
 }
 
-unsafe extern "C" fn class_info2(_: This, index: i32, out: *mut ClassInfo2) -> TResult {
+unsafe extern "system" fn class_info2(_: This, index: i32, out: *mut ClassInfo2) -> TResult {
     if index != 0 || out.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -135,14 +138,14 @@ unsafe extern "C" fn class_info2(_: This, index: i32, out: *mut ClassInfo2) -> T
             class_flags: 0,
             sub_categories: ascii("Instrument|Synth"),
             vendor: ascii("sample-vsti"),
-            version: ascii(env!("CARGO_PKG_VERSION")),
+            version: ascii(env!("SAMPLE_VSTI_VERSION")),
             sdk_version: ascii("VST 3.8.1"),
         });
     }
     OK
 }
 
-unsafe extern "C" fn create_instance(
+unsafe extern "system" fn create_instance(
     _: This,
     cid: *const Tuid,
     iid: *const Tuid,
@@ -169,7 +172,7 @@ unsafe extern "C" fn create_instance(
 
 /// ホストへ初期所有参照を1つ返す。以後はFUnknown::releaseで解放する。
 #[unsafe(no_mangle)]
-pub extern "C" fn GetPluginFactory() -> This {
+pub extern "system" fn GetPluginFactory() -> This {
     Box::into_raw(Box::new(Factory {
         vtable: &FACTORY_VTABLE,
         refs: AtomicU32::new(1),
@@ -178,14 +181,30 @@ pub extern "C" fn GetPluginFactory() -> This {
 }
 
 /// Linuxのモジュール開始。共有資源は持たない。
+#[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
 pub extern "C" fn ModuleEntry(_: This) -> bool {
     true
 }
 
 /// ホストがすべての所有参照を解放した後に呼ぶ。
+#[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
 pub extern "C" fn ModuleExit() -> bool {
+    true
+}
+
+/// Windowsのモジュール開始。共有資源は持たないため複数回の呼び出しも許容する。
+#[cfg(target_os = "windows")]
+#[unsafe(no_mangle)]
+pub extern "system" fn InitDll() -> bool {
+    true
+}
+
+/// Windowsのモジュール終了。ホストが所有参照を解放した後に呼ぶ。
+#[cfg(target_os = "windows")]
+#[unsafe(no_mangle)]
+pub extern "system" fn ExitDll() -> bool {
     true
 }
 

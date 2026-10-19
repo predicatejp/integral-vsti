@@ -149,7 +149,7 @@ unsafe fn instance<'a>(this: This) -> &'a Plugin {
     unsafe { &*(*this.cast::<Interface>()).owner }
 }
 
-unsafe extern "C" fn query(this: This, iid: *const Tuid, out: *mut This) -> TResult {
+unsafe extern "system" fn query(this: This, iid: *const Tuid, out: *mut This) -> TResult {
     if out.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -170,12 +170,12 @@ unsafe extern "C" fn query(this: This, iid: *const Tuid, out: *mut This) -> TRes
     OK
 }
 
-unsafe extern "C" fn add_ref(this: This) -> u32 {
+unsafe extern "system" fn add_ref(this: This) -> u32 {
     // SAFETY: thisの所有参照が呼び出しの間ownerを保持する。
     crate::retain(unsafe { &instance(this).refs })
 }
 
-unsafe extern "C" fn release(this: This) -> u32 {
+unsafe extern "system" fn release(this: This) -> u32 {
     // SAFETY: thisは生存中のInterface。最後の参照だけがownerを解放する。
     unsafe {
         let owner = (*this.cast::<Interface>()).owner;
@@ -187,7 +187,7 @@ unsafe extern "C" fn release(this: This) -> u32 {
     }
 }
 
-unsafe extern "C" fn initialize(this: This, context: This) -> TResult {
+unsafe extern "system" fn initialize(this: This, context: This) -> TResult {
     if context.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -202,7 +202,7 @@ unsafe extern "C" fn initialize(this: This, context: This) -> TResult {
     }
 }
 
-unsafe extern "C" fn terminate(this: This) -> TResult {
+unsafe extern "system" fn terminate(this: This) -> TResult {
     // SAFETY: thisは生存中のInterface。終了はホストが処理停止後に呼ぶ。
     let plugin = unsafe { instance(this) };
     if !plugin.initialized.swap(false, Ordering::Relaxed) {
@@ -215,7 +215,7 @@ unsafe extern "C" fn terminate(this: This) -> TResult {
     OK
 }
 
-unsafe extern "C" fn controller_id(_: This, out: *mut Tuid) -> TResult {
+unsafe extern "system" fn controller_id(_: This, out: *mut Tuid) -> TResult {
     if out.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -226,7 +226,7 @@ unsafe extern "C" fn controller_id(_: This, out: *mut Tuid) -> TResult {
     FALSE
 }
 
-unsafe extern "C" fn set_io_mode(_: This, mode: i32) -> TResult {
+unsafe extern "system" fn set_io_mode(_: This, mode: i32) -> TResult {
     if (0..=2).contains(&mode) {
         OK
     } else {
@@ -238,11 +238,11 @@ fn has_bus(media: i32, direction: i32) -> bool {
     matches!((media, direction), (AUDIO, OUTPUT) | (EVENT, INPUT))
 }
 
-unsafe extern "C" fn bus_count(_: This, media: i32, direction: i32) -> i32 {
+unsafe extern "system" fn bus_count(_: This, media: i32, direction: i32) -> i32 {
     i32::from(has_bus(media, direction))
 }
 
-unsafe extern "C" fn bus_info(
+unsafe extern "system" fn bus_info(
     _: This,
     media: i32,
     direction: i32,
@@ -270,11 +270,15 @@ unsafe extern "C" fn bus_info(
     OK
 }
 
-unsafe extern "C" fn routing_info(_: This, _: *mut RoutingInfo, _: *mut RoutingInfo) -> TResult {
+unsafe extern "system" fn routing_info(
+    _: This,
+    _: *mut RoutingInfo,
+    _: *mut RoutingInfo,
+) -> TResult {
     NOT_IMPLEMENTED
 }
 
-unsafe extern "C" fn activate_bus(
+unsafe extern "system" fn activate_bus(
     this: This,
     media: i32,
     direction: i32,
@@ -293,7 +297,7 @@ unsafe extern "C" fn activate_bus(
     OK
 }
 
-unsafe extern "C" fn set_active(this: This, state: u8) -> TResult {
+unsafe extern "system" fn set_active(this: This, state: u8) -> TResult {
     // SAFETY: thisは生存中のInterface。状態遷移はホストが直列化する。
     let plugin = unsafe { instance(this) };
     if !plugin.initialized.load(Ordering::Relaxed) {
@@ -308,7 +312,7 @@ unsafe extern "C" fn set_active(this: This, state: u8) -> TResult {
     OK
 }
 
-unsafe extern "C" fn empty_state(_: This, stream: This) -> TResult {
+unsafe extern "system" fn empty_state(_: This, stream: This) -> TResult {
     // 保存すべき設定がないため空の状態として成功する。streamは保持しない。
     if stream.is_null() {
         INVALID_ARGUMENT
@@ -317,36 +321,36 @@ unsafe extern "C" fn empty_state(_: This, stream: This) -> TResult {
     }
 }
 
-unsafe extern "C" fn parameter_count(_: This) -> i32 {
+unsafe extern "system" fn parameter_count(_: This) -> i32 {
     0
 }
-unsafe extern "C" fn parameter_info(_: This, _: i32, _: *mut c_void) -> TResult {
+unsafe extern "system" fn parameter_info(_: This, _: i32, _: *mut c_void) -> TResult {
     INVALID_ARGUMENT
 }
-unsafe extern "C" fn parameter_string(_: This, _: u32, _: f64, _: *mut u16) -> TResult {
+unsafe extern "system" fn parameter_string(_: This, _: u32, _: f64, _: *mut u16) -> TResult {
     INVALID_ARGUMENT
 }
-unsafe extern "C" fn parameter_value(_: This, _: u32, _: *mut u16, _: *mut f64) -> TResult {
+unsafe extern "system" fn parameter_value(_: This, _: u32, _: *mut u16, _: *mut f64) -> TResult {
     INVALID_ARGUMENT
 }
-unsafe extern "C" fn parameter_conversion(_: This, _: u32, _: f64) -> f64 {
+unsafe extern "system" fn parameter_conversion(_: This, _: u32, _: f64) -> f64 {
     0.0
 }
-unsafe extern "C" fn parameter_normalized(_: This, _: u32) -> f64 {
+unsafe extern "system" fn parameter_normalized(_: This, _: u32) -> f64 {
     0.0
 }
-unsafe extern "C" fn set_parameter(_: This, _: u32, _: f64) -> TResult {
+unsafe extern "system" fn set_parameter(_: This, _: u32, _: f64) -> TResult {
     INVALID_ARGUMENT
 }
-unsafe extern "C" fn set_component_handler(_: This, _: This) -> TResult {
+unsafe extern "system" fn set_component_handler(_: This, _: This) -> TResult {
     // 通知を発生させないのでhandlerを保持せず、その参照カウントも変更しない。
     OK
 }
-unsafe extern "C" fn create_view(_: This, _: *const u8) -> This {
+unsafe extern "system" fn create_view(_: This, _: *const u8) -> This {
     ptr::null_mut()
 }
 
-unsafe extern "C" fn set_bus_arrangements(
+unsafe extern "system" fn set_bus_arrangements(
     _: This,
     _: *mut u64,
     num_inputs: i32,
@@ -367,7 +371,7 @@ unsafe extern "C" fn set_bus_arrangements(
     }
 }
 
-unsafe extern "C" fn get_bus_arrangement(
+unsafe extern "system" fn get_bus_arrangement(
     _: This,
     direction: i32,
     index: i32,
@@ -383,7 +387,7 @@ unsafe extern "C" fn get_bus_arrangement(
     OK
 }
 
-unsafe extern "C" fn can_process_sample_size(_: This, size: i32) -> TResult {
+unsafe extern "system" fn can_process_sample_size(_: This, size: i32) -> TResult {
     if matches!(size, SAMPLE32 | SAMPLE64) {
         OK
     } else {
@@ -391,11 +395,11 @@ unsafe extern "C" fn can_process_sample_size(_: This, size: i32) -> TResult {
     }
 }
 
-unsafe extern "C" fn zero(_: This) -> u32 {
+unsafe extern "system" fn zero(_: This) -> u32 {
     0
 }
 
-unsafe extern "C" fn setup_processing(this: This, setup: *const ProcessSetup) -> TResult {
+unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetup) -> TResult {
     if setup.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -424,7 +428,7 @@ unsafe extern "C" fn setup_processing(this: This, setup: *const ProcessSetup) ->
     OK
 }
 
-unsafe extern "C" fn set_processing(this: This, state: u8) -> TResult {
+unsafe extern "system" fn set_processing(this: This, state: u8) -> TResult {
     // SAFETY: thisは生存中のInterface。確保・解放・ロックは行わない。
     let plugin = unsafe { instance(this) };
     if !plugin.active.load(Ordering::Relaxed) {
@@ -434,7 +438,7 @@ unsafe extern "C" fn set_processing(this: This, state: u8) -> TResult {
     OK
 }
 
-unsafe extern "C" fn process(this: This, data: *mut ProcessData) -> TResult {
+unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult {
     if data.is_null() {
         return INVALID_ARGUMENT;
     }

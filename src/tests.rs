@@ -5,7 +5,7 @@ use super::*;
 use std::mem::{align_of, offset_of, size_of};
 
 #[test]
-fn linux_x86_64_layout() {
+fn x86_64_layout() {
     // SDKヘッダ側の同じ値もtests/abi-smoke.cppで独立して検査する。
     assert_eq!(size_of::<FactoryInfo>(), 452);
     assert_eq!(size_of::<ClassInfo>(), 116);
