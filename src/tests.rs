@@ -141,6 +141,15 @@ static EVENT_TABLE: EventListVTable = EventListVTable {
 
 #[test]
 fn processes_host_events_and_preserves_phase_through_retrigger() {
+    check_host_events(true);
+}
+
+#[test]
+fn processes_host_events_without_event_bus_activation() {
+    check_host_events(false);
+}
+
+fn check_host_events(activate_events: bool) {
     let factory = GetPluginFactory();
     let mut component = ptr::null_mut();
     let mut processor = ptr::null_mut();
@@ -209,7 +218,9 @@ fn processes_host_events_and_preserves_phase_through_retrigger() {
         };
         assert_eq!((pt.setup_processing)(processor, &setup), OK);
         assert_eq!((ct.activate_bus)(component, AUDIO, OUTPUT, 0, 1), OK);
-        assert_eq!((ct.activate_bus)(component, EVENT, INPUT, 0, 1), OK);
+        if activate_events {
+            assert_eq!((ct.activate_bus)(component, EVENT, INPUT, 0, 1), OK);
+        }
         assert_eq!((ct.set_active)(component, 1), OK);
         assert_eq!((pt.set_processing)(processor, 1), OK);
         assert_eq!((pt.process)(processor, &mut data), OK);
@@ -246,6 +257,35 @@ fn processes_host_events_and_preserves_phase_through_retrigger() {
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
         assert!((*sample_ptr + 0.5 * std::f64::consts::SQRT_2).abs() < 1e-14);
+        assert_eq!((pt.set_processing)(processor, 0), OK);
+        assert_eq!((ct.set_active)(component, 0), OK);
+        // 明示的な無効化は再開しても維持され、届いたNote Onを処理しない。
+        assert_eq!((ct.activate_bus)(component, EVENT, INPUT, 0, 0), OK);
+        assert_eq!((ct.initialize)(component, factory), FALSE);
+        assert_eq!((ct.set_active)(component, 1), OK);
+        assert_eq!((pt.set_processing)(processor, 1), OK);
+        data.num_samples = 4;
+        assert_eq!((pt.process)(processor, &mut data), OK);
+        assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0; 4]);
+        assert_eq!((*data.outputs).silence_flags, STEREO);
+        assert_eq!((pt.set_processing)(processor, 0), OK);
+        assert_eq!((ct.set_active)(component, 0), OK);
+        assert_eq!((ct.terminate)(component), OK);
+        // 同一インスタンスの再初期化でも、通知なしで再びノートを受け付ける。
+        assert_eq!((ct.initialize)(component, factory), OK);
+        assert_eq!((pt.setup_processing)(processor, &setup), OK);
+        assert_eq!((ct.activate_bus)(component, AUDIO, OUTPUT, 0, 1), OK);
+        assert_eq!((ct.set_active)(component, 1), OK);
+        assert_eq!((pt.set_processing)(processor, 1), OK);
+        assert_eq!((pt.process)(processor, &mut data), OK);
+        assert!(
+            sample_ptr
+                .cast::<[f64; 4]>()
+                .read()
+                .iter()
+                .any(|x| x.abs() > 0.5)
+        );
+        assert_eq!((*data.outputs).silence_flags, 0);
         assert_eq!((pt.set_processing)(processor, 0), OK);
         assert_eq!((ct.set_active)(component, 0), OK);
         assert_eq!((ct.terminate)(component), OK);

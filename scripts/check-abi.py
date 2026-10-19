@@ -53,4 +53,10 @@ with tempfile.TemporaryDirectory(prefix="sample-vsti-diagnostics-") as directory
     assert any(int(report["note_on_events"]) == 0 for report in reports)
     assert any(int(report["note_on_rejected"]) > 0 for report in reports)
     assert any(int(report["event_read_failures"]) > 0 for report in reports)
+    # 発音テストは最後に明示的な無効化と再有効化を1回ずつ行う。
+    # 合計2回なら初回の有効化通知を省略、3回なら初回から明示的に有効化した経路。
+    for activation_calls in (2, 3):
+        assert any(int(report["event_activation_calls"]) == activation_calls
+                   and int(report["nonzero_output_blocks"]) > 0 for report in reports)
+    assert all(report["event_active"] == "1" for report in reports)
     print("Verified opt-in diagnostics: 100 reports, audible/silent instances and rejected events")

@@ -77,11 +77,13 @@ Event note(bool on, int32 offset, int32 id, int16 pitch = 69, int16 channel = 0,
 }
 
 template <typename Sample>
-void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precision, double rate, int32 mode) {
+void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precision, double rate, int32 mode,
+                bool activateEvents) {
     ProcessSetup setup {mode, precision, 257, rate};
     assert(processor->setupProcessing(setup) == kResultOk);
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
-    assert(component->activateBus(kEvent, kInput, 0, true) == kResultOk);
+    // 有効化通知を省略するホストの経路でも、同じ波形・イベント時刻を検証する。
+    if (activateEvents) assert(component->activateBus(kEvent, kInput, 0, true) == kResultOk);
     assert(component->setActive(true) == kResultOk);
     assert(processor->setProcessing(true) == kResultOk);
     std::array<Sample, 259> left, right;
@@ -180,6 +182,19 @@ void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precisi
     events.values = {note(true, 0, 22)}; check(7, low);
     assert(component->activateBus(kEvent, kInput, 0, false) == kResultOk);
     check(7, silence);
+    assert(processor->setProcessing(false) == kResultOk);
+    assert(component->setActive(false) == kResultOk);
+    // 明示的な無効化は再開しても維持される。受信済みのNote Onも復活させない。
+    assert(component->setActive(true) == kResultOk);
+    assert(processor->setProcessing(true) == kResultOk);
+    check(7, silence);
+    assert(processor->setProcessing(false) == kResultOk);
+    assert(component->setActive(false) == kResultOk);
+    assert(component->activateBus(kEvent, kInput, 0, true) == kResultOk);
+    assert(component->setActive(true) == kResultOk);
+    assert(processor->setProcessing(true) == kResultOk);
+    events.values.clear(); check(7, silence);
+    events.values = {note(true, 0, 23)}; check(7, low);
     assert(processor->setProcessing(false) == kResultOk);
     assert(component->setActive(false) == kResultOk);
 }
@@ -319,10 +334,10 @@ int main(int argc, char** argv) {
         assert(processor->getLatencySamples() == 0 && processor->getTailSamples() == 0);
         checkSilence<float>(component, processor, kSample32);
         checkSilence<double>(component, processor, kSample64);
-        if (iteration < 6) {
+        if (iteration < 12) {
             const double rate = std::array<double, 3> {44100.0, 48000.0, 96000.0}[iteration % 3];
-            if (iteration % 2 == 0) checkNotes<float>(component, processor, kSample32, rate, iteration % 3);
-            else checkNotes<double>(component, processor, kSample64, rate, iteration % 3);
+            if (iteration % 2 == 0) checkNotes<float>(component, processor, kSample32, rate, iteration % 3, iteration < 6);
+            else checkNotes<double>(component, processor, kSample64, rate, iteration % 3, iteration < 6);
         }
         assert(component->terminate() == kResultOk);
         component->release();

@@ -41,6 +41,7 @@ struct Plugin {
     /// 音声出力バス0の有効状態。falseの間は出力バッファへ書き込まない。
     output_active: AtomicBool,
     /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
+    /// initialize時は互換性のためtrueとし、その後はactivateBusの明示的な指定に従う。
     event_active: AtomicBool,
     /// オシレータ・現在のノート・サンプルレートを所有する可変DSP状態。
     /// processとライフサイクルの更新はVST3規約に従いホストが直列化する。
@@ -220,15 +221,20 @@ unsafe extern "system" fn initialize(this: This, context: This) -> TResult {
         return INVALID_ARGUMENT;
     }
     // SAFETY: thisは生存中のInterface。contextは利用・保持しない。
-    unsafe { instance(this) }
-        .diagnostics
-        .add(Metric::Initialize, 1);
-    if unsafe { instance(this) }
-        .initialized
-        .swap(true, Ordering::Relaxed)
-    {
+    let plugin = unsafe { instance(this) };
+    plugin.diagnostics.add(Metric::Initialize, 1);
+    if plugin.initialized.swap(true, Ordering::Relaxed) {
         FALSE
     } else {
+        // 仕様逸脱を伴う互換性対応: VST3では全バスの初期状態は無効で、
+        // kDefaultActiveもホストへのactivateBus呼び出し要求にすぎない。
+        // https://steinbergmedia.github.io/vst3_doc/vstinterfaces/group__vstBus.html
+        // ただしイベント入力の有効化通知を省略するホストでもノートを受信できるよう、
+        // この固定のデフォルト有効イベントバスだけは初期化時に有効とする。
+        // 以後の明示的な無効化は尊重し、setActive/setProcessingでは再有効化しない。
+        // 音声出力バスにはこの例外を適用しない。
+        plugin.event_active.store(true, Ordering::Relaxed);
+        plugin.diagnostics.set(Metric::EventActive, 1);
         OK
     }
 }
