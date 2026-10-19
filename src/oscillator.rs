@@ -8,13 +8,6 @@ const SQRT_3: f64 = 1.732_050_807_568_877_2;
 
 /// 位相から生成する波形。矩形波はデューティ比50%、ノコギリ波は右上がり。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "波形は内部入力で指定する。ホストからの選択は未実装"
-    )
-)]
 pub enum Waveform {
     /// 位相0から正方向に立ち上がるサイン波。
     Sine,

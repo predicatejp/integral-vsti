@@ -11,6 +11,13 @@ fn x86_64_layout() {
     assert_eq!(size_of::<ClassInfo>(), 116);
     assert_eq!(size_of::<ClassInfo2>(), 440);
     assert_eq!(size_of::<BusInfo>(), 276);
+    assert_eq!(size_of::<ParameterInfo>(), 792);
+    assert_eq!(align_of::<ParameterInfo>(), 8);
+    assert_eq!(offset_of!(ParameterInfo, default_normalized_value), 776);
+    assert_eq!(offset_of!(ParameterInfo, flags), 788);
+    assert_eq!(size_of::<ParameterChangesVTable>(), 6 * 8);
+    assert_eq!(size_of::<ParamValueQueueVTable>(), 7 * 8);
+    assert_eq!(size_of::<StreamVTable>(), 7 * 8);
     assert_eq!(size_of::<RoutingInfo>(), 12);
     assert_eq!(size_of::<ProcessSetup>(), 24);
     assert_eq!(offset_of!(ProcessSetup, sample_rate), 16);
@@ -137,6 +144,76 @@ static EVENT_TABLE: EventListVTable = EventListVTable {
     get_event_count: event_count,
     get_event: event_get,
     add_event: event_add,
+};
+
+#[repr(C)]
+struct TestPoint {
+    /// 借用する1点のIParamValueQueue関数表。
+    vtable: &'static ParamValueQueueVTable,
+    /// ブロック内の適用位置。
+    offset: i32,
+    /// ホストから送る正規化値。
+    value: f64,
+}
+
+#[repr(C)]
+struct TestChanges {
+    /// 借用するIParameterChanges関数表。
+    vtable: &'static ParameterChangesVTable,
+    /// この呼び出し中だけ有効なキューへの非所有ポインター。
+    queue: This,
+}
+
+unsafe extern "system" fn point_id(_: This) -> u32 {
+    parameters::WAVEFORM_ID
+}
+unsafe extern "system" fn point_get(
+    this: This,
+    index: i32,
+    offset: *mut i32,
+    value: *mut f64,
+) -> TResult {
+    assert_eq!(index, 0);
+    // SAFETY: 生存中のTestPointと型の一致した出力先をテストが渡す。
+    unsafe {
+        let point = &*this.cast::<TestPoint>();
+        offset.write(point.offset);
+        value.write(point.value);
+    }
+    OK
+}
+unsafe extern "system" fn point_add(_: This, _: i32, _: f64, _: *mut i32) -> TResult {
+    panic!("input queue is borrowed")
+}
+unsafe extern "system" fn changes_get(this: This, index: i32) -> This {
+    assert_eq!(index, 0);
+    // SAFETY: このprocess中に有効なTestChangesを借用する。
+    unsafe { (*this.cast::<TestChanges>()).queue }
+}
+unsafe extern "system" fn changes_add(_: This, _: *const u32, _: *mut i32) -> This {
+    panic!("input changes are borrowed")
+}
+
+static POINT_TABLE: ParamValueQueueVTable = ParamValueQueueVTable {
+    unknown: UnknownVTable {
+        query_interface: event_query,
+        add_ref: event_ref,
+        release: event_ref,
+    },
+    get_parameter_id: point_id,
+    get_point_count: event_count,
+    get_point: point_get,
+    add_point: point_add,
+};
+static CHANGES_TABLE: ParameterChangesVTable = ParameterChangesVTable {
+    unknown: UnknownVTable {
+        query_interface: event_query,
+        add_ref: event_ref,
+        release: event_ref,
+    },
+    get_parameter_count: event_count,
+    get_parameter_data: changes_get,
+    add_parameter_data: changes_add,
 };
 
 #[test]
@@ -286,7 +363,31 @@ fn check_host_events(activate_events: bool) {
                 .any(|x| x.abs() > 0.5)
         );
         assert_eq!((*data.outputs).silence_flags, 0);
+        // 借用キュー経由で矩形波へ変更し、Miriでも入れ子の生ポインターを検査する。
+        let mut point = TestPoint {
+            vtable: &POINT_TABLE,
+            offset: 0,
+            value: 2.0 / 3.0,
+        };
+        let mut changes = TestChanges {
+            vtable: &CHANGES_TABLE,
+            queue: ptr::from_mut(&mut point).cast(),
+        };
+        data.input_parameter_changes = ptr::from_mut(&mut changes).cast();
+        data.input_events = ptr::null_mut();
+        assert_eq!((pt.process)(processor, &mut data), OK);
+        assert!(
+            sample_ptr
+                .cast::<[f64; 4]>()
+                .read()
+                .iter()
+                .all(|x| x.abs() == 0.5)
+        );
         assert_eq!((pt.set_processing)(processor, 0), OK);
+        data.num_samples = 0;
+        data.num_outputs = 0;
+        data.outputs = ptr::null_mut();
+        assert_eq!((pt.process)(processor, &mut data), OK);
         assert_eq!((ct.set_active)(component, 0), OK);
         assert_eq!((ct.terminate)(component), OK);
         (ct.unknown.release)(component);

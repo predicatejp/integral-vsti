@@ -114,9 +114,9 @@ pub struct ComponentVTable {
     pub activate_bus: unsafe extern "system" fn(This, i32, i32, i32, u8) -> TResult,
     /// 音源インスタンスを有効化・無効化する。
     pub set_active: unsafe extern "system" fn(This, u8) -> TResult,
-    /// ホストのストリームから状態を復元する。本実装の保存状態は空。
+    /// ホストのIBStreamから音源の設定を復元する。
     pub set_state: unsafe extern "system" fn(This, This) -> TResult,
-    /// ホストのストリームへ状態を保存する。本実装の保存状態は空。
+    /// ホストのIBStreamへ音源の設定を保存する。
     pub get_state: unsafe extern "system" fn(This, This) -> TResult,
 }
 
@@ -159,17 +159,16 @@ pub struct ControllerVTable {
     pub initialize: unsafe extern "system" fn(This, This) -> TResult,
     /// 処理停止後にインスタンスの初期化状態を終了する。
     pub terminate: unsafe extern "system" fn(This) -> TResult,
-    /// 音源側の保存状態をControllerへ反映する。本実装の保存状態は空。
+    /// 音源側の保存状態をControllerへ反映する。
     pub set_component_state: unsafe extern "system" fn(This, This) -> TResult,
     /// ホストのストリームから状態を復元する。本実装の保存状態は空。
     pub set_state: unsafe extern "system" fn(This, This) -> TResult,
     /// ホストのストリームへ状態を保存する。本実装の保存状態は空。
     pub get_state: unsafe extern "system" fn(This, This) -> TResult,
-    /// ホストへ公開するパラメーター数を返す。本実装は0。
+    /// ホストへ公開するパラメーター数を返す。
     pub get_parameter_count: unsafe extern "system" fn(This) -> i32,
     /// 列挙位置に対応するパラメーター情報を出力する。
-    /// パラメーターは0個なのでParameterInfoの内容にはアクセスしない。
-    pub get_parameter_info: unsafe extern "system" fn(This, i32, *mut c_void) -> TResult,
+    pub get_parameter_info: unsafe extern "system" fn(This, i32, *mut ParameterInfo) -> TResult,
     /// ParamIDと正規化値から表示文字列へ変換する。
     pub get_param_string_by_value: unsafe extern "system" fn(This, u32, f64, *mut u16) -> TResult,
     /// ParamIDと表示文字列から正規化値へ変換する。
@@ -246,6 +245,66 @@ pub struct BusInfo {
 }
 
 #[repr(C)]
+pub struct ParameterInfo {
+    /// 更新後も変更しないパラメーター識別子。列挙位置とは別。
+    pub id: u32,
+    /// NUL終端のUTF-16表示名。
+    pub title: [u16; 128],
+    /// NUL終端のUTF-16短縮名。
+    pub short_title: [u16; 128],
+    /// NUL終端のUTF-16単位。波形選択には単位なし。
+    pub units: [u16; 128],
+    /// 離散値の最大値と最小値の差。4択なら3。
+    pub step_count: i32,
+    /// 0..=1で表す既定値。
+    pub default_normalized_value: f64,
+    /// 所属ユニット。0はルート。
+    pub unit_id: i32,
+    /// kCanAutomate、kIsList等の属性ビット。
+    pub flags: i32,
+}
+
+#[repr(C)]
+pub struct ParameterChangesVTable {
+    /// FUnknownの共通メソッド。
+    pub unknown: UnknownVTable,
+    /// 変更されたパラメーターのキュー数。
+    pub get_parameter_count: unsafe extern "system" fn(This) -> i32,
+    /// 列挙位置に対応する借用IParamValueQueue。null可。
+    pub get_parameter_data: unsafe extern "system" fn(This, i32) -> This,
+    /// ParamIDのキューを追加する。本実装では呼び出さない。
+    pub add_parameter_data: unsafe extern "system" fn(This, *const u32, *mut i32) -> This,
+}
+
+#[repr(C)]
+pub struct ParamValueQueueVTable {
+    /// FUnknownの共通メソッド。
+    pub unknown: UnknownVTable,
+    /// キューが保持するパラメーターの安定した識別子。
+    pub get_parameter_id: unsafe extern "system" fn(This) -> u32,
+    /// キュー内の変更点数。
+    pub get_point_count: unsafe extern "system" fn(This) -> i32,
+    /// 指定位置のsampleOffsetと正規化値を出力する。成功時だけ出力を使用する。
+    pub get_point: unsafe extern "system" fn(This, i32, *mut i32, *mut f64) -> TResult,
+    /// 変更点を追加する。本実装では呼び出さない。
+    pub add_point: unsafe extern "system" fn(This, i32, f64, *mut i32) -> TResult,
+}
+
+#[repr(C)]
+pub struct StreamVTable {
+    /// FUnknownの共通メソッド。
+    pub unknown: UnknownVTable,
+    /// 最大numBytesバイトを読み、実際の読み取り長を出力する。
+    pub read: unsafe extern "system" fn(This, This, i32, *mut i32) -> TResult,
+    /// 最大numBytesバイトを書き、実際の書き込み長を出力する。
+    pub write: unsafe extern "system" fn(This, This, i32, *mut i32) -> TResult,
+    /// 基準位置（先頭・現在・末尾）から移動し、移動後の位置を出力する。
+    pub seek: unsafe extern "system" fn(This, i64, i32, *mut i64) -> TResult,
+    /// 現在の読み書き位置を出力する。
+    pub tell: unsafe extern "system" fn(This, *mut i64) -> TResult,
+}
+
+#[repr(C)]
 pub struct RoutingInfo {
     /// メディア種別。0は音声、1はイベント。
     pub media_type: i32,
@@ -294,7 +353,7 @@ pub struct ProcessData {
     pub inputs: *mut AudioBusBuffers,
     /// ホスト所有の音声出力バス配列。処理中だけ借用する。
     pub outputs: *mut AudioBusBuffers,
-    /// ホストからのIParameterChanges。null可。本実装では参照しない。
+    /// ホストからのIParameterChanges。null可。process中だけ借用する。
     pub input_parameter_changes: This,
     /// ホストへ返すIParameterChanges。null可。本実装では書き込まない。
     pub output_parameter_changes: This,

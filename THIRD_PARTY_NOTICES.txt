@@ -16,11 +16,14 @@ Referenced headers (relative to pluginterfaces/):
 - base/fplatform.h
 - base/ftypes.h
 - base/funknown.h
+- base/futils.h
 - base/ipluginbase.h
+- base/ibstream.h
 - vst/vsttypes.h
 - vst/ivstcomponent.h
 - vst/ivstaudioprocessor.h
 - vst/ivsteditcontroller.h
+- vst/ivstparameterchanges.h
 - vst/ivstevents.h
 - vst/ivstnoteexpression.h
 - vst/vstspeaker.h

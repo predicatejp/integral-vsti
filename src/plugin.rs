@@ -3,6 +3,7 @@
 
 use crate::abi::*;
 use crate::diagnostics::{Diagnostics, Metric};
+use crate::parameters::{self, WAVEFORM_ID, WAVEFORM_NAMES, WAVEFORMS, WaveformPoints};
 use crate::synth::{Note, Synth};
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
@@ -43,6 +44,10 @@ struct Plugin {
     /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
     /// initialize時は互換性のためtrueとし、その後はactivateBusの明示的な指定に従う。
     event_active: AtomicBool,
+    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す波形番号。保存時にもatomicで読む。
+    processor_waveform: AtomicU32,
+    /// Controllerが表示する波形番号。ホストのsetParamNormalized/setComponentStateで更新する。
+    controller_waveform: AtomicU32,
     /// オシレータ・現在のノート・サンプルレートを所有する可変DSP状態。
     /// processとライフサイクルの更新はVST3規約に従いホストが直列化する。
     /// Controller・照会APIからは触れない。オーディオスレッドでロックしない。
@@ -70,8 +75,8 @@ static COMPONENT: ComponentVTable = ComponentVTable {
     get_routing_info: routing_info,
     activate_bus,
     set_active,
-    set_state: empty_state,
-    get_state: empty_state,
+    set_state: set_processor_state,
+    get_state: get_processor_state,
 };
 static PROCESSOR: ProcessorVTable = ProcessorVTable {
     unknown: UNKNOWN,
@@ -88,20 +93,20 @@ static CONTEXT_REQUIREMENTS: ContextRequirementsVTable = ContextRequirementsVTab
     unknown: UNKNOWN,
     get_process_context_requirements: zero,
 };
-// ホストがパラメーターを照会できる最小Controller。GUIもパラメーターもない。
+// 独自GUIは持たず、波形選択をホスト標準のパラメーター操作へ公開する。
 static CONTROLLER: ControllerVTable = ControllerVTable {
     unknown: UNKNOWN,
     initialize,
     terminate,
-    set_component_state: empty_state,
+    set_component_state: set_controller_component_state,
     set_state: empty_state,
     get_state: empty_state,
     get_parameter_count: parameter_count,
     get_parameter_info: parameter_info,
     get_param_string_by_value: parameter_string,
     get_param_value_by_string: parameter_value,
-    normalized_param_to_plain: parameter_conversion,
-    plain_param_to_normalized: parameter_conversion,
+    normalized_param_to_plain: normalized_to_plain,
+    plain_param_to_normalized: plain_to_normalized,
     get_param_normalized: parameter_normalized,
     set_param_normalized: set_parameter,
     set_component_handler,
@@ -144,6 +149,8 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         processing: AtomicBool::new(false),
         output_active: AtomicBool::new(false),
         event_active: AtomicBool::new(false),
+        processor_waveform: AtomicU32::new(0),
+        controller_waveform: AtomicU32::new(0),
         synth: UnsafeCell::new(Synth::new()),
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
@@ -381,7 +388,7 @@ unsafe extern "system" fn set_active(this: This, state: u8) -> TResult {
 }
 
 unsafe extern "system" fn empty_state(_: This, stream: This) -> TResult {
-    // 保存すべき設定がないため空の状態として成功する。streamは保持しない。
+    // Controller固有の設定はなく、空の状態として成功する。streamは保持しない。
     if stream.is_null() {
         INVALID_ARGUMENT
     } else {
@@ -389,26 +396,146 @@ unsafe extern "system" fn empty_state(_: This, stream: This) -> TResult {
     }
 }
 
+unsafe extern "system" fn set_processor_state(this: This, stream: This) -> TResult {
+    // SAFETY: streamはホスト所有のIBStream。検証完了まで既存の設定に触れない。
+    match unsafe { parameters::read_state(stream) } {
+        Ok(waveform) => {
+            // SAFETY: thisは生存中のInterface。音声スレッドのSynthには触れずatomicで渡す。
+            unsafe { instance(this) }
+                .processor_waveform
+                .store(parameters::waveform_index(waveform), Ordering::Relaxed);
+            OK
+        }
+        Err(status) => status,
+    }
+}
+unsafe extern "system" fn get_processor_state(this: This, stream: This) -> TResult {
+    // SAFETY: thisとstreamは呼び出し中有効。atomicのスナップショットだけを保存する。
+    unsafe {
+        let index = instance(this).processor_waveform.load(Ordering::Relaxed);
+        parameters::write_state(stream, WAVEFORMS[index as usize])
+    }
+}
+unsafe extern "system" fn set_controller_component_state(this: This, stream: This) -> TResult {
+    // SAFETY: streamはホスト所有のIBStream。Controllerの表示だけを同期し、DSPへ再通知しない。
+    match unsafe { parameters::read_state(stream) } {
+        Ok(waveform) => {
+            unsafe { instance(this) }
+                .controller_waveform
+                .store(parameters::waveform_index(waveform), Ordering::Relaxed);
+            OK
+        }
+        Err(status) => status,
+    }
+}
 unsafe extern "system" fn parameter_count(_: This) -> i32 {
-    0
+    1
 }
-unsafe extern "system" fn parameter_info(_: This, _: i32, _: *mut c_void) -> TResult {
+unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut ParameterInfo) -> TResult {
+    if index != 0 || out.is_null() {
+        return INVALID_ARGUMENT;
+    }
+    // SAFETY: outはホスト所有のParameterInfo書き込み領域。
+    unsafe {
+        out.write(ParameterInfo {
+            id: WAVEFORM_ID,
+            title: utf16("Waveform"),
+            short_title: utf16("Waveform"),
+            units: [0; 128],
+            step_count: 3,
+            default_normalized_value: 0.0,
+            unit_id: 0,
+            flags: 1 | (1 << 3), // kCanAutomate | kIsList
+        });
+    }
+    OK
+}
+unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *mut u16) -> TResult {
+    if id != WAVEFORM_ID || out.is_null() {
+        return INVALID_ARGUMENT;
+    }
+    let Some(waveform) = parameters::from_normalized(value) else {
+        return INVALID_ARGUMENT;
+    };
+    let name: [u16; 128] = utf16(WAVEFORM_NAMES[parameters::waveform_index(waveform) as usize]);
+    // SAFETY: outはSDKのString128。固定長のUTF-16表示名をコピーする。
+    unsafe {
+        ptr::copy_nonoverlapping(name.as_ptr(), out, name.len());
+    }
+    OK
+}
+unsafe extern "system" fn parameter_value(
+    _: This,
+    id: u32,
+    text: *mut u16,
+    out: *mut f64,
+) -> TResult {
+    if id != WAVEFORM_ID || text.is_null() || out.is_null() {
+        return INVALID_ARGUMENT;
+    }
+    for (index, name) in WAVEFORM_NAMES.iter().enumerate() {
+        let mut matches = true;
+        // SAFETY: textはホスト所有のNUL終端UTF-16文字列。NULまたは不一致で読み取りを止める。
+        // 固定のASCII表示名と比較し、無制限の走査やメモリ確保を行わない。
+        for (position, expected) in name
+            .bytes()
+            .map(u16::from)
+            .chain(std::iter::once(0))
+            .enumerate()
+        {
+            if unsafe { *text.add(position) } != expected {
+                matches = false;
+                break;
+            }
+        }
+        if matches {
+            // SAFETY: outは正規化値の書き込み領域。
+            unsafe {
+                out.write(index as f64 / 3.0);
+            }
+            return OK;
+        }
+    }
     INVALID_ARGUMENT
 }
-unsafe extern "system" fn parameter_string(_: This, _: u32, _: f64, _: *mut u16) -> TResult {
-    INVALID_ARGUMENT
+unsafe extern "system" fn normalized_to_plain(_: This, id: u32, value: f64) -> f64 {
+    if id != WAVEFORM_ID {
+        return 0.0;
+    }
+    parameters::from_normalized(value).map_or(0.0, |waveform| {
+        f64::from(parameters::waveform_index(waveform))
+    })
 }
-unsafe extern "system" fn parameter_value(_: This, _: u32, _: *mut u16, _: *mut f64) -> TResult {
-    INVALID_ARGUMENT
+unsafe extern "system" fn plain_to_normalized(_: This, id: u32, value: f64) -> f64 {
+    if id != WAVEFORM_ID || !value.is_finite() {
+        return 0.0;
+    }
+    value.clamp(0.0, 3.0).round() / 3.0
 }
-unsafe extern "system" fn parameter_conversion(_: This, _: u32, _: f64) -> f64 {
-    0.0
+unsafe extern "system" fn parameter_normalized(this: This, id: u32) -> f64 {
+    if id != WAVEFORM_ID {
+        return 0.0;
+    }
+    // SAFETY: thisは生存中のInterface。Controllerの表示値だけを読む。
+    parameters::normalized(
+        WAVEFORMS[unsafe { instance(this) }
+            .controller_waveform
+            .load(Ordering::Relaxed) as usize],
+    )
 }
-unsafe extern "system" fn parameter_normalized(_: This, _: u32) -> f64 {
-    0.0
-}
-unsafe extern "system" fn set_parameter(_: This, _: u32, _: f64) -> TResult {
-    INVALID_ARGUMENT
+unsafe extern "system" fn set_parameter(this: This, id: u32, value: f64) -> TResult {
+    if id != WAVEFORM_ID {
+        return INVALID_ARGUMENT;
+    }
+    let Some(waveform) = parameters::from_normalized(value) else {
+        return INVALID_ARGUMENT;
+    };
+    // SAFETY: thisは生存中のInterface。UIスレッドからDSPを書き換えない。
+    // ホストはDSPの変更をprocessのinputParameterChangesへ別途渡す。
+    unsafe { instance(this) }
+        .controller_waveform
+        .store(parameters::waveform_index(waveform), Ordering::Relaxed);
+    OK
 }
 unsafe extern "system" fn set_component_handler(_: This, _: This) -> TResult {
     // 通知を発生させないのでhandlerを保持せず、その参照カウントも変更しない。
@@ -543,14 +670,21 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         diagnostics.add(Metric::InvalidFormat, 1);
         return INVALID_ARGUMENT;
     }
-    // 停止中のゼロサンプル呼び出しは成功するが、ノートは受け付けない。
+    // 停止中もゼロサンプルのパラメーターフラッシュは受理する。ノートは受け付けない。
     if !plugin.processing.load(Ordering::Relaxed) {
         diagnostics.add(Metric::NotProcessing, 1);
-        return if data.num_samples == 0 {
-            OK
-        } else {
-            NOT_INITIALIZED
-        };
+        if data.num_samples != 0 {
+            return NOT_INITIALIZED;
+        }
+        // SAFETY: 変更キューは呼び出し中有効。停止中のDSP状態には触れない。
+        let mut changes = unsafe { WaveformPoints::new(data) };
+        while let Some((_, waveform)) = changes.next {
+            plugin
+                .processor_waveform
+                .store(parameters::waveform_index(waveform), Ordering::Relaxed);
+            changes.advance();
+        }
+        return OK;
     }
     if data.num_samples > plugin.max_samples.load(Ordering::Relaxed)
         || data.symbolic_sample_size != plugin.sample_size.load(Ordering::Relaxed)
@@ -593,6 +727,9 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     // ライフサイクル呼び出しをホストが直列化する。ホストからの再入processは許されない。
     // synthの参照・ホストのイベントやバッファのポインターを呼び出し後へ保持しない。
     let synth = unsafe { &mut *plugin.synth.get() };
+    synth.set_waveform(WAVEFORMS[plugin.processor_waveform.load(Ordering::Relaxed) as usize]);
+    // SAFETY: 借用する変更キューと関数表をこのprocess内だけで使う。
+    let mut changes = unsafe { WaveformPoints::new(data) };
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
         diagnostics.add(Metric::InactiveEvents, 1);
@@ -629,7 +766,16 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
                 continue;
             }
             // SAFETY: channelsは検証済みで、区間は0..num_samples内。
-            nonzero |= unsafe { render(synth, data, channels, cursor, event.sample_offset) };
+            nonzero |= unsafe {
+                render_with_parameters(
+                    plugin,
+                    synth,
+                    data,
+                    channels,
+                    cursor..event.sample_offset,
+                    &mut changes,
+                )
+            };
             cursor = event.sample_offset;
             if event.event_type == 0 {
                 let note = unsafe { event.payload.note_on };
@@ -663,7 +809,16 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         }
     }
     // SAFETY: 最後のイベントからブロック末尾まで。バッファがなくても位相を進める。
-    nonzero |= unsafe { render(synth, data, channels, cursor, data.num_samples) };
+    nonzero |= unsafe {
+        render_with_parameters(
+            plugin,
+            synth,
+            data,
+            channels,
+            cursor..data.num_samples,
+            &mut changes,
+        )
+    };
     if nonzero {
         diagnostics.add(Metric::NonzeroOutput, 1);
     }
@@ -672,6 +827,35 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         unsafe { (*data.outputs).silence_flags = if nonzero { 0 } else { STEREO } };
     }
     OK
+}
+
+// SAFETY契約: renderと同じバッファ条件。changesはこのprocessから借用し、
+// これまでの区間と順に処理する。同時刻の変更をすべて適用してからノートを処理する。
+unsafe fn render_with_parameters(
+    plugin: &Plugin,
+    synth: &mut Synth,
+    data: &ProcessData,
+    channels: Option<[This; 2]>,
+    range: std::ops::Range<i32>,
+    changes: &mut WaveformPoints<'_>,
+) -> bool {
+    let mut start = range.start;
+    let mut nonzero = false;
+    while let Some((offset, waveform)) = changes.next {
+        if offset > range.end {
+            break;
+        }
+        // SAFETY: カーソルが検証したoffsetは区間内。直前の値を変更点まで保持する。
+        nonzero |= unsafe { render(synth, data, channels, start, offset) };
+        synth.set_waveform(waveform);
+        plugin
+            .processor_waveform
+            .store(parameters::waveform_index(waveform), Ordering::Relaxed);
+        start = offset;
+        changes.advance();
+    }
+    // SAFETY: 残りの区間も検証済みのバッファ内。
+    nonzero | unsafe { render(synth, data, channels, start, range.end) }
 }
 
 // SAFETY契約: channelsの各要素はnum_samples個の書き込み領域。start/endは範囲内。

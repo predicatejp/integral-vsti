@@ -25,10 +25,11 @@
 - プラグイン形式: VST3。
 - 実装言語: 原則Rust。
 - VST3連携: バインディング層を介さず、Rustから音源に必要なAPI・ABIを直接公開する。
+- インターフェースの実装・検討はVST3標準に限定すること。特定DAW向けAPI・ファイル形式や、独自の外部設定・制御インターフェースを追加しないこと。
 - 対応OS・アーキテクチャ: Linux x86_64（GNU環境）とWindows x86_64（MSVC環境）。
-- 音源方式・主要機能: 単一オシレータによる単音音源。内部でサイン波・三角波・矩形波・ノコギリ波に対応。既定はサイン波でホストからの波形選択は未実装。エンベロープなし。
+- 音源方式・主要機能: 単一オシレータによる単音音源。サイン波・三角波・矩形波・ノコギリ波に対応。既定はサイン波。エンベロープなし。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
-- 現在の操作・保存: パラメーター0個、独自GUIなし、保存状態は空。
+- 現在の操作・保存: VST3のWaveformパラメーター1個（4択）、独自GUIなし。波形の選択をIBStreamで保存・復元。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。
 バス構成、最大同時発音数、サンプル精度、対応サンプルレート、MIDI機能、独自GUIの有無は、実装時に対応範囲を明記すること。
@@ -51,6 +52,7 @@
 - `src/abi.rs`: Rustで直接定義したABI型・vtable・OS別の識別子表現と戻り値。
 - `src/lib.rs`: モジュール公開関数とファクトリー。
 - `src/plugin.rs`: 音源インスタンスとホストからの呼び出し処理。
+- `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState`、サンプル生成・状態更新。
 - `src/synth.rs`: 単音のノート照合とゲート。
 - `src/diagnostics.rs`: 環境変数で有効化する診断。音声処理中はatomic更新だけとし、終了時にファイルへ出力。
@@ -75,7 +77,7 @@ VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体の
 | 自動テスト | `cargo test --locked`、`sh scripts/check-abi.sh` |
 | フォーマット・静的解析 | `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings` |
 | VST3 SDK Validatorによる検証 | READMEの手順で構築後、`target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3` |
-| テスト用ホストへの導入・起動 | READMEの導入手順を参照。有効化通知への互換性対応後、サイン波はFL Studioで発音報告あり。追加波形は内部テストまで |
+| テスト用ホストへの導入・起動 | READMEの導入手順を参照。有効化通知への互換性対応後、サイン波はFL Studioで発音報告あり。波形選択の追加後は自動テストまで |
 | CI用Rustツールの導入 | `sh scripts/install-ci-tools.sh` |
 | MSRVの検証 | `cargo +1.85.0 test --locked`、`cargo +1.85.0 build --locked --release` |
 | Miri | `. scripts/ci-versions.sh` の後に `cargo +"$CI_NIGHTLY" miri test --locked --lib` |
@@ -129,6 +131,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - パラメーターの列挙位置と安定した `ParamID` を区別し、正規化値 `[0, 1]`、実単位、離散値の変換を一貫させること。
 - オートメーションは変更点の時刻と区間の意味を扱うこと。連続値の補間、離散値の切り替え、前ブロックからの値の保持を定め、最終点だけで全ブロックを処理しないこと。
 - 同じサンプル位置のパラメーター変更とノートイベントの処理順序を定義し、両者に共通の入力順序情報があるとは仮定しないこと。
+- Waveformの変更点では直前の波形を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。停止中の0サンプルフラッシュでも変更を受理すること。
 - GUIからの編集は `beginEdit` / `performEdit` / `endEdit` など規定の通知を使うこと。ホストからの値更新を再通知して循環させず、GUIを開かなくてもDSPへ更新が反映される構成にすること。
 
 ### 状態保存とGUI

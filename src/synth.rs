@@ -46,6 +46,11 @@ impl Synth {
         self.sample_rate = sample_rate;
     }
 
+    /// 定常入力の波形だけを変更し、位相・ゲート・目標実効値は維持する。
+    pub fn set_waveform(&mut self, waveform: Waveform) {
+        self.oscillator_input.waveform = waveform;
+    }
+
     pub fn note_on(&mut self, note: Note, tuning: f32, velocity: f32) -> bool {
         if !(0..16).contains(&note.channel)
             || !(0..128).contains(&note.pitch)
