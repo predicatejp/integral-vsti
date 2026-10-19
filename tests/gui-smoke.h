@@ -257,13 +257,18 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         pump();
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
-        parent.click(300, 100);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "Sawtooth click");
+        parent.click(180, 70); // ドロップダウンを開くだけでは編集を通知しない。
+        pump(); assert(handler.sequence.empty());
+        parent.click(180, 155);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "Sawtooth selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.value == 1.0 && controller->getParamNormalized(waveformId) == 1.0);
         handler.sequence.clear();
-        parent.click(45, 100);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "Sine click");
+        pump(); // 選択後のポップアップ閉鎖と表示更新を待ってから再度開く。
+        parent.click(180, 70);
+        pump(); assert(handler.sequence.empty());
+        parent.click(180, 95);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "Sine selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.value == 0.0);
         handler.sequence.clear();

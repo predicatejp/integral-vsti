@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 4つの波形ボタンに必要なマウス入力とOpenGL描画だけを接続する。
+//! 波形選択リストに必要なマウス入力とOpenGL描画だけを接続する。
 
 use crate::parameters::WAVEFORM_NAMES;
 use baseview::{
@@ -24,7 +24,7 @@ pub(super) struct Editor {
     gl: baseview::gl::GlContext,
     /// eguiのテクスチャ・描画資源。破棄時にもglを有効にする。
     painter: RefCell<egui_glow::Painter>,
-    /// ボタン配置と操作状態。
+    /// パラメーター行の配置と操作状態。
     context: egui::Context,
     /// 次フレームへ渡すマウスイベント。
     input: RefCell<egui::RawInput>,
@@ -76,6 +76,7 @@ impl Editor {
             #[cfg(target_os = "windows")]
             view,
         };
+        editor.context.set_visuals(egui::Visuals::light());
         // タイマーの寿命と解除はbaseviewの子ウィンドウに従う。
         editor.window.create_timer(Duration::from_millis(16))?;
         Ok(editor)
@@ -102,21 +103,25 @@ impl WindowHandler for Editor {
                     ui.set_min_size(ui.available_size());
                     ui.add_space(14.0);
                     ui.heading("Sample VSTi");
-                    ui.label("Waveform");
                     ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        for (index, name) in WAVEFORM_NAMES.iter().enumerate() {
-                            if ui
-                                .add_sized(
-                                    [78.0, 36.0],
-                                    egui::Button::new(*name).selected(index as u32 == selected),
-                                )
-                                .clicked()
+                    egui::Grid::new("parameters")
+                        .num_columns(2)
+                        .min_col_width(80.0)
+                        .spacing([16.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label("Waveform");
+                            let mut index = selected as usize;
+                            if egui::ComboBox::from_id_salt("waveform")
+                                .width(200.0)
+                                .show_index(ui, &mut index, WAVEFORM_NAMES.len(), |i| {
+                                    WAVEFORM_NAMES[i]
+                                })
+                                .changed()
                             {
                                 let _ = self.edits.try_send(index as u32);
                             }
-                        }
-                    });
+                            ui.end_row();
+                        });
                 });
         });
         let shapes = self

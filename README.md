@@ -15,7 +15,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネルで最大1音） |
 | サンプル形式 | float32 / float64 |
-| ホスト公開パラメーター・独自GUI | Waveform（4択）を公開。eguiの4つのボタンでも選択可能 |
+| ホスト公開パラメーター・独自GUI | Waveform（4択）を公開。eguiのドロップダウンでも選択可能 |
 | 状態保存 | 波形の選択をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | ともに0サンプル |
 
@@ -97,7 +97,9 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 
 ## GUI
 
-ホストのプラグイン画面にSine / Triangle / Square / Sawtoothの4ボタンを表示します。
+ホストのプラグイン画面に、ライトテーマのパラメーターリストを表示します。
+左列にパラメーター名、右列に操作欄を配置し、各パラメーターを縦方向に並べる2列構成です。
+現在はWaveformの1行だけで、ドロップダウンからSine / Triangle / Square / Sawtoothを選択できます。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
 サイズは360×180物理ピクセルで固定です。自由なサイズ変更と
@@ -190,7 +192,7 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 `C:\Program Files\Common Files\VST3` に配置します。システム共通フォルダへの配置には管理者権限が必要です。
 
 ホストで再スキャンし、音源一覧の **Sample VSTi** を読み込みます。
-ホストの鍵盤やピアノロールからノートを送り、単音の発音と消音を確認してください。プラグインの画面を開くと、4つのボタンで波形を選択できます。
+ホストの鍵盤やピアノロールからノートを送り、単音の発音と消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンで波形を選択できます。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
 ## 無音時の診断
@@ -351,7 +353,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/lib.rs`: モジュールの公開関数とファクトリー。
 - `src/plugin.rs`: インスタンス、バス、イベント・パラメーター処理、音声出力、Controller。
 - `src/gui.rs`: VST3画面の直接実装とホストへの編集通知。
-- `src/editor.rs`: 4つの波形ボタンのマウス入力とegui/OpenGL描画。
+- `src/editor.rs`: 波形選択リストのマウス入力とegui/OpenGL描画。
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した4波形オシレータ。
