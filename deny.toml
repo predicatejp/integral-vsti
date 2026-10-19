@@ -1,0 +1,22 @@
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+
+[licenses]
+# 現在は依存クレートなし。追加時にその依存のライセンスを確認して追記する。
+allow = []
+# publish=falseの本体の配布ライセンスは、この依存関係監査では決定しない。
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
