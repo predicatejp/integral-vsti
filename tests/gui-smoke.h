@@ -34,7 +34,7 @@ struct NativeParent {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     }
-    void click(int x, int y) {
+    void pointer(int x, int y, bool down) {
         HWND child = GetWindow(window, GW_CHILD); assert(child);
         // キャプチャ解除時のOSのマウス通知も、送信するクリックと同じ座標に揃える。
         POINT screen {x, y};
@@ -43,8 +43,7 @@ struct NativeParent {
         pump();
         LPARAM position = MAKELPARAM(x, y);
         SendMessageW(child, WM_MOUSEMOVE, 0, position);
-        SendMessageW(child, WM_LBUTTONDOWN, MK_LBUTTON, position);
-        SendMessageW(child, WM_LBUTTONUP, 0, position);
+        SendMessageW(child, down ? WM_LBUTTONDOWN : WM_LBUTTONUP, down ? MK_LBUTTON : 0, position);
     }
     bool drawn(int width, int height) {
         HWND child = GetWindow(window, GW_CHILD);
@@ -95,17 +94,15 @@ struct NativeParent {
         assert(XQueryTree(display, window, &root, &parent, &children, &count));
         assert(count == 1); ::Window result = children[0]; XFree(children); return result;
     }
-    void click(int x, int y) {
+    void pointer(int x, int y, bool down) {
         const auto target = child();
         XEvent event {};
         event.xmotion = {MotionNotify, 0, True, display, target, DefaultRootWindow(display), 0,
                          CurrentTime, x, y, x, y, 0, NotifyNormal, True};
         XSendEvent(display, target, False, PointerMotionMask, &event);
-        event.xbutton = {ButtonPress, 0, True, display, target, DefaultRootWindow(display), 0,
+        event.xbutton = {down ? ButtonPress : ButtonRelease, 0, True, display, target, DefaultRootWindow(display), 0,
                          CurrentTime, x, y, x, y, 0, Button1, True};
-        XSendEvent(display, target, False, ButtonPressMask, &event);
-        event.xbutton.type = ButtonRelease;
-        XSendEvent(display, target, False, ButtonReleaseMask, &event);
+        XSendEvent(display, target, False, down ? ButtonPressMask : ButtonReleaseMask, &event);
         XFlush(display);
     }
     bool drawn(int width, int height) {
@@ -141,6 +138,7 @@ struct NativeParent {
         XDestroyImage(image);
     }
 #endif
+    void click(int x, int y) { pointer(x, y, true); pointer(x, y, false); }
 };
 
 class GuiFrame final : public IPlugFrame
@@ -193,6 +191,7 @@ public:
     uint32 refs = 1;
     std::vector<int> sequence;
     double value = -1.0;
+    ParamID editedId = waveformId;
     std::thread::id uiThread = std::this_thread::get_id();
     IEditController* controller;
     explicit GuiHandler(IEditController* c) : controller(c) {}
@@ -200,18 +199,20 @@ public:
     uint32 PLUGIN_API addRef() override { return ++refs; }
     uint32 PLUGIN_API release() override { assert(refs > 1); return --refs; }
     tresult PLUGIN_API beginEdit(ParamID id) override {
-        assert(std::this_thread::get_id() == uiThread && id == waveformId);
+        assert(std::this_thread::get_id() == uiThread);
+        assert(id == waveformId || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        editedId = id;
         sequence.push_back(0); return kResultOk;
     }
     tresult PLUGIN_API performEdit(ParamID id, ParamValue v) override {
-        assert(std::this_thread::get_id() == uiThread && id == waveformId);
+        assert(std::this_thread::get_id() == uiThread && id == editedId);
         sequence.push_back(1); value = v;
         // ホストからControllerへ再入しても循環・借用違反を起こさない。
         assert(controller->setParamNormalized(id, v) == kResultOk);
         return kResultOk;
     }
     tresult PLUGIN_API endEdit(ParamID id) override {
-        assert(std::this_thread::get_id() == uiThread && id == waveformId);
+        assert(std::this_thread::get_id() == uiThread && id == editedId);
         sequence.push_back(2); return kResultOk;
     }
     tresult PLUGIN_API restartComponent(int32) override { assert(false); return kNotImplemented; }
@@ -271,10 +272,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     // 初回描画が終わる前に項目をクリックしてしまうことがある。
     auto menuVisible = [&] {
         const auto background = parent.pixel(20, 130);
-        for (int x = 110; x < 320; ++x) {
-            if (parent.pixel(x, 130) != background) return true;
+        int border = 0;
+        for (int y = 100; y < 190; ++y) {
+            if (parent.pixel(111, y) != background) ++border;
         }
-        return false;
+        return border > 70;
     };
     for (int cycle = 0; cycle < 2; ++cycle) {
 #ifdef _WIN32
@@ -292,7 +294,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         parent.click(180, 185);
         waitFor([&] { return handler.sequence.size() >= 3; }, "Sawtooth selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-        assert(handler.value == 1.0 && controller->getParamNormalized(waveformId) == 1.0);
+        assert(handler.editedId == waveformId && handler.value == 1.0 && controller->getParamNormalized(waveformId) == 1.0);
         handler.sequence.clear();
         waitFor([&] { return !menuVisible(); }, "close Waveform list");
         parent.click(180, 80);
@@ -301,7 +303,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         parent.click(180, 110);
         waitFor([&] { return handler.sequence.size() >= 3; }, "Sine selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-        assert(handler.value == 0.0);
+        assert(handler.editedId == waveformId && handler.value == 0.0);
         handler.sequence.clear();
         // GUIの編集値を標準の変更キューへ配送し、DSPが保存する値を確認。
         Points point; point.values = {{0, handler.value}};
@@ -315,6 +317,20 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         saved.position = 0;
         assert(controller->setComponentState(&saved) == kResultOk);
         pump(); assert(handler.sequence.empty());
+        // スライダーは左端0、右端最大を選べる。ホストからの復元値を丸めて再通知しない。
+        for (size_t i = 0; i < envelopeIds.size(); ++i) {
+            for (int x : {410, 111}) {
+                const int y = 113 + static_cast<int>(i) * 29;
+                parent.pointer(x, y, true); pump(); parent.pointer(x, y, false);
+                waitFor([&] { return handler.sequence.size() >= 3; }, "envelope slider edit");
+                assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+                assert(handler.editedId == envelopeIds[i]);
+                assert(handler.value == (x == 410 ? 1.0 : 0.0));
+                handler.sequence.clear(); pump();
+            }
+            assert(controller->setParamNormalized(envelopeIds[i], .123456789) == kResultOk);
+            pump(); assert(handler.sequence.empty());
+        }
         parent.screenshot();
         assert(view->removed() == kResultOk);
         pump(); assert(handler.sequence.empty());

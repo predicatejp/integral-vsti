@@ -297,6 +297,7 @@ fn check_host_events(activate_events: bool) {
             sample_rate: 1760.0,
         };
         assert_eq!((pt.setup_processing)(processor, &setup), OK);
+        assert_eq!((pt.get_tail_samples)(processor), 8800);
         assert_eq!((ct.activate_bus)(component, AUDIO, OUTPUT, 0, 1), OK);
         if activate_events {
             assert_eq!((ct.activate_bus)(component, EVENT, INPUT, 0, 1), OK);
@@ -311,7 +312,8 @@ fn check_host_events(activate_events: bool) {
         (*events_ptr).event.payload.note_on.pitch = 81;
         data.num_samples = 1;
         assert_eq!((pt.process)(processor, &mut data), OK);
-        assert!((*sample_ptr - 0.5 * std::f64::consts::SQRT_2).abs() < 1e-14);
+        let step = 1000.0 / 1760.0 / 10.0;
+        assert!((*sample_ptr - 0.5 * step * std::f64::consts::SQRT_2).abs() < 1e-14);
         (*events_ptr).event.event_type = 1;
         (*events_ptr).event.payload = EventPayload {
             note_off: NoteOffEvent {
@@ -323,7 +325,8 @@ fn check_host_events(activate_events: bool) {
             },
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
-        assert_eq!(*sample_ptr, 0.0);
+        let release_start = 0.5 * (2.0 * step - step * step);
+        assert!((*sample_ptr + release_start * std::f64::consts::SQRT_2).abs() < 1e-14);
         (*events_ptr).event.event_type = 0;
         (*events_ptr).event.payload = EventPayload {
             note_on: NoteOnEvent {
@@ -336,7 +339,8 @@ fn check_host_events(activate_events: bool) {
             },
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
-        assert!((*sample_ptr + 0.5 * std::f64::consts::SQRT_2).abs() < 1e-14);
+        let restart = release_start * (1.0 - 1000.0 / 1760.0 / 100.0);
+        assert!((*sample_ptr - restart * std::f64::consts::SQRT_2).abs() < 1e-14);
         assert_eq!((pt.set_processing)(processor, 0), OK);
         assert_eq!((ct.set_active)(component, 0), OK);
         // 明示的な無効化は再開しても維持され、届いたNote Onを処理しない。
@@ -358,13 +362,16 @@ fn check_host_events(activate_events: bool) {
         assert_eq!((ct.set_active)(component, 1), OK);
         assert_eq!((pt.set_processing)(processor, 1), OK);
         assert_eq!((pt.process)(processor, &mut data), OK);
-        assert!(
+        let peak = 0.5 * step * std::f64::consts::SQRT_2;
+        for (sample, expected) in
             sample_ptr
                 .cast::<[f64; 4]>()
                 .read()
-                .iter()
-                .any(|x| x.abs() > 0.5)
-        );
+                .into_iter()
+                .zip([0.0, -peak, 0.0, 3.0 * peak])
+        {
+            assert!((sample - expected).abs() < 1e-14);
+        }
         assert_eq!((*data.outputs).silence_flags, 0);
         // 借用キュー経由で矩形波へ変更し、Miriでも入れ子の生ポインターを検査する。
         let mut point = TestPoint {
@@ -379,13 +386,15 @@ fn check_host_events(activate_events: bool) {
         data.input_parameter_changes = ptr::from_mut(&mut changes).cast();
         data.input_events = ptr::null_mut();
         assert_eq!((pt.process)(processor, &mut data), OK);
-        assert!(
-            sample_ptr
-                .cast::<[f64; 4]>()
-                .read()
-                .iter()
-                .all(|x| x.abs() == 0.5)
-        );
+        for (sample, multiple) in sample_ptr
+            .cast::<[f64; 4]>()
+            .read()
+            .into_iter()
+            .zip([-4.0, -5.0, 6.0, 7.0])
+        {
+            // 矩形波の不連続な境界の符号はpowfの丸めに依存するため、実効振幅を比較する。
+            assert!((sample.abs() - (multiple * 0.5 * step).abs()).abs() < 1e-14);
+        }
         assert_eq!((pt.set_processing)(processor, 0), OK);
         data.num_samples = 0;
         data.num_outputs = 0;
@@ -490,14 +499,14 @@ fn gui_gesture_keeps_handler_alive_during_reentrant_replacement() {
             OK
         );
         assert_eq!((*handler).sequence.get(), 0);
-        assert_eq!(plugin::edit_waveform(controller, 3), OK);
+        assert_eq!(plugin::edit_parameter(controller, 0, 1.0), OK);
         assert_eq!((*handler).sequence.get(), 123);
         assert_eq!((*handler).refs.get(), 1);
         assert_eq!(
             (ct.get_param_normalized)(controller, parameters::WAVEFORM_ID),
             1.0
         );
-        assert_eq!(plugin::edit_waveform(controller, 0), FALSE);
+        assert_eq!(plugin::edit_parameter(controller, 0, 0.0), FALSE);
         assert_eq!((ct.unknown.release)(controller), 0);
         assert_eq!((ft.unknown.release)(factory), 0);
     }

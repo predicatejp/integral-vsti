@@ -1,19 +1,15 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 波形選択リストに必要なマウス入力とOpenGL描画だけを接続する。
+//! 波形選択・音量エンベロープに必要なマウス入力とOpenGL描画だけを接続する。
 
-use crate::parameters::WAVEFORM_NAMES;
+use crate::parameters::{self, NAMES, SharedParameters, WAVEFORM_NAMES};
 use baseview::{
     Event, EventStatus, HandlerError, MouseButton, MouseEvent, WindowContext, WindowHandler,
 };
 use std::{
     cell::{Cell, RefCell},
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-        mpsc::SyncSender,
-    },
+    sync::{Arc, mpsc::SyncSender},
     time::{Duration, Instant},
 };
 
@@ -33,11 +29,11 @@ pub(super) struct Editor {
     /// eguiへ渡す単調増加時刻の起点。
     start: Instant,
     /// Controllerと共有する表示値。
-    waveform: Arc<AtomicU32>,
-    /// 最後に描画した波形。ホスト更新時だけ再描画する。
-    displayed: Cell<u32>,
+    parameters: Arc<SharedParameters>,
+    /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
+    displayed: Cell<[f64; 6]>,
     /// ホストUIスレッドへの編集キュー。描画中にはホストを呼ばない。
-    edits: SyncSender<u32>,
+    edits: SyncSender<(usize, f64)>,
     #[cfg(target_os = "windows")]
     /// Windowsでは同じUIスレッドのウィンドウタイマーから編集を配送する。
     view: std::rc::Weak<super::gui::ViewState>,
@@ -46,8 +42,8 @@ pub(super) struct Editor {
 impl Editor {
     pub(super) fn new(
         window: WindowContext,
-        waveform: Arc<AtomicU32>,
-        edits: SyncSender<u32>,
+        parameters: Arc<SharedParameters>,
+        edits: SyncSender<(usize, f64)>,
         #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::ViewState>,
     ) -> Result<Self, HandlerError> {
         let gl = window
@@ -70,8 +66,8 @@ impl Editor {
             input: RefCell::new(egui::RawInput::default()),
             pointer: Cell::new(egui::Pos2::ZERO),
             start: Instant::now(),
-            waveform,
-            displayed: Cell::new(u32::MAX),
+            parameters,
+            displayed: Cell::new([f64::NAN; 6]),
             edits,
             #[cfg(target_os = "windows")]
             view,
@@ -102,7 +98,7 @@ impl WindowHandler for Editor {
             egui::vec2(size.width as f32, size.height as f32),
         ));
         input.max_texture_side = Some(self.painter.borrow().max_texture_side());
-        let selected = self.waveform.load(Ordering::Relaxed);
+        let selected = self.parameters.snapshot();
         self.displayed.set(selected);
         let mut output = self.context.run_ui(input, |ui| {
             egui::Frame::new()
@@ -114,12 +110,12 @@ impl WindowHandler for Editor {
                     ui.heading("Sample VSTi");
                     ui.add_space(12.0);
                     egui::Grid::new("parameters")
-                        .num_columns(2)
+                        .num_columns(3)
                         .min_col_width(80.0)
                         .spacing([16.0, 8.0])
                         .show(ui, |ui| {
                             ui.label("Waveform");
-                            let mut index = selected as usize;
+                            let mut index = parameters::to_plain(0, selected[0]) as usize;
                             if egui::ComboBox::from_id_salt("waveform")
                                 .width(200.0)
                                 .show_index(ui, &mut index, WAVEFORM_NAMES.len(), |i| {
@@ -127,9 +123,39 @@ impl WindowHandler for Editor {
                                 })
                                 .changed()
                             {
-                                let _ = self.edits.try_send(index as u32);
+                                let _ = self.edits.try_send((0, index as f64 / 3.0));
                             }
+                            ui.label("");
                             ui.end_row();
+                            ui.spacing_mut().slider_width = 300.0;
+                            for i in 1..6 {
+                                ui.label(NAMES[i]);
+                                let time = parameters::is_time(i);
+                                let max = if time { parameters::max_tick() } else { 1.0 };
+                                let mut tick = selected[i] * max;
+                                let response = ui.add(
+                                    egui::Slider::new(&mut tick, 0.0..=max)
+                                        .step_by(if time { 1.0 } else { 0.01 })
+                                        .show_value(false),
+                                );
+                                // step_byによる表示用の丸めはホスト更新を編集として再通知しない。
+                                let edited = response.changed()
+                                    && response.interact_pointer_pos().is_some()
+                                    && (tick / max - selected[i]).abs() > 1e-12;
+                                if edited {
+                                    let _ = self.edits.try_send((i, (tick / max).clamp(0.0, 1.0)));
+                                }
+                                let value = parameters::to_plain(
+                                    i,
+                                    if edited { tick / max } else { selected[i] },
+                                );
+                                ui.label(if time {
+                                    format!("{value:.2} ms")
+                                } else {
+                                    format!("{value:.3}")
+                                });
+                                ui.end_row();
+                            }
                         });
                 });
         });
@@ -200,7 +226,7 @@ impl WindowHandler for Editor {
     }
 
     fn on_timer(&self, _: &baseview::TimerHandle) {
-        if self.displayed.get() != self.waveform.load(Ordering::Relaxed) {
+        if self.displayed.get() != self.parameters.snapshot() {
             self.window.request_redraw();
         }
         #[cfg(target_os = "windows")]
