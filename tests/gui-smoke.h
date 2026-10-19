@@ -24,7 +24,7 @@ struct NativeParent {
         cls.lpszClassName = L"SampleVstiGuiTest";
         RegisterClassW(&cls);
         window = CreateWindowExW(0, cls.lpszClassName, L"VST3 GUI test", WS_OVERLAPPEDWINDOW,
-                                 50, 50, 600, 400, nullptr, nullptr, cls.hInstance, nullptr);
+                                 50, 50, 800, 600, nullptr, nullptr, cls.hInstance, nullptr);
         assert(window); ShowWindow(window, SW_SHOW);
     }
     ~NativeParent() { DestroyWindow(window); }
@@ -70,7 +70,7 @@ struct NativeParent {
     ::Window window;
     NativeParent() {
         display = XOpenDisplay(nullptr); assert(display);
-        window = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 600, 400, 0, 0, 0);
+        window = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 800, 600, 0, 0, 0);
         XMapWindow(display, window); XSync(display, False);
     }
     ~NativeParent() { XDestroyWindow(display, window); XCloseDisplay(display); }
@@ -202,7 +202,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 360 && rect.getHeight() == 180);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 640 && rect.getHeight() == 480);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -215,7 +215,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 720;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 360);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 640);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -253,21 +253,21 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(360, 180); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(640, 480); }, "first rendered frame");
         pump();
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
-        parent.click(180, 70); // ドロップダウンを開くだけでは編集を通知しない。
+        parent.click(180, 80); // ドロップダウンを開くだけでは編集を通知しない。
         pump(); assert(handler.sequence.empty());
-        parent.click(180, 155);
+        parent.click(180, 185);
         waitFor([&] { return handler.sequence.size() >= 3; }, "Sawtooth selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.value == 1.0 && controller->getParamNormalized(waveformId) == 1.0);
         handler.sequence.clear();
         pump(); // 選択後のポップアップ閉鎖と表示更新を待ってから再度開く。
-        parent.click(180, 70);
+        parent.click(180, 80);
         pump(); assert(handler.sequence.empty());
-        parent.click(180, 95);
+        parent.click(180, 110);
         waitFor([&] { return handler.sequence.size() >= 3; }, "Sine selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.value == 0.0);

@@ -76,7 +76,16 @@ impl Editor {
             #[cfg(target_os = "windows")]
             view,
         };
-        editor.context.set_visuals(egui::Visuals::light());
+        editor.context.set_theme(egui::Theme::Light);
+        editor.context.style_mut_of(egui::Theme::Light, |style| {
+            for (text_style, font) in &mut style.text_styles {
+                font.size = if *text_style == egui::TextStyle::Heading {
+                    24.0
+                } else {
+                    18.0
+                };
+            }
+        });
         // タイマーの寿命と解除はbaseviewの子ウィンドウに従う。
         editor.window.create_timer(Duration::from_millis(16))?;
         Ok(editor)

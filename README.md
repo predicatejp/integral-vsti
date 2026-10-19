@@ -102,7 +102,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 現在はWaveformの1行だけで、ドロップダウンからSine / Triangle / Square / Sawtoothを選択できます。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは360×180物理ピクセルで固定です。自由なサイズ変更と
+サイズは640×480物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。自由なサイズ変更と
 `IPlugViewContentScaleSupport` による表示倍率変更は未対応です。
 初版の操作はマウスのみです。VST3のキー・ホイール処理は未処理を返します。
 
