@@ -51,6 +51,14 @@ struct NativeParent {
         ReleaseDC(child, dc);
         return pixel != CLR_INVALID && pixel != RGB(0, 0, 0);
     }
+    uint32 pixel(int x, int y) {
+        HWND child = GetWindow(window, GW_CHILD); assert(child);
+        HDC dc = GetDC(child); assert(dc);
+        COLORREF value = GetPixel(dc, x, y);
+        ReleaseDC(child, dc);
+        assert(value != CLR_INVALID);
+        return value;
+    }
     void screenshot() {
         HWND child = GetWindow(window, GW_CHILD); assert(child);
         RECT rect; assert(GetClientRect(child, &rect));
@@ -104,6 +112,13 @@ struct NativeParent {
         bool result = (XGetPixel(image, 0, 0) & 0xffffff) != 0;
         XDestroyImage(image);
         return result;
+    }
+    uint32 pixel(int x, int y) {
+        XImage* image = XGetImage(display, child(), x, y, 1, 1, AllPlanes, ZPixmap);
+        assert(image);
+        auto value = static_cast<uint32>(XGetPixel(image, 0, 0) & 0xffffff);
+        XDestroyImage(image);
+        return value;
     }
     void screenshot() {
         const auto target = child(); XWindowAttributes attributes;
@@ -247,6 +262,15 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size() << std::endl;
         assert(false);
     };
+    // リストの文字・枠が描画されるまで待つ。固定時間の待機では、ソフトウェアGLの
+    // 初回描画が終わる前に項目をクリックしてしまうことがある。
+    auto menuVisible = [&] {
+        const auto background = parent.pixel(20, 130);
+        for (int x = 110; x < 320; ++x) {
+            if (parent.pixel(x, 130) != background) return true;
+        }
+        return false;
+    };
     for (int cycle = 0; cycle < 2; ++cycle) {
 #ifdef _WIN32
         assert(view->attached(parent.handle(), kPlatformTypeHWND) == kResultOk);
@@ -258,15 +282,17 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
         parent.click(180, 80); // ドロップダウンを開くだけでは編集を通知しない。
-        pump(); assert(handler.sequence.empty());
+        waitFor(menuVisible, "open Waveform list");
+        assert(handler.sequence.empty());
         parent.click(180, 185);
         waitFor([&] { return handler.sequence.size() >= 3; }, "Sawtooth selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.value == 1.0 && controller->getParamNormalized(waveformId) == 1.0);
         handler.sequence.clear();
-        pump(); // 選択後のポップアップ閉鎖と表示更新を待ってから再度開く。
+        waitFor([&] { return !menuVisible(); }, "close Waveform list");
         parent.click(180, 80);
-        pump(); assert(handler.sequence.empty());
+        waitFor(menuVisible, "reopen Waveform list");
+        assert(handler.sequence.empty());
         parent.click(180, 110);
         waitFor([&] { return handler.sequence.size() >= 3; }, "Sine selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
