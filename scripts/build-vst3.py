@@ -68,6 +68,9 @@ def build():
     for name in ("LICENSE", "COPYRIGHT", "THIRD_PARTY_NOTICES.txt"):
         shutil.copy2(ROOT / name, licenses / name)
     shutil.copy2(info_path, bundle / "Contents/Resources/build-info.json")
+    if sys.platform == "win32":
+        shutil.copy2(ROOT / "scripts/collect-diagnostics.ps1",
+                     bundle / "Contents/Resources/collect-diagnostics.ps1")
 
     pr = os.environ.get("PR_NUMBER", "")
     if pr and not pr.isdecimal():

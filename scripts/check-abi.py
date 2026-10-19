@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("bundle", ROOT / "scripts/build-vst3.py")
@@ -30,4 +31,32 @@ else:
     command = [os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
                "-Werror", "-UNDEBUG", "-I", sdk, source, "-ldl", "-o", str(test)]
 subprocess.run(command, cwd=ROOT, check=True)
-subprocess.run([str(test), str(binary), info["version"]], cwd=ROOT, check=True)
+normal_environment = dict(os.environ)
+normal_environment.pop("SAMPLE_VSTI_DIAGNOSTICS_DIR", None)
+subprocess.run([str(test), str(binary), info["version"]], cwd=ROOT,
+               env=normal_environment, check=True)
+
+# 診断の有効・無効を別プロセスで検証する。実際のSDK呼び出しとレポートの対応を確認。
+with tempfile.TemporaryDirectory(prefix="sample-vsti-diagnostics-") as directory:
+    environment = dict(os.environ, SAMPLE_VSTI_DIAGNOSTICS_DIR=directory)
+    subprocess.run([str(test), str(binary), info["version"]], cwd=ROOT,
+                   env=environment, check=True)
+    reports = []
+    for path in Path(directory).glob("*.txt"):
+        report = dict(line.split("=", 1) for line in path.read_text().splitlines())
+        assert report["version"] == info["version"]
+        assert report["finished"] == "true"
+        assert int(report["process_calls"]) > 0
+        reports.append(report)
+    assert len(reports) == 100, len(reports)
+    assert any(int(report["nonzero_output_blocks"]) > 0 for report in reports)
+    assert any(int(report["note_on_events"]) == 0 for report in reports)
+    assert any(int(report["note_on_rejected"]) > 0 for report in reports)
+    assert any(int(report["event_read_failures"]) > 0 for report in reports)
+    # 発音テストは最後に明示的な無効化と再有効化を1回ずつ行う。
+    # 合計2回なら初回の有効化通知を省略、3回なら初回から明示的に有効化した経路。
+    for activation_calls in (2, 3):
+        assert any(int(report["event_activation_calls"]) == activation_calls
+                   and int(report["nonzero_output_blocks"]) > 0 for report in reports)
+    assert all(report["event_active"] == "1" for report in reports)
+    print("Verified opt-in diagnostics: 100 reports, audible/silent instances and rejected events")

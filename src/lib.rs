@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 発音しない最小VST3音源。公開するABIの実装はすべてRustで完結する。
+//! 単音サイン波のVST3音源。公開するABIの実装はすべてRustで完結する。
 
 #[cfg(not(all(
     target_arch = "x86_64",
@@ -10,7 +10,10 @@
 compile_error!("対応対象はLinux x86_64とWindows x86_64 MSVCです");
 
 mod abi;
+mod diagnostics;
+mod oscillator;
 mod plugin;
+mod synth;
 
 use abi::*;
 use std::ptr;
@@ -18,7 +21,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 #[repr(C)]
 struct Factory {
+    /// 静的なファクトリー関数表。ABIで要求される先頭メンバー。
     vtable: &'static FactoryVTable,
+    /// このFactoryの所有参照数。0になったときFactoryを破棄する。
     refs: AtomicU32,
 }
 
