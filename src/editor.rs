@@ -127,7 +127,7 @@ impl WindowHandler for Editor {
                             }
                             ui.label("");
                             ui.end_row();
-                            ui.spacing_mut().slider_width = 300.0;
+                            ui.spacing_mut().slider_width = 390.0;
                             for i in 1..6 {
                                 ui.label(NAMES[i]);
                                 let time = parameters::is_time(i);
@@ -135,19 +135,22 @@ impl WindowHandler for Editor {
                                 let mut tick = selected[i] * max;
                                 let response = ui.add(
                                     egui::Slider::new(&mut tick, 0.0..=max)
+                                        // 丸い数への補正で隣のtickが選べなくなるのを防ぐ。
+                                        .smart_aim(false)
                                         .step_by(if time { 1.0 } else { 0.01 })
                                         .show_value(false),
                                 );
+                                let normalized = (tick / max).clamp(0.0, 1.0);
                                 // step_byによる表示用の丸めはホスト更新を編集として再通知しない。
                                 let edited = response.changed()
                                     && response.interact_pointer_pos().is_some()
-                                    && (tick / max - selected[i]).abs() > 1e-12;
+                                    && (normalized - selected[i]).abs() > 1e-12;
                                 if edited {
-                                    let _ = self.edits.try_send((i, (tick / max).clamp(0.0, 1.0)));
+                                    let _ = self.edits.try_send((i, normalized));
                                 }
                                 let value = parameters::to_plain(
                                     i,
-                                    if edited { tick / max } else { selected[i] },
+                                    if edited { normalized } else { selected[i] },
                                 );
                                 // 等幅・固定桁数で整数部を右寄せし、1の位と小数点を揃える。
                                 ui.monospace(if time {

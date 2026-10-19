@@ -319,17 +319,53 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         pump(); assert(handler.sequence.empty());
         // スライダーは左端0、右端最大を選べる。ホストからの復元値を丸めて再通知しない。
         for (size_t i = 0; i < envelopeIds.size(); ++i) {
-            for (int x : {410, 111}) {
+            for (int x : {500, 111}) {
                 const int y = 113 + static_cast<int>(i) * 29;
                 parent.pointer(x, y, true); pump(); parent.pointer(x, y, false);
                 waitFor([&] { return handler.sequence.size() >= 3; }, "envelope slider edit");
                 assert(handler.sequence == (std::vector<int>{0, 1, 2}));
                 assert(handler.editedId == envelopeIds[i]);
-                assert(handler.value == (x == 410 ? 1.0 : 0.0));
+                assert(handler.value == (x == 500 ? 1.0 : 0.0));
                 handler.sequence.clear(); pump();
+            }
+            if (i != 3) {
+                // 0ms端点の追加後も、対数軸の10msと1000msをマウスで選べる。
+                for (int x : {220, 424}) {
+                    parent.pointer(x, 113 + static_cast<int>(i) * 29, true);
+                    pump(); parent.pointer(x, 113 + static_cast<int>(i) * 29, false);
+                    waitFor([&] { return handler.sequence.size() >= 3; }, "exact envelope time");
+                    assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+                    assert(handler.editedId == envelopeIds[i]);
+                    const double expected = x == 220 ? 10.0 : 1000.0;
+                    assert(std::abs(controller->normalizedParamToPlain(handler.editedId, handler.value)
+                                    - expected) < 1e-9);
+                    handler.sequence.clear(); pump();
+                }
             }
             assert(controller->setParamNormalized(envelopeIds[i], .123456789) == kResultOk);
             pump(); assert(handler.sequence.empty());
+        }
+        if (cycle == 0) {
+            // 整数ピクセルのマウス入力で全371tickと最大端点を選べることを確認。
+            std::array<bool, 372> reached{};
+            const double maxTick = 1.0 + 100.0 * std::log10(5000.0);
+            for (int x = 111; x <= 501; ++x) {
+                parent.pointer(x, 113, true);
+                for (int step = 0; step < 5; ++step) {
+                    parent.pump(); frame.tick(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                const double value = controller->getParamNormalized(envelopeIds[0]);
+                const int tick = value == 1.0 ? 371 : static_cast<int>(std::lround(value * maxTick));
+                assert(tick >= 0 && tick < static_cast<int>(reached.size()));
+                assert(value == 1.0 || std::abs(value * maxTick - tick) < 1e-9);
+                reached[tick] = true;
+                parent.pointer(x, 113, false);
+                for (int step = 0; step < 3; ++step) {
+                    parent.pump(); frame.tick(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                handler.sequence.clear();
+            }
+            assert(std::all_of(reached.begin(), reached.end(), [](bool value) { return value; }));
         }
         parent.screenshot();
         assert(view->removed() == kResultOk);

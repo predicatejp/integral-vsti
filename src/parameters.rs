@@ -517,6 +517,19 @@ mod tests {
                 assert!((to_normalized(i, ms) * max_tick() - tick).abs() < 1e-10);
             }
             assert_eq!(to_plain(i, 1.0), 5000.0);
+            // GUIで選べる全tickの往復変換・単調性・100tickごとの倍率を確認。
+            let mut previous = -1.0;
+            for tick in 0..=max_tick().floor() as u32 {
+                let normalized = f64::from(tick) / max_tick();
+                let ms = to_plain(i, normalized);
+                assert!(ms > previous && ms < 5000.0);
+                assert!((to_normalized(i, ms) - normalized).abs() < 1e-12);
+                if tick > 100 {
+                    let earlier = to_plain(i, f64::from(tick - 100) / max_tick());
+                    assert!((ms / earlier - 10.0).abs() < 1e-12);
+                }
+                previous = ms;
+            }
             // ホストの連続オートメーションは0〜1ms区間も線形で扱う。
             assert!((to_plain(i, to_normalized(i, 0.5)) - 0.5).abs() < 1e-12);
         }
