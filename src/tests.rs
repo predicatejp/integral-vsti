@@ -102,7 +102,9 @@ fn interfaces_share_identity_and_own_the_instance() {
 // Rust側のホスト模擬。C++の独立検証とは別にMiriでイベント借用・DSP可変状態を検査。
 #[repr(C)]
 struct TestEvents {
+    /// ホストのIEventListを模擬する静的な関数表。
     vtable: &'static EventListVTable,
+    /// getEventで返す1件のイベント。各process呼び出しの前にテストが更新する。
     event: Event,
 }
 

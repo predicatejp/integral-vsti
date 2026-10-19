@@ -5,13 +5,17 @@
 
 #[derive(Clone, Copy)]
 pub struct OscillatorParams {
+    /// サイン波の周波数（Hz）。有限の0以上の値。
     pub frequency_hz: f64,
+    /// サイン波のピーク振幅（0..=1）。0なら出力は無音。
     pub amplitude: f64,
 }
 
 pub struct Oscillator {
+    /// 現在の周波数・振幅。更新時にもphaseは変更しない。
     params: OscillatorParams,
-    // 次に生成するサンプルの位相。単位は周期、範囲は[0, 1)。
+    /// 次に生成するサンプルの位相（周期単位、0以上1未満）。
+    /// 初期値は0。音程変更や再発音でも保持し、Synthの消音中は進めない。
     phase: f64,
 }
 

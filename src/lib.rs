@@ -20,7 +20,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 #[repr(C)]
 struct Factory {
+    /// 静的なファクトリー関数表。ABIで要求される先頭メンバー。
     vtable: &'static FactoryVTable,
+    /// このFactoryの所有参照数。0になったときFactoryを破棄する。
     refs: AtomicU32,
 }
 

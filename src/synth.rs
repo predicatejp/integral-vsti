@@ -5,14 +5,20 @@ use crate::oscillator::{Oscillator, OscillatorParams};
 
 #[derive(Clone, Copy)]
 pub struct Note {
+    /// ホストのnoteId。両ノートにIDがあればこれで照合し、どちらかが-1ならchannelとpitchで照合する。
     pub id: i32,
+    /// イベント入力チャンネル（0..=15）。IDが未提供の場合のノート照合に使う。
     pub channel: i16,
+    /// 12平均律のノート番号（0..=127）。周波数計算とID未提供時のノート照合に使う。
     pub pitch: i16,
 }
 
 pub struct Synth {
+    /// インスタンスで1個だけ所有するオシレータ。ノート切り替え時にも作り直さない。
     oscillator: Oscillator,
+    /// 現在発音を指示されているノート。Noneは消音・位相停止、Someは振幅0でも位相を進める。
     note: Option<Note>,
+    /// 波形生成に用いるサンプルレート（Hz）。初期値44100、処理設定でホストの値へ更新する。
     sample_rate: f64,
 }
 

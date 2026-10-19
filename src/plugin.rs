@@ -12,25 +12,40 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 // vtableポインターを先頭に置く。ownerはホストに見えない内部データ。
 #[repr(C)]
 struct Interface {
+    /// 対応するVST3インターフェースの関数表。ホストが参照するため先頭に配置する。
     vtable: *const c_void,
+    /// このInterfaceを埋め込んでいるPluginへの非所有ポインター。最後のreleaseまで有効。
     owner: *mut Plugin,
 }
 
 struct Plugin {
+    /// バス構成・初期化・状態保存を提供するIComponentの公開口。
     component: Interface,
+    /// 処理設定と波形生成を提供するIAudioProcessorの公開口。
     processor: Interface,
+    /// パラメーター照会等を提供するIEditControllerの公開口。独立インスタンスは持たない。
     controller: Interface,
+    /// 必要なホストの時間情報を返すIProcessContextRequirementsの公開口。
     context_requirements: Interface,
+    /// 全インターフェースで共有する所有参照数。0になったときPlugin全体を破棄する。
     refs: AtomicU32,
+    /// initializeが成功してからterminateまでtrueとなる初期化状態。
     initialized: AtomicBool,
+    /// setActiveで設定される音源インスタンスの有効状態。
     active: AtomicBool,
+    /// setProcessingで設定される音声処理状態。falseの間は正のサンプル数を処理しない。
     processing: AtomicBool,
+    /// 音声出力バス0の有効状態。falseの間は出力バッファへ書き込まない。
     output_active: AtomicBool,
+    /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
     event_active: AtomicBool,
-    // processとライフサイクルの更新はVST3規約に従いホストが直列化する。
-    // Controller・照会APIからは触れない。オーディオスレッドでロックしない。
+    /// オシレータ・現在のノート・サンプルレートを所有する可変DSP状態。
+    /// processとライフサイクルの更新はVST3規約に従いホストが直列化する。
+    /// Controller・照会APIからは触れない。オーディオスレッドでロックしない。
     synth: UnsafeCell<Synth>,
+    /// 設定済みの最大ブロック長（サンプル数）。初期化前・終了後は0。
     max_samples: AtomicI32,
+    /// 設定済みのサンプル形式（SAMPLE32またはSAMPLE64）。正の長さの処理には一致を要求する。
     sample_size: AtomicI32,
 }
 
