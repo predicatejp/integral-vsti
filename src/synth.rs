@@ -45,13 +45,13 @@ impl Synth {
         self.sample_rate = sample_rate;
     }
 
-    pub fn note_on(&mut self, note: Note, tuning: f32, velocity: f32) {
+    pub fn note_on(&mut self, note: Note, tuning: f32, velocity: f32) -> bool {
         if !(0..16).contains(&note.channel)
             || !(0..128).contains(&note.pitch)
             || !tuning.is_finite()
             || !(0.0..=1.0).contains(&velocity)
         {
-            return;
+            return false;
         }
         let frequency_hz =
             440.0 * 2.0_f64.powf((f64::from(note.pitch) - 69.0 + f64::from(tuning) / 100.0) / 12.0);
@@ -63,6 +63,9 @@ impl Synth {
         if input.is_valid() {
             self.oscillator_input = input;
             self.note = Some(note);
+            true
+        } else {
+            false
         }
     }
 

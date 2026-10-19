@@ -53,6 +53,7 @@
 - `src/plugin.rs`: 音源インスタンスとホストからの呼び出し処理。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState`、サンプル生成・状態更新。
 - `src/synth.rs`: 単音のノート照合とゲート。
+- `src/diagnostics.rs`: 環境変数で有効化する診断。音声処理中はatomic更新だけとし、終了時にファイルへ出力。
 - `src/tests.rs`: Rust側のABIレイアウト・参照管理・イベント処理テスト。
 - `tests/abi-smoke.cpp`: 公式SDKヘッダを用いる検証専用コード。本体にはリンクしない。
 - `scripts/`: ビルドと検証。生成物は `target/` 以下に配置する。
@@ -74,7 +75,7 @@ VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体の
 | 自動テスト | `cargo test --locked`、`sh scripts/check-abi.sh` |
 | フォーマット・静的解析 | `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings` |
 | VST3 SDK Validatorによる検証 | READMEの手順で構築後、`target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3` |
-| テスト用ホストへの導入・起動 | READMEの導入手順を参照。以前の無音版はFL Studioで認識報告あり。発音処理の試聴は未確認 |
+| テスト用ホストへの導入・起動 | READMEの導入手順を参照。以前の無音版はFL Studioで認識報告あり。発音版の無音報告を診断中 |
 | CI用Rustツールの導入 | `sh scripts/install-ci-tools.sh` |
 | MSRVの検証 | `cargo +1.85.0 test --locked`、`cargo +1.85.0 build --locked --release` |
 | Miri | `. scripts/ci-versions.sh` の後に `cargo +"$CI_NIGHTLY" miri test --locked --lib` |

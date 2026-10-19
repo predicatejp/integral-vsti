@@ -122,6 +122,31 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 ホストの鍵盤やピアノロールからノートを送り、単音の発音と消音を確認してください。操作用の独自画面はありません。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
+## 無音時の診断
+
+FL Studioで認識されるものの発音しないという報告を調査中です。原因は未確定です。
+通常は診断を無効にしています。診断時も音声処理中はatomicで回数・直近値を記録するだけで、
+ファイル出力は処理停止後の `terminate` で行います。外部への送信は行いません。
+
+Windowsでは新しいバンドルへ差し替え、FL Studioを完全に終了してから、
+バンドルの `Contents/Resources` にある補助スクリプトをPowerShellで実行します。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\collect-diagnostics.ps1
+```
+
+通常のインストール先が1つなら自動で起動します。複数ある場合や独自の場所へインストールしている場合は、
+表示された入力欄へ `FL64.exe` のフルパスを指定してください。
+起動したFL StudioでSample VSTiを読み込み、ノートを鳴らしてからプラグインを削除し、FL Studioを終了します。
+表示された一時フォルダ内の `sample-vsti-*.txt` が診断結果です。
+プラグインのバージョン、ホスト呼び出し回数、バスの有効状態、処理を拒否した理由別の回数、
+ノート受信数、最後のノート情報、非ゼロの音声を出力したブロック数を記録します。
+音声データやプロジェクト名は記録しません。スクリプト以外から通常起動したFL Studioでは診断は有効になりません。
+
+任意のホストでも、起動前に `SAMPLE_VSTI_DIAGNOSTICS_DIR` を既存の出力先ディレクトリへ設定すれば診断できます。
+レポートがない場合は、診断対応版を読み込んでいるか、環境変数を設定した後にホストを新規起動したか、
+プラグインを正常に削除・終了したかを確認してください。クラッシュや強制終了時のレポート保存は保証しません。
+
 ## 検証
 
 Rust側のレイアウト・識別子・参照管理のテストと静的解析:
@@ -170,9 +195,9 @@ target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3
 ```
 
 Linuxでの確認済み環境: Linux x86_64、Rust 1.85.0 / 1.99.1、GCC 12.2、VST3 SDK 3.8.1
-（インターフェース定義も3.8.1）。Rustテスト8件、ABI検証、Validator 47件が成功しています。
+（インターフェース定義も3.8.1）。Rustテスト9件、ABI検証、Validator 47件が成功しています。
 参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
-以前の無音版はFL Studioで正常に認識されたとの動作報告があります。今回の発音処理のDAW上での試聴は未確認です。
+以前の無音版はFL Studioで正常に認識されたとの動作報告があります。発音版ではFL Studioで無音になる報告があり、診断中です。
 
 ## PRのテスト用ZIP
 
@@ -237,6 +262,8 @@ cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path 
 - `src/plugin.rs`: インスタンス、バス、イベント処理、音声出力、空のController。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離したサイン波オシレータ。
 - `src/synth.rs`: 単音のノート照合と発音・消音。
+- `src/diagnostics.rs`: 明示的に有効化するホスト呼び出し診断。
+- `scripts/collect-diagnostics.ps1`: Windowsで診断を有効化してFL Studioを起動する補助スクリプト。
 - `src/tests.rs`: Rust側のABIレイアウトと参照管理のテスト。
 - `tests/abi-smoke.cpp`: 公式SDKの型を使う独立したABI検証。
 - `scripts/build-vst3.py` / `scripts/check-abi.py`: Linux/Windows共通のバンドル・ZIP生成とABI検証。

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::abi::*;
+use crate::diagnostics::{Diagnostics, Metric};
 use crate::synth::{Note, Synth};
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
@@ -29,6 +30,8 @@ struct Plugin {
     context_requirements: Interface,
     /// 全インターフェースで共有する所有参照数。0になったときPlugin全体を破棄する。
     refs: AtomicU32,
+    /// 環境変数で有効化した場合だけホスト呼び出しを集計する。process内でI/Oは行わない。
+    diagnostics: Diagnostics,
     /// initializeが成功してからterminateまでtrueとなる初期化状態。
     initialized: AtomicBool,
     /// setActiveで設定される音源インスタンスの有効状態。
@@ -134,6 +137,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
             owner: ptr::null_mut(),
         },
         refs: AtomicU32::new(1),
+        diagnostics: Diagnostics::new(),
         initialized: AtomicBool::new(false),
         active: AtomicBool::new(false),
         processing: AtomicBool::new(false),
@@ -216,6 +220,9 @@ unsafe extern "system" fn initialize(this: This, context: This) -> TResult {
         return INVALID_ARGUMENT;
     }
     // SAFETY: thisは生存中のInterface。contextは利用・保持しない。
+    unsafe { instance(this) }
+        .diagnostics
+        .add(Metric::Initialize, 1);
     if unsafe { instance(this) }
         .initialized
         .swap(true, Ordering::Relaxed)
@@ -239,6 +246,7 @@ unsafe extern "system" fn terminate(this: This) -> TResult {
     plugin.event_active.store(false, Ordering::Relaxed);
     // SAFETY: terminateはprocessの終了後に呼ばれる。
     unsafe { (*plugin.synth.get()).stop() };
+    plugin.diagnostics.finish();
     OK
 }
 
@@ -315,6 +323,24 @@ unsafe extern "system" fn activate_bus(
     if index != 0 || !has_bus(media, direction) {
         return INVALID_ARGUMENT;
     }
+    // SAFETY: thisは生存中のInterface。
+    let diagnostics = unsafe { &instance(this).diagnostics };
+    diagnostics.add(
+        if media == AUDIO {
+            Metric::AudioActivation
+        } else {
+            Metric::EventActivation
+        },
+        1,
+    );
+    diagnostics.set(
+        if media == AUDIO {
+            Metric::AudioActive
+        } else {
+            Metric::EventActive
+        },
+        i64::from(state != 0),
+    );
     if media == AUDIO {
         // SAFETY: thisは生存中のInterface。
         unsafe { instance(this) }
@@ -336,6 +362,8 @@ unsafe extern "system" fn set_active(this: This, state: u8) -> TResult {
         return NOT_INITIALIZED;
     }
     let state = state != 0;
+    plugin.diagnostics.add(Metric::SetActive, 1);
+    plugin.diagnostics.set(Metric::Active, i64::from(state));
     // 既に同じ有効状態でも成功とする。終了時の重複した無効化も安全に扱う。
     plugin.active.store(state, Ordering::Relaxed);
     if !state {
@@ -439,6 +467,13 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
     }
     // SAFETY: setupは呼び出し中有効なProcessSetup。thisは生存中のInterface。
     let (plugin, setup) = unsafe { (instance(this), &*setup) };
+    plugin.diagnostics.add(Metric::Setup, 1);
+    plugin
+        .diagnostics
+        .set(Metric::MaxSamples, i64::from(setup.max_samples_per_block));
+    plugin
+        .diagnostics
+        .set(Metric::SampleRateBits, setup.sample_rate.to_bits() as i64);
     if !plugin.initialized.load(Ordering::Relaxed) {
         return NOT_INITIALIZED;
     }
@@ -467,6 +502,10 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
 unsafe extern "system" fn set_processing(this: This, state: u8) -> TResult {
     // SAFETY: thisは生存中のInterface。確保・解放・ロックは行わない。
     let plugin = unsafe { instance(this) };
+    plugin.diagnostics.add(Metric::SetProcessing, 1);
+    plugin
+        .diagnostics
+        .set(Metric::Processing, i64::from(state != 0));
     if !plugin.active.load(Ordering::Relaxed) {
         return NOT_INITIALIZED;
     }
@@ -484,15 +523,23 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     }
     // SAFETY: dataは呼び出し中有効なProcessData。入れ子のバッファはホスト所有。
     let (plugin, data) = unsafe { (instance(this), &*data) };
+    let diagnostics = &plugin.diagnostics;
+    diagnostics.add(Metric::Process, 1);
+    diagnostics.set(Metric::Samples, i64::from(data.num_samples));
+    diagnostics.set(Metric::Inputs, i64::from(data.num_inputs));
+    diagnostics.set(Metric::Outputs, i64::from(data.num_outputs));
+    diagnostics.set(Metric::Precision, i64::from(data.symbolic_sample_size));
     if data.num_samples < 0
         || data.num_inputs != 0
         || !(0..=1).contains(&data.num_outputs)
         || !matches!(data.symbolic_sample_size, SAMPLE32 | SAMPLE64)
     {
+        diagnostics.add(Metric::InvalidFormat, 1);
         return INVALID_ARGUMENT;
     }
     // 停止中のゼロサンプル呼び出しは成功するが、ノートは受け付けない。
     if !plugin.processing.load(Ordering::Relaxed) {
+        diagnostics.add(Metric::NotProcessing, 1);
         return if data.num_samples == 0 {
             OK
         } else {
@@ -502,23 +549,33 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     if data.num_samples > plugin.max_samples.load(Ordering::Relaxed)
         || data.symbolic_sample_size != plugin.sample_size.load(Ordering::Relaxed)
     {
+        diagnostics.add(Metric::InvalidFormat, 1);
         return INVALID_ARGUMENT;
     }
     // 出力がなくてもノートと時間を処理する。ゼロサンプル時はバッファを参照しない。
+    if data.num_outputs == 0 {
+        diagnostics.add(Metric::NoOutput, 1);
+    }
+    if !plugin.output_active.load(Ordering::Relaxed) {
+        diagnostics.add(Metric::InactiveOutput, 1);
+    }
     let channels = if data.num_samples > 0
         && data.num_outputs > 0
         && plugin.output_active.load(Ordering::Relaxed)
     {
         if data.outputs.is_null() {
+            diagnostics.add(Metric::InvalidBuffer, 1);
             return INVALID_ARGUMENT;
         }
         // SAFETY: ホスト所有のバス記述子と2個のチャンネルポインター。
         let bus = unsafe { &*data.outputs };
         if bus.num_channels != 2 || bus.channel_buffers.is_null() {
+            diagnostics.add(Metric::InvalidBuffer, 1);
             return INVALID_ARGUMENT;
         }
         let channels = unsafe { [*bus.channel_buffers, *bus.channel_buffers.add(1)] };
         if channels.iter().any(|channel| channel.is_null()) {
+            diagnostics.add(Metric::InvalidBuffer, 1);
             return INVALID_ARGUMENT;
         }
         Some(channels)
@@ -532,27 +589,37 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let synth = unsafe { &mut *plugin.synth.get() };
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
+        diagnostics.add(Metric::InactiveEvents, 1);
         synth.stop();
     }
     let mut cursor = 0;
     let mut nonzero = false;
+    if data.input_events.is_null() {
+        diagnostics.add(Metric::NoEventList, 1);
+    }
     if event_active && !data.input_events.is_null() {
         // SAFETY: inputEventsはホスト所有のIEventList。vtableの先頭はFUnknown。
         let table = unsafe { &**data.input_events.cast::<*const EventListVTable>() };
         let count = unsafe { (table.get_event_count)(data.input_events) };
+        diagnostics.add(Metric::EventCount, i64::from(count));
         for index in 0..count {
             let mut event = MaybeUninit::<Event>::zeroed();
             // SAFETY: Event全体の出力領域を渡す。成功時だけ対応するunion variantを読む。
             if unsafe { (table.get_event)(data.input_events, index, event.as_mut_ptr()) } != OK {
+                diagnostics.add(Metric::EventReadFailed, 1);
                 continue;
             }
             let event = unsafe { event.assume_init() };
+            diagnostics.set(Metric::EventType, i64::from(event.event_type));
+            diagnostics.set(Metric::EventBus, i64::from(event.bus_index));
+            diagnostics.set(Metric::EventOffset, i64::from(event.sample_offset));
             if event.bus_index != 0
                 || !matches!(event.event_type, 0 | 1)
                 || event.sample_offset < cursor
                 || (data.num_samples == 0 && event.sample_offset != 0)
                 || (data.num_samples > 0 && event.sample_offset >= data.num_samples)
             {
+                diagnostics.add(Metric::EventRejected, 1);
                 continue;
             }
             // SAFETY: channelsは検証済みで、区間は0..num_samples内。
@@ -560,7 +627,13 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
             cursor = event.sample_offset;
             if event.event_type == 0 {
                 let note = unsafe { event.payload.note_on };
-                synth.note_on(
+                diagnostics.add(Metric::NoteOn, 1);
+                diagnostics.set(Metric::NoteChannel, i64::from(note.channel));
+                diagnostics.set(Metric::NotePitch, i64::from(note.pitch));
+                diagnostics.set(Metric::NoteId, i64::from(note.note_id));
+                diagnostics.set(Metric::VelocityBits, i64::from(note.velocity.to_bits()));
+                diagnostics.set(Metric::TuningBits, i64::from(note.tuning.to_bits()));
+                let accepted = synth.note_on(
                     Note {
                         id: note.note_id,
                         channel: note.channel,
@@ -569,8 +642,12 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
                     note.tuning,
                     note.velocity,
                 );
+                if !accepted {
+                    diagnostics.add(Metric::NoteOnRejected, 1);
+                }
             } else {
                 let note = unsafe { event.payload.note_off };
+                diagnostics.add(Metric::NoteOff, 1);
                 synth.note_off(Note {
                     id: note.note_id,
                     channel: note.channel,
@@ -581,6 +658,9 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     }
     // SAFETY: 最後のイベントからブロック末尾まで。バッファがなくても位相を進める。
     nonzero |= unsafe { render(synth, data, channels, cursor, data.num_samples) };
+    if nonzero {
+        diagnostics.add(Metric::NonzeroOutput, 1);
+    }
     if channels.is_some() {
         // SAFETY: channelsがSomeのときは有効な出力バスが存在する。
         unsafe { (*data.outputs).silence_flags = if nonzero { 0 } else { STEREO } };

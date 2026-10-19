@@ -152,6 +152,15 @@ jobs:
       - name: Windows static analysis
         if: runner.os == 'Windows'
         run: cargo +stable clippy --locked --all-targets -- -D warnings
+      - name: Validate diagnostic launcher syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$pwd/scripts/collect-diagnostics.ps1", [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -ne 0) { throw ($parseErrors | Out-String) }
       - name: Fetch official SDK for validation
         run: |
           source scripts/ci-versions.sh
@@ -162,7 +171,7 @@ jobs:
           git -C "$sdk_dir" checkout --detach FETCH_HEAD
           git -C "$sdk_dir" submodule update --init --depth 1 base cmake pluginterfaces public.sdk
           echo "VST3_SDK_DIR=$sdk_dir" >> "$GITHUB_ENV"
-      - name: Verify ABI, version and silent processing
+      - name: Verify ABI, version, audio and diagnostics
         id: bundle
         env:
           RUSTUP_TOOLCHAIN: stable
