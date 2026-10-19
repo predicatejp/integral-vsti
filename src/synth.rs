@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::oscillator::{Oscillator, OscillatorParams};
+use crate::oscillator::{OscillatorInput, OscillatorState};
 
 /// velocityが1のサイン波で実効値（RMS）が0.5になる基準ピーク振幅。
 const BASE_PEAK_AMPLITUDE: f64 = 0.5 * std::f64::consts::SQRT_2;
@@ -17,9 +17,11 @@ pub struct Note {
 }
 
 pub struct Synth {
-    /// インスタンスで1個だけ所有するオシレータ。ノート切り替え時にも作り直さない。
-    oscillator: Oscillator,
-    /// 現在発音を指示されているノート。Noneは消音・位相停止、Someは振幅0でも位相を進める。
+    /// 発振器へ継続的に与える周波数・振幅・ゲート。ノートイベントはこの入力だけを更新する。
+    oscillator_input: OscillatorInput,
+    /// 発振器の内部状態。サンプル生成後にだけ更新し、ノート切り替え時にも作り直さない。
+    oscillator_state: OscillatorState,
+    /// Note Offの照合対象。発音指示はoscillator_input.gateに反映し、発振器へノート情報を渡さない。
     note: Option<Note>,
     /// 波形生成に用いるサンプルレート（Hz）。初期値44100、処理設定でホストの値へ更新する。
     sample_rate: f64,
@@ -28,7 +30,12 @@ pub struct Synth {
 impl Synth {
     pub fn new() -> Self {
         Self {
-            oscillator: Oscillator::new(),
+            oscillator_input: OscillatorInput {
+                frequency_hz: 440.0,
+                amplitude: 0.0,
+                gate: false,
+            },
+            oscillator_state: OscillatorState::new(),
             note: None,
             sample_rate: 44100.0,
         }
@@ -48,10 +55,13 @@ impl Synth {
         }
         let frequency_hz =
             440.0 * 2.0_f64.powf((f64::from(note.pitch) - 69.0 + f64::from(tuning) / 100.0) / 12.0);
-        if self.oscillator.set_params(OscillatorParams {
+        let input = OscillatorInput {
             frequency_hz,
             amplitude: BASE_PEAK_AMPLITUDE * f64::from(velocity),
-        }) {
+            gate: true,
+        };
+        if input.is_valid() {
+            self.oscillator_input = input;
             self.note = Some(note);
         }
     }
@@ -69,16 +79,14 @@ impl Synth {
     }
 
     pub fn stop(&mut self) {
-        // ゲートだけを閉じる。ノートオフや処理停止でオシレータを作り直さない。
+        // 定常入力のゲートだけを閉じ、発振器の内部状態には触れない。
+        self.oscillator_input.gate = false;
         self.note = None;
     }
 
     pub fn next_sample(&mut self) -> f64 {
-        if self.note.is_some() {
-            self.oscillator.next_sample(self.sample_rate)
-        } else {
-            0.0
-        }
+        self.oscillator_state
+            .next_sample(&self.oscillator_input, self.sample_rate)
     }
 }
 

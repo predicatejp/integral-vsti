@@ -31,7 +31,11 @@ macOS・Windows ARM64・32ビット環境は未対応です。
   ピーク振幅を `BASE_PEAK_AMPLITUDE × velocity` とします。velocityが0のNote Onもノートを更新し、出力振幅が0になります。
 - Note Offは、両イベントにnoteIdがあればIDで照合します。どちらかが `-1` の場合はチャンネルと音高で照合します。
   IDがない同チャンネル・同音高の重複は識別できません。
-- `OscillatorParams` が周波数・振幅を管理し、`Oscillator` 自身が次のサンプルの位相を保持します。
+- `OscillatorInput` は発振器回路の定常入力で、目標周波数・目標ピーク振幅・ゲートを持ちます。
+  `OscillatorState` は内部状態として次のサンプルの位相を保持します。イベント処理は入力だけを書き換えます。
+- 各サンプルで「現在の入力と状態からサンプル生成 → 入力を用いて状態更新」を繰り返します。
+  現段階ではエンベロープがないため、周波数・振幅の目標値を直接使用します。
+  将来エンベロープを追加する場合、その現在値は `OscillatorState` 側で保持します。
   初期位相は0。ノートの追加・音程変更・ブロック境界で位相をリセットしません。
 - Note Offでは即座に消音し、消音中は位相を止めます。次のNote Onで保持した位相から再開します。
   エンベロープやスムージングを持たないため、発音・消音・振幅変更でクリックが発生し得ます。
@@ -231,7 +235,7 @@ cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path 
 - `src/abi.rs`: 必要なABI型、OS別のID表現・戻り値、vtable定義。
 - `src/lib.rs`: モジュールの公開関数とファクトリー。
 - `src/plugin.rs`: インスタンス、バス、イベント処理、音声出力、空のController。
-- `src/oscillator.rs`: パラメーター構造体と位相を保持するサイン波オシレータ。
+- `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離したサイン波オシレータ。
 - `src/synth.rs`: 単音のノート照合と発音・消音。
 - `src/tests.rs`: Rust側のABIレイアウトと参照管理のテスト。
 - `tests/abi-smoke.cpp`: 公式SDKの型を使う独立したABI検証。
