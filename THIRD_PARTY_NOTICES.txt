@@ -4,7 +4,7 @@ VST3 interface definitions
 
 The ABI types, interface identifiers and virtual method layouts in src/abi.rs
 are adapted from the official Steinberg VST3 SDK 3.8.1 headers. Their use by
-src/lib.rs and src/plugin.rs implements those interfaces directly in Rust.
+src/lib.rs, src/plugin.rs, src/gui.rs and src/host.rs implements those interfaces directly in Rust.
 tests/abi-smoke.cpp uses the official headers for independent ABI validation.
 
 SDK revision: 3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96
@@ -19,6 +19,8 @@ Referenced headers (relative to pluginterfaces/):
 - base/futils.h
 - base/ipluginbase.h
 - base/ibstream.h
+- gui/iplugview.h
+- gui/iplugviewcontentscalesupport.h
 - vst/vsttypes.h
 - vst/ivstcomponent.h
 - vst/ivstaudioprocessor.h
@@ -54,3 +56,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+GUI dependencies and fonts
+
+The GUI uses egui 0.37.0, egui-baseview 0.9.0 and baseview 0.4.1 with
+OpenGL rendering. Cargo.lock records the exact dependency versions.
+The bundle's Contents/Resources/Licenses/dependencies/ contains the target's
+crate and bundled-font license notices. Its index.json lists the versions,
+license expressions and public sources. This includes the egui fonts and
+their MIT, SIL Open Font License and Ubuntu Font Licence notices.
+For crates whose published archive omits license text, licenses/upstream/
+contains the original notice and its public source.

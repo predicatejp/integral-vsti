@@ -4,6 +4,7 @@
 
 """Build a native bundle and ZIP using Cargo's exact build metadata."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -67,6 +68,10 @@ def build():
     shutil.copy2(binary, binary_dir / binary_name)
     for name in ("LICENSE", "COPYRIGHT", "THIRD_PARTY_NOTICES.txt"):
         shutil.copy2(ROOT / name, licenses / name)
+    spec = importlib.util.spec_from_file_location("licenses", ROOT / "scripts/bundle-licenses.py")
+    license_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(license_module)
+    license_module.collect(licenses / "dependencies", target)
     shutil.copy2(info_path, bundle / "Contents/Resources/build-info.json")
     if sys.platform == "win32":
         shutil.copy2(ROOT / "scripts/collect-diagnostics.ps1",

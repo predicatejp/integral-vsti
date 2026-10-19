@@ -8,6 +8,10 @@ use std::mem::{align_of, offset_of, size_of};
 fn x86_64_layout() {
     // SDKヘッダ側の同じ値もtests/abi-smoke.cppで独立して検査する。
     assert_eq!(size_of::<FactoryInfo>(), 452);
+    assert_eq!(size_of::<ViewRect>(), 16);
+    assert_eq!(size_of::<ViewVTable>(), 15 * 8);
+    assert_eq!(size_of::<ScaleVTable>(), 4 * 8);
+    assert_eq!(size_of::<ComponentHandlerVTable>(), 7 * 8);
     assert_eq!(size_of::<ClassInfo>(), 116);
     assert_eq!(size_of::<ClassInfo2>(), 440);
     assert_eq!(size_of::<BusInfo>(), 276);
@@ -392,6 +396,161 @@ fn check_host_events(activate_events: bool) {
         assert_eq!((ct.terminate)(component), OK);
         (ct.unknown.release)(component);
         assert_eq!((pt.unknown.release)(processor), 0);
+        assert_eq!((ft.unknown.release)(factory), 0);
+    }
+}
+
+#[repr(C)]
+struct GuiHandler {
+    /// ホストが提供するIComponentHandler関数表。
+    table: &'static ComponentHandlerVTable,
+    /// テスト側1参照にプラグインの所有参照を加えた数。
+    refs: std::cell::Cell<u32>,
+    /// 再入テスト用のController借用参照。
+    controller: This,
+    /// begin/perform/endの順序を10進数字で記録する。
+    sequence: std::cell::Cell<u32>,
+}
+unsafe extern "system" fn gui_retain(this: This) -> u32 {
+    // SAFETY: テスト所有のGuiHandler。UIスレッドで直列に操作する。
+    let h = unsafe { &*this.cast::<GuiHandler>() };
+    h.refs.set(h.refs.get() + 1);
+    h.refs.get()
+}
+unsafe extern "system" fn gui_release(this: This) -> u32 {
+    // SAFETY: テストの所有参照は解放せず、プラグインの追加参照だけを回収する。
+    let h = unsafe { &*this.cast::<GuiHandler>() };
+    assert!(h.refs.get() > 1);
+    h.refs.set(h.refs.get() - 1);
+    h.refs.get()
+}
+unsafe extern "system" fn gui_begin(this: This, id: u32) -> TResult {
+    assert_eq!(id, parameters::WAVEFORM_ID);
+    // SAFETY: テストが保持するハンドラーの記録領域。
+    unsafe { &*this.cast::<GuiHandler>() }.sequence.set(1);
+    OK
+}
+unsafe extern "system" fn gui_perform(this: This, id: u32, value: f64) -> TResult {
+    // SAFETY: Controllerへの参照はテストが保持している。ホストからの同期的再入を模擬。
+    unsafe {
+        let h = &*this.cast::<GuiHandler>();
+        h.sequence.set(h.sequence.get() * 10 + 2);
+        let table = &**h.controller.cast::<*const ControllerVTable>();
+        assert_eq!((table.set_param_normalized)(h.controller, id, value), OK);
+        assert_eq!(
+            (table.set_component_handler)(h.controller, ptr::null_mut()),
+            OK
+        );
+    }
+    OK
+}
+unsafe extern "system" fn gui_end(this: This, _: u32) -> TResult {
+    // SAFETY: performEditで解除されても、編集処理の所有参照がendEditまで保持する。
+    let h = unsafe { &*this.cast::<GuiHandler>() };
+    h.sequence.set(h.sequence.get() * 10 + 3);
+    OK
+}
+unsafe extern "system" fn gui_restart(_: This, _: i32) -> TResult {
+    NOT_IMPLEMENTED
+}
+static GUI_HANDLER: ComponentHandlerVTable = ComponentHandlerVTable {
+    unknown: UnknownVTable {
+        query_interface: event_query,
+        add_ref: gui_retain,
+        release: gui_release,
+    },
+    begin_edit: gui_begin,
+    perform_edit: gui_perform,
+    end_edit: gui_end,
+    restart_component: gui_restart,
+};
+
+#[test]
+fn gui_gesture_keeps_handler_alive_during_reentrant_replacement() {
+    let factory = GetPluginFactory();
+    // SAFETY: 取得したControllerとスタック上のGuiHandlerをテスト中保持する。
+    unsafe {
+        let ft = &**factory.cast::<*const FactoryVTable>();
+        let mut controller = ptr::null_mut();
+        assert_eq!(
+            (ft.create_instance)(factory, &COMPONENT_CID, &CONTROLLER_IID, &mut controller),
+            OK
+        );
+        let ct = &**controller.cast::<*const ControllerVTable>();
+        let mut h = GuiHandler {
+            table: &GUI_HANDLER,
+            refs: std::cell::Cell::new(1),
+            controller,
+            sequence: std::cell::Cell::new(0),
+        };
+        let handler = ptr::from_mut(&mut h);
+        assert_eq!((ct.set_component_handler)(controller, handler.cast()), OK);
+        assert_eq!((*handler).refs.get(), 2);
+        assert_eq!(
+            (ct.set_param_normalized)(controller, parameters::WAVEFORM_ID, 0.0),
+            OK
+        );
+        assert_eq!((*handler).sequence.get(), 0);
+        assert_eq!(plugin::edit_waveform(controller, 3), OK);
+        assert_eq!((*handler).sequence.get(), 123);
+        assert_eq!((*handler).refs.get(), 1);
+        assert_eq!(
+            (ct.get_param_normalized)(controller, parameters::WAVEFORM_ID),
+            1.0
+        );
+        assert_eq!(plugin::edit_waveform(controller, 0), FALSE);
+        assert_eq!((ct.unknown.release)(controller), 0);
+        assert_eq!((ft.unknown.release)(factory), 0);
+    }
+}
+
+#[test]
+fn editor_owns_controller_and_shares_identity_with_scale_interface() {
+    let factory = GetPluginFactory();
+    // SAFETY: 画面をattachせずABI・参照管理・サイズ変更だけを検証する。OS APIは呼ばない。
+    unsafe {
+        let ft = &**factory.cast::<*const FactoryVTable>();
+        let mut controller = ptr::null_mut();
+        assert_eq!(
+            (ft.create_instance)(factory, &COMPONENT_CID, &CONTROLLER_IID, &mut controller),
+            OK
+        );
+        let ct = &**controller.cast::<*const ControllerVTable>();
+        assert!((ct.create_view)(controller, c"unknown".as_ptr().cast()).is_null());
+        let view = (ct.create_view)(controller, c"editor".as_ptr().cast());
+        assert!(!view.is_null());
+        let vt = &**view.cast::<*const ViewVTable>();
+        assert_eq!((ct.unknown.release)(controller), 1);
+        let mut scale = ptr::null_mut();
+        assert_eq!(
+            (vt.unknown.query_interface)(view, &SCALE_IID, &mut scale),
+            OK
+        );
+        let st = &**scale.cast::<*const ScaleVTable>();
+        let mut identity = ptr::null_mut();
+        assert_eq!(
+            (st.unknown.query_interface)(scale, &UNKNOWN_IID, &mut identity),
+            OK
+        );
+        assert_eq!(view, identity);
+        assert_eq!((vt.unknown.release)(identity), 2);
+        let mut rect = ViewRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        assert_eq!((st.set_content_scale_factor)(scale, 2.0), OK);
+        assert_eq!((vt.get_size)(view, &mut rect), OK);
+        assert_eq!((rect.right, rect.bottom), (720, 360));
+        assert_eq!(
+            (st.set_content_scale_factor)(scale, f32::NAN),
+            INVALID_ARGUMENT
+        );
+        assert_eq!((vt.on_size)(view, &rect), OK);
+        assert_eq!((vt.removed)(view), OK);
+        assert_eq!((st.unknown.release)(scale), 1);
+        assert_eq!((vt.unknown.release)(view), 0);
         assert_eq!((ft.unknown.release)(factory), 0);
     }
 }

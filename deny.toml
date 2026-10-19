@@ -8,8 +8,8 @@ unsound = "all"
 yanked = "deny"
 
 [licenses]
-# 現在は依存クレートなし。追加時にその依存のライセンスを確認して追記する。
-allow = []
+# GUI依存と付属フォント。通知全文はバンドル生成時に収集する。
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "ISC", "Zlib", "OFL-1.1", "Ubuntu-font-1.0", "Unicode-3.0", "BSL-1.0"]
 # publish=falseの本体の配布ライセンスは、この依存関係監査では決定しない。
 private = { ignore = true }
 

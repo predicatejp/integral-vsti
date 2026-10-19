@@ -3,7 +3,7 @@
 RustでVST3のAPI・ABIを直接実装する、最小の音源プラグインです。
 単一のオシレータで、ノートオン・オフに応じて発音・消音します。
 VST3パラメーターからサイン波・三角波・矩形波・ノコギリ波を選択できます。
-VST3用のバインディング、C/C++ラッパー、依存クレートは使用しません。
+VST3用のバインディングやC/C++ラッパーは使用しません。GUIにはeguiを使用します。
 
 ## 現在の対応範囲
 
@@ -15,7 +15,7 @@ VST3用のバインディング、C/C++ラッパー、依存クレートは使�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネルで最大1音） |
 | サンプル形式 | float32 / float64 |
-| ホスト公開パラメーター・独自GUI | Waveform（4択）を公開。独自GUIなし |
+| ホスト公開パラメーター・独自GUI | Waveform（4択）を公開。eguiの4つのボタンでも選択可能 |
 | 状態保存 | 波形の選択をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | ともに0サンプル |
 
@@ -95,10 +95,31 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 位相や発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
 
+## GUI
+
+ホストのプラグイン画面にSine / Triangle / Square / Sawtoothの4ボタンを表示します。
+VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
+Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
+論理サイズは360×180で、自由なサイズ変更は行いません。`IPlugViewContentScaleSupport` による
+0.5〜8倍の表示倍率変更を受け付け、ホストの `resizeView` / `onSize` を通じて物理サイズを変更します。
+初版の操作はマウスのみです。VST3のキー・ホイール処理は未処理を返します。
+
+描画にはegui 0.37.0、egui-baseview 0.9.0、baseview 0.4.1のOpenGLバックエンドを使用します。
+対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。
+ソフトウェアOpenGLでも動作検証していますが、ソフトウェアドライバーはバンドルへ同梱しません。
+描画環境を初期化できない場合は画面の取り付けに失敗し、ホストのパラメーター操作と音声処理は引き続き使用できます。
+
+GUIの操作はUI専用の32件キューからホストのUIスレッドへ配送し、
+`IComponentHandler::beginEdit / performEdit / endEdit` を順に通知します。キュー満杯時は新しいクリックを破棄します。
+DSPへの適用は従来どおりホストの変更キュー経由です。ホストからの値更新や状態復元は表示へ反映し、編集通知を送り返しません。
+画面を閉じるとタイマーと描画資源を解放し、音声処理は継続します。
+
 ## ビルド
 
-Rust 1.85以上が必要です。LinuxではCリンカー、WindowsではVisual Studio Build Toolsの
+Rust 1.95以上が必要です。LinuxではCリンカー、WindowsではVisual Studio Build Toolsの
 「C++によるデスクトップ開発」とWindows SDKを導入してください。
+GUIの依存クレートはCargoがcrates.ioから取得し、バージョンはCargo.lockで固定します。
+LinuxでのGUI実行にはX11、libxkbcommon-x11、OpenGL/EGLのランタイムが必要です。
 プラグイン本体のビルドにVST3 SDKは不要です。バンドル・ZIP生成にはPython 3とGitも使用します。
 
 Linux:
@@ -126,7 +147,8 @@ target/vst3/SampleVsti.vst3/
         └── Licenses/
             ├── LICENSE
             ├── COPYRIGHT
-            └── THIRD_PARTY_NOTICES.txt
+            ├── THIRD_PARTY_NOTICES.txt
+            └── dependencies/  # 依存ライブラリ・付属フォントの通知とindex.json
 ```
 
 Windowsではバイナリの位置が `Contents/x86_64-win/SampleVsti.vst3` になります。
@@ -166,7 +188,7 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 `C:\Program Files\Common Files\VST3` に配置します。システム共通フォルダへの配置には管理者権限が必要です。
 
 ホストで再スキャンし、音源一覧の **Sample VSTi** を読み込みます。
-ホストの鍵盤やピアノロールからノートを送り、単音の発音と消音を確認してください。操作用の独自画面はありません。
+ホストの鍵盤やピアノロールからノートを送り、単音の発音と消音を確認してください。プラグインの画面を開くと、4つのボタンで波形を選択できます。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
 ## 無音時の診断
@@ -224,6 +246,18 @@ set VST3_SDK_DIR=C:\path\to\vst3-sdk
 python scripts/check-abi.py
 ```
 
+GUIの表示・クリックも検証する場合は `python scripts/check-abi.py --gui` を使用します。
+LinuxではABIテストのコンパイルに `libx11-dev` が必要です。画面のない環境では次のように実行できます。
+
+```sh
+sudo apt-get install libx11-dev libxkbcommon-x11-0 libgl1-mesa-dri libegl1 xvfb xauth
+LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a python3 scripts/check-abi.py --gui
+```
+
+WindowsのGUI検証にはOpenGL対応ドライバーが必要です。CIでは固定版のMesaをABIテスト実行ファイルの隣にだけ配置し、
+ソフトウェア描画で検証します。このDLLは配布ZIPへ含めません。
+GUIテストは表示・クリック・UIスレッドでの標準編集通知・保存復元・表示倍率・閉じて再表示する操作を確認します。
+
 この検証はSDKのインターフェースで共有ライブラリをロードし、バージョン・ID・戻り値、100回のインスタンス生成・解放、
 複数のブロック長、32/64ビットの発音・消音、音程変更・再発音での位相継承、
 イベントのサンプル位置とノート照合、バッファ境界、同一バッファを指す出力、停止・再開とフラッシュを確認します。
@@ -246,11 +280,12 @@ sh scripts/build-vst3.sh
 target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3
 ```
 
-Linuxでの確認済み環境: Linux x86_64、Rust 1.85.0 / 1.99.1、GCC 12.2、VST3 SDK 3.8.1
-（インターフェース定義も3.8.1）。Rustテスト15件、ABI検証、Validator 47件が成功しています。
+Linuxでの確認済み環境: Linux x86_64、Rust 1.95.0 / 1.99.1、GCC 12.2、VST3 SDK 3.8.1
+（インターフェース定義も3.8.1）。Rustテスト17件、ABI検証、Validator 47件が成功しています。
 参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
 イベントバス有効化通知への互換性対応後、サイン波はFL Studioで発音の動作報告があります。
-波形選択の追加後は自動テストでの確認までで、実際のDAWでの操作・試聴は未確認です。
+GUIの表示・クリック・復元・倍率変更・再表示はLinuxのXvfbとMesaで検証しています。
+GUI追加後の実際のDAWでの表示・操作、および実GPUでの描画は未確認です。
 
 ## PRのテスト用ZIP
 
@@ -272,11 +307,11 @@ Linux x86_64とWindows x86_64のランナーを使用します。
 | ジョブ | 内容 |
 | --- | --- |
 | Format, Clippy, docs | rustfmt、警告をエラーにするClippyとドキュメント生成 |
-| Build and test | Linux/WindowsそれぞれでMSRV（Rust 1.85.0）と最新stableのcheck・debug/releaseテスト・releaseビルド |
+| Build and test | Linux/WindowsそれぞれでMSRV（Rust 1.95.0）と最新stableのcheck・debug/releaseテスト・releaseビルド |
 | Miri | 固定したnightlyでRustテストの未定義動作を検査 |
 | Coverage | RustテストのLCOVレポートを生成・保存 |
 | Dependency audit | cargo-denyで脆弱性・ライセンス・依存元・依存バージョンを監査 |
-| VST3 ABI and Validator | Linux/Windowsそれぞれで公式SDKの固定版を使ったABI検証・Validatorを実行し、バンドルZIPとログを保存 |
+| VST3 ABI and Validator | Linux/Windowsそれぞれで公式SDKの固定版を使ったABI・GUI検証・Validatorを実行し、バンドルZIPとログを保存 |
 | CI result | 上記すべてのジョブの成功を確認 |
 
 CIは読み取り専用のリポジトリ権限で動作します。成果物は14日間保持します。
@@ -303,8 +338,8 @@ mkdir -p target/coverage
 cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path target/coverage/lcov.info
 ```
 
-現在は依存クレートがないため、`deny.toml` の依存ライセンス許可リストは空です。
-依存を追加する際は、利用条件を確認して許可リストも更新してください。本体の配布ライセンスはこの設定では決定しません。
+GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.toml` で監査します。
+依存を追加する際は、利用条件と通知ファイルを確認して許可リストも更新してください。本体の配布ライセンスはこの設定では決定しません。
 ブランチ保護で全ジョブを必須にする場合は、集約チェック **CI result** を指定できます。
 
 ## 構成
@@ -313,12 +348,16 @@ cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path 
 - `src/abi.rs`: 必要なABI型、OS別のID表現・戻り値、vtable定義。
 - `src/lib.rs`: モジュールの公開関数とファクトリー。
 - `src/plugin.rs`: インスタンス、バス、イベント・パラメーター処理、音声出力、Controller。
+- `src/gui.rs`: VST3画面の直接実装とegui/OpenGL描画。
+- `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した4波形オシレータ。
 - `src/synth.rs`: 単音のノート照合と発音・消音。
 - `src/diagnostics.rs`: 明示的に有効化するホスト呼び出し診断。
 - `scripts/collect-diagnostics.ps1`: Windowsで診断を有効化してFL Studioを起動する補助スクリプト。
 - `src/tests.rs`: Rust側のABIレイアウトと参照管理のテスト。
+- `tests/gui-smoke.h`: 埋め込み画面とマウス操作の検証専用コード。
+- `scripts/bundle-licenses.py`: 対象OSの依存ライブラリと付属フォントの通知収集。
 - `tests/abi-smoke.cpp`: 公式SDKの型を使う独立したABI検証。
 - `scripts/build-vst3.py` / `scripts/check-abi.py`: Linux/Windows共通のバンドル・ZIP生成とABI検証。
 - `tests/build-metadata.py`: コミット変更時の再ビルド、開発版・正式版の切り替え、出典検証。
@@ -338,3 +377,6 @@ Copyright (C) 2026 Yusuke Oda
 ABI定義の参照・移植元であるSteinberg公式VST3ヘッダのMITライセンスと著作権表示は、
 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) に保持しています。
 ビルドスクリプトはこれら3つの通知ファイルをバンドルの `Contents/Resources/Licenses/` に同梱します。
+
+依存ライブラリと付属フォントの通知全文・バージョン・取得元は、同ディレクトリの `dependencies/` と `index.json` に含めます。
+公開クレートに通知ファイルがない場合の補完元は `licenses/upstream/` に記録しています。

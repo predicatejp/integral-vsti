@@ -1,0 +1,2 @@
+Source: https://raw.githubusercontent.com/emilk/egui/0.37.0/LICENSE-MIT
+Package: egui 0.37.0

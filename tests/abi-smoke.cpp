@@ -394,6 +394,8 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(component->setActive(false) == kResultOk);
 }
 
+#include "gui-smoke.h"
+
 template <typename T>
 T* query(FUnknown* object, const TUID iid) {
     void* result = nullptr;
@@ -459,7 +461,7 @@ void checkSilence(IComponent* component, IAudioProcessor* processor, int32 preci
 
 #ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
-    assert(argc == 3);
+    assert(argc == 3 || argc == 4);
     HMODULE module = LoadLibraryW(argv[1]);
     if (!module) { std::cerr << "LoadLibrary failed: " << GetLastError() << '\n'; return 1; }
     const auto entry = reinterpret_cast<bool (PLUGIN_API*)()>(GetProcAddress(module, "InitDll"));
@@ -470,7 +472,7 @@ int wmain(int argc, wchar_t** argv) {
     const std::string expectedVersion(wideVersion.begin(), wideVersion.end());
 #else
 int main(int argc, char** argv) {
-    assert(argc == 3);
+    assert(argc == 3 || argc == 4);
     void* module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!module) { std::cerr << dlerror() << '\n'; return 1; }
     const auto entry = reinterpret_cast<bool (*)(void*)>(dlsym(module, "ModuleEntry"));
@@ -524,7 +526,7 @@ int main(int argc, char** argv) {
         SpeakerArrangement output = SpeakerArr::kStereo;
         assert(processor->setBusArrangements(nullptr, 0, &output, 1) == kResultOk);
         assert(controller->getParameterCount() == 1);
-        assert(controller->createView("editor") == nullptr);
+        checkViewContract(controller);
         assert(controller->setComponentHandler(nullptr) == kResultOk);
         assert(processor->getLatencySamples() == 0 && processor->getTailSamples() == 0);
         checkSilence<float>(component, processor, kSample32);
@@ -536,6 +538,7 @@ int main(int argc, char** argv) {
         }
         if (iteration == 12) checkParameters<float>(component, processor, controller, kSample32, kRealtime);
         if (iteration == 13) checkParameters<double>(component, processor, controller, kSample64, kOffline);
+        if (iteration == 14 && argc == 4) checkGui(component, processor, controller);
         assert(component->terminate() == kResultOk);
         component->release();
         controller->release();
