@@ -46,9 +46,9 @@ struct Plugin {
     /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
     /// initialize時は互換性のためtrueとし、その後はactivateBusの明示的な指定に従う。
     event_active: AtomicBool,
-    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す8パラメーター。保存時にもatomicで読む。
+    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す9パラメーター。保存時にもatomicで読む。
     processor_parameters: SharedParameters,
-    /// Controllerが表示する8パラメーター。ホストのsetParamNormalized/setComponentStateで更新する。
+    /// Controllerが表示する9パラメーター。ホストのsetParamNormalized/setComponentStateで更新する。
     controller_parameters: Arc<SharedParameters>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
@@ -456,6 +456,7 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
             step_count: match i {
                 0 => 3,
                 6 => 6,
+                8 => 31,
                 _ => 0,
             },
             default_normalized_value: parameters::defaults()[i],
@@ -474,7 +475,7 @@ unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *m
     }
     let text = if i == 0 {
         WAVEFORM_NAMES[parameters::to_plain(i, value) as usize].to_owned()
-    } else if i == 6 {
+    } else if matches!(i, 6 | 8) {
         format!("{:.0}", parameters::to_plain(i, value))
     } else {
         format!("{:.3}", parameters::to_plain(i, value))
@@ -801,8 +802,8 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let synth = unsafe { &mut *plugin.synth.get() };
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
-    // SAFETY: 8本のカーソルはこのprocess中だけホストのキューを借用する。
-    let mut changes: [ParameterPoints<'_>; 8] =
+    // SAFETY: 9本のカーソルはこのprocess中だけホストのキューを借用する。
+    let mut changes: [ParameterPoints<'_>; 9] =
         std::array::from_fn(|i| unsafe { ParameterPoints::new(data, i, values[i]) });
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
@@ -911,7 +912,7 @@ unsafe fn render_with_parameters(
     data: &ProcessData,
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
-    changes: &mut [ParameterPoints<'_>; 8],
+    changes: &mut [ParameterPoints<'_>; 9],
 ) -> bool {
     let mut nonzero = false;
     for offset in range.clone() {
@@ -929,7 +930,7 @@ unsafe fn render_with_parameters(
 fn apply_parameters(
     plugin: &Plugin,
     synth: &mut Synth,
-    changes: &mut [ParameterPoints<'_>; 8],
+    changes: &mut [ParameterPoints<'_>; 9],
     offset: i32,
 ) {
     let values = std::array::from_fn(|i| changes[i].value_at(offset));

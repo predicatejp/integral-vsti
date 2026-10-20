@@ -31,7 +31,7 @@ pub(super) struct Editor {
     /// Controllerと共有する表示値。
     parameters: Arc<SharedParameters>,
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
-    displayed: Cell<[f64; 8]>,
+    displayed: Cell<[f64; 9]>,
     /// ホストUIスレッドへの編集キュー。描画中にはホストを呼ばない。
     edits: SyncSender<(usize, f64)>,
     #[cfg(target_os = "windows")]
@@ -67,7 +67,7 @@ impl Editor {
             pointer: Cell::new(egui::Pos2::ZERO),
             start: Instant::now(),
             parameters,
-            displayed: Cell::new([f64::NAN; 8]),
+            displayed: Cell::new([f64::NAN; 9]),
             edits,
             #[cfg(target_os = "windows")]
             view,
@@ -135,6 +135,8 @@ impl WindowHandler for Editor {
                                     371
                                 } else if i == 6 {
                                     6
+                                } else if i == 8 {
+                                    31
                                 } else {
                                     100
                                 };
@@ -165,7 +167,7 @@ impl WindowHandler for Editor {
                                 // 等幅・固定桁数で整数部を右寄せし、1の位と小数点を揃える。
                                 ui.monospace(if time {
                                     format!("{value:7.2} ms")
-                                } else if i == 6 {
+                                } else if matches!(i, 6 | 8) {
                                     format!("{value:8.0}")
                                 } else if i == 7 {
                                     format!("{value:5.1} cent")
