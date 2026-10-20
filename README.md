@@ -67,10 +67,8 @@ macOS・Windows ARM64・32ビット環境は未対応です。
 
 ## Voiceごとのフィルタ
 
-音源の状態は `SynthesizerState → VoiceState → OscillatorState` の階層です。各Voiceは発振器1個分の定常入力と内部状態を別々に持ち、
-発振器の処理でユニゾンを生成します。各Voiceの最終段に独立したフィルタを適用し、その出力を加算します。
-Stateはデータ保持専用とし、同じモジュールの関数がStateを受け取って処理します。
-音声関数は1サンプルを`*_sample`、サンプル系列を`*_samples`で区別します。
+音源は `Synthesizer → Voice → Oscillator` の階層です。各VoiceはOscillatorを1個持ち、
+その内部でユニゾンを生成します。各Voiceの最終段に独立したフィルタを適用し、その出力を加算します。
 
 | パラメーター | 範囲 | 初期値 | ParamID |
 | --- | --- | --- | --- |
@@ -88,7 +86,7 @@ Voiceはノートの音程とtuningを含む周波数に `2^(cent/1200)` を乗�
 カットオフはユニゾンのデチューン前のノート周波数に追従し、Note Off後も最後のノート周波数を使用します。
 
 - `FilterParameters`はそのサンプルのHzとQを持ち、既定値はUI／VST3設定側で定義します。
-- `SvfState`はTPT SVF1段の状態を保持し、`filter::process_svf_sample`が`low / band / high`を同時に返します。外側の`filter::process_sample`が`FilterState`を更新しながら出力選択・直列接続を行います。
+- `SvfState`はTPT SVF1段の状態を持ち、`low / band / high`を同時に返します。外側の`FilterState`が出力選択・直列接続を行います。
 - LPF・HPFは1段で12 dB/oct、2段で24 dB/oct。BPFの両側はそれぞれ6／12 dB/oct、中心利得はQ／Q²です。
 - 周波数は有限値を受け取り、内部の係数計算時だけ20〜20,000 Hzにクランプし、さらにサンプルレート×0.49を上限とします。極端に低いレートではこの上限を優先します。
 - 設定変更やVoiceの再使用でも有効な段の履歴を保持します。未使用の2段目とNone時の両段は消去します。Noneでは入力値を検証せずそのまま返します。

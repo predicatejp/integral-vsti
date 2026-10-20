@@ -6,7 +6,7 @@ use crate::host::HostRef;
 use crate::parameters::{
     self, FILTER_NAMES, IDS, NAMES, ParameterPoints, SharedParameters, WAVEFORM_NAMES,
 };
-use crate::synth::{self, SynthesizerState};
+use crate::synth::Synthesizer;
 use crate::voice::Note;
 use std::cell::{RefCell, UnsafeCell};
 use std::ffi::c_void;
@@ -55,7 +55,7 @@ struct Plugin {
     /// オシレータ・現在のノート・サンプルレートを所有する可変DSP状態。
     /// processとライフサイクルの更新はVST3規約に従いホストが直列化する。
     /// Controller・照会APIからは触れない。オーディオスレッドでロックしない。
-    synth: UnsafeCell<SynthesizerState>,
+    synth: UnsafeCell<Synthesizer>,
     /// 設定済みの最大ブロック長（サンプル数）。初期化前・終了後は0。
     max_samples: AtomicI32,
     /// 設定済みのサンプル形式（SAMPLE32またはSAMPLE64）。正の長さの処理には一致を要求する。
@@ -155,7 +155,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         processor_parameters: SharedParameters::new(),
         controller_parameters: Arc::new(SharedParameters::new()),
         component_handler: RefCell::new(None),
-        synth: UnsafeCell::new(synth::new_state()),
+        synth: UnsafeCell::new(Synthesizer::new()),
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
     });
@@ -260,7 +260,7 @@ unsafe extern "system" fn terminate(this: This) -> TResult {
     plugin.max_samples.store(0, Ordering::Relaxed);
     plugin.event_active.store(false, Ordering::Relaxed);
     // SAFETY: terminateはprocessの終了後に呼ばれる。
-    unsafe { synth::stop(&mut *plugin.synth.get()) };
+    unsafe { (*plugin.synth.get()).stop() };
     let old_handler = plugin.component_handler.replace(None);
     drop(old_handler);
     OK
@@ -365,7 +365,7 @@ unsafe extern "system" fn set_active(this: This, state: u8) -> TResult {
     if !state {
         plugin.processing.store(false, Ordering::Relaxed);
         // SAFETY: setActive(false)はprocessの終了後に呼ばれる。
-        unsafe { synth::stop(&mut *plugin.synth.get()) };
+        unsafe { (*plugin.synth.get()).stop() };
     }
     OK
 }
@@ -654,7 +654,7 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
         return INVALID_ARGUMENT;
     }
     // SAFETY: setupProcessingは非アクティブ状態で呼ばれ、processと競合しない。
-    unsafe { synth::set_sample_rate(&mut *plugin.synth.get(), setup.sample_rate) };
+    unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) };
     plugin
         .max_samples
         .store(setup.max_samples_per_block, Ordering::Relaxed);
@@ -678,7 +678,7 @@ unsafe extern "system" fn set_processing(this: This, state: u8) -> TResult {
     plugin.processing.store(state != 0, Ordering::Relaxed);
     if state == 0 {
         // SAFETY: setProcessing(false)は全process呼び出しの終了後に呼ばれる。
-        unsafe { synth::stop(&mut *plugin.synth.get()) };
+        unsafe { (*plugin.synth.get()).stop() };
     }
     OK
 }
@@ -745,13 +745,13 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     // synthの参照・ホストのイベントやバッファのポインターを呼び出し後へ保持しない。
     let synth = unsafe { &mut *plugin.synth.get() };
     let values = plugin.processor_parameters.snapshot();
-    synth::set_parameters(synth, values);
+    synth.set_parameters(values);
     // SAFETY: 12本のカーソルはこのprocess中だけホストのキューを借用する。
     let mut changes: [ParameterPoints<'_>; 12] =
         std::array::from_fn(|i| unsafe { ParameterPoints::new(data, i, values[i]) });
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
-        synth::stop(synth);
+        synth.stop();
     }
     let mut cursor = 0;
     let mut nonzero = false;
@@ -776,7 +776,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
             }
             // SAFETY: channelsは検証済みで、区間は0..num_samples内。
             nonzero |= unsafe {
-                generate_samples(
+                render(
                     plugin,
                     synth,
                     data,
@@ -788,8 +788,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
             cursor = event.sample_offset;
             if event.event_type == 0 {
                 let note = unsafe { event.payload.note_on };
-                synth::note_on(
-                    synth,
+                synth.note_on(
                     Note {
                         id: note.note_id,
                         channel: note.channel,
@@ -800,20 +799,17 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
                 );
             } else {
                 let note = unsafe { event.payload.note_off };
-                synth::note_off(
-                    synth,
-                    Note {
-                        id: note.note_id,
-                        channel: note.channel,
-                        pitch: note.pitch,
-                    },
-                );
+                synth.note_off(Note {
+                    id: note.note_id,
+                    channel: note.channel,
+                    pitch: note.pitch,
+                });
             }
         }
     }
     // SAFETY: 最後のイベントからブロック末尾まで。バッファがなくても位相を進める。
     nonzero |= unsafe {
-        generate_samples(
+        render(
             plugin,
             synth,
             data,
@@ -832,9 +828,9 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
 // SAFETY契約: channelsの各要素はnum_samples個の書き込み領域。rangeは範囲内。
 // changesはこのprocessから借用し、
 // これまでの区間と順に処理する。同時刻の変更をすべて適用してからノートを処理する。
-unsafe fn generate_samples(
+unsafe fn render(
     plugin: &Plugin,
-    synth: &mut SynthesizerState,
+    synth: &mut Synthesizer,
     data: &ProcessData,
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
@@ -843,7 +839,7 @@ unsafe fn generate_samples(
     let mut nonzero = false;
     for offset in range.clone() {
         apply_parameters(plugin, synth, changes, offset);
-        let sample = synth::generate_sample(synth);
+        let sample = synth.next_sample();
         if let Some(channels) = channels {
             // 同じ領域を指す左右チャンネルも許す。排他的sliceは作らず、同一サンプルを順に書く。
             if data.symbolic_sample_size == SAMPLE32 {
@@ -869,12 +865,12 @@ unsafe fn generate_samples(
 
 fn apply_parameters(
     plugin: &Plugin,
-    synth: &mut SynthesizerState,
+    synth: &mut Synthesizer,
     changes: &mut [ParameterPoints<'_>; 12],
     offset: i32,
 ) {
     let values = std::array::from_fn(|i| changes[i].value_at(offset));
-    if synth::set_parameters(synth, values) {
+    if synth.set_parameters(values) {
         for (i, change) in changes.iter().enumerate() {
             if change.automated {
                 plugin.processor_parameters.set(i, values[i]);

@@ -276,7 +276,7 @@ impl WindowHandler for Editor {
         #[cfg(target_os = "windows")]
         if let Some(view) = self.view.upgrade() {
             // 描画の借用やGL操作が終了した後、ホストのUIスレッドから通知する。
-            crate::gui::poll(&view);
+            view.poll();
         }
     }
 }
