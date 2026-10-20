@@ -66,7 +66,7 @@
 - `src/parameters.rs`: 9パラメーターの値変換、VST3変更キューとIBStream v4（旧v1/v2/v3/空状態も対応）の読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState`、サンプル生成・状態更新。
 - `src/envelope.rs`: AHDSR設定、開始/目標振幅、経過ミリ秒から音量を計算する状態なしのモジュール。
-- `src/filter.rs`: 3出力のTPT SVFと、外側でのタイプ選択・1段／2段・None。具体的なHzとQ（0.5〜10、既定1/√2）を受け取る。現時点では単体テストのみで使用し、音源・VST3・GUIへ未接続。
+- `src/filter.rs`: 3出力のTPT SVFと、外側でのタイプ選択・1段／2段・None。具体的なHzとQ（0.5〜10）を受け取る。既定値は内部フィルタに持たせずUI／VST3設定側で定義する。現時点では単体テストのみで使用し、音源・VST3・GUIへ未接続。
 - `src/synth.rs`: オシレータの循環割り当て、ノート照合と加算出力。
 - `src/tests.rs`: Rust側のABIレイアウト・参照管理・イベント処理テスト。
 - `tests/abi-smoke.cpp`: 公式SDKヘッダを用いる検証専用コード。本体にはリンクしない。

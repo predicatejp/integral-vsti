@@ -33,11 +33,6 @@ pub struct FilterParameters {
     pub resonance_q: f64,
 }
 
-pub const DEFAULT_FILTER: FilterParameters = FilterParameters {
-    cutoff_hz: 20_000.0,
-    resonance_q: std::f64::consts::FRAC_1_SQRT_2,
-};
-
 impl FilterParameters {
     pub fn is_valid(&self) -> bool {
         self.cutoff_hz.is_finite() && (0.5..=10.0).contains(&self.resonance_q)
@@ -160,6 +155,12 @@ mod tests {
     use super::*;
     use std::f64::consts::{PI, TAU};
 
+    // 単体テストの入力例。製品のUI設定の初期値は定義しない。
+    const TEST_PARAMETERS: FilterParameters = FilterParameters {
+        cutoff_hz: 20_000.0,
+        resonance_q: std::f64::consts::FRAC_1_SQRT_2,
+    };
+
     const TYPES: [FilterType; 6] = [
         FilterType::LowPass1,
         FilterType::LowPass2,
@@ -224,7 +225,7 @@ mod tests {
 
     #[test]
     fn state_survives_parameter_changes_and_unused_stage_is_cleared() {
-        let mut parameters = DEFAULT_FILTER;
+        let mut parameters = TEST_PARAMETERS;
         let mut filter_type = FilterType::LowPass1;
         let mut state = FilterState::new();
         assert_eq!(state.process(0.0, filter_type, &parameters, 48_000.0), 0.0);
@@ -285,12 +286,12 @@ mod tests {
                 ] {
                     let parameters = FilterParameters {
                         cutoff_hz: requested,
-                        ..DEFAULT_FILTER
+                        ..TEST_PARAMETERS
                     };
                     assert!(parameters.is_valid());
                     let boundary = FilterParameters {
                         cutoff_hz: requested.clamp(20.0, 20_000.0).min(rate * 0.49),
-                        ..DEFAULT_FILTER
+                        ..TEST_PARAMETERS
                     };
                     let mut limited = FilterState::new();
                     let mut explicit = FilterState::new();
@@ -312,30 +313,30 @@ mod tests {
     #[test]
     fn invalid_values_do_not_poison_state() {
         let mut state = SvfState::default();
-        state.process(1.0, &DEFAULT_FILTER, 48_000.0);
+        state.process(1.0, &TEST_PARAMETERS, 48_000.0);
         let previous = state.integrators;
         let silent = |output: SvfOutput| {
             assert_eq!([output.low, output.band, output.high], [0.0; 3]);
         };
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0] {
-            silent(state.process(1.0, &DEFAULT_FILTER, bad));
+            silent(state.process(1.0, &TEST_PARAMETERS, bad));
             silent(state.process(
                 1.0,
                 &FilterParameters {
                     resonance_q: bad,
-                    ..DEFAULT_FILTER
+                    ..TEST_PARAMETERS
                 },
                 48_000.0,
             ));
             assert_eq!(state.integrators, previous);
         }
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            silent(state.process(bad, &DEFAULT_FILTER, 48_000.0));
+            silent(state.process(bad, &TEST_PARAMETERS, 48_000.0));
             silent(state.process(
                 1.0,
                 &FilterParameters {
                     cutoff_hz: bad,
-                    ..DEFAULT_FILTER
+                    ..TEST_PARAMETERS
                 },
                 48_000.0,
             ));
@@ -345,7 +346,7 @@ mod tests {
             assert!(
                 !FilterParameters {
                     resonance_q: q,
-                    ..DEFAULT_FILTER
+                    ..TEST_PARAMETERS
                 }
                 .is_valid()
             );
@@ -355,16 +356,16 @@ mod tests {
             assert!(
                 FilterParameters {
                     cutoff_hz: hz,
-                    ..DEFAULT_FILTER
+                    ..TEST_PARAMETERS
                 }
                 .is_valid()
             );
         }
-        silent(state.process(f64::MAX, &DEFAULT_FILTER, 48_000.0));
+        silent(state.process(f64::MAX, &TEST_PARAMETERS, 48_000.0));
         assert_eq!(state.integrators, [0.0; 2]);
         assert!(
             state
-                .process(1.0, &DEFAULT_FILTER, 48_000.0)
+                .process(1.0, &TEST_PARAMETERS, 48_000.0)
                 .low
                 .is_finite()
         );
@@ -392,17 +393,17 @@ mod tests {
     #[test]
     fn bypass_is_exact_and_drops_old_tail() {
         let mut state = FilterState::new();
-        state.process(1.0, FilterType::LowPass2, &DEFAULT_FILTER, 48_000.0);
+        state.process(1.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0);
         for sample in [-2.0, -0.0, 0.0, 0.25, 3.0] {
-            let output = state.process(sample, FilterType::None, &DEFAULT_FILTER, 48_000.0);
+            let output = state.process(sample, FilterType::None, &TEST_PARAMETERS, 48_000.0);
             assert_eq!(output.to_bits(), sample.to_bits());
         }
         assert_eq!(
-            state.process(0.0, FilterType::LowPass2, &DEFAULT_FILTER, 48_000.0),
+            state.process(0.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
             0.0
         );
         assert_eq!(
-            state.process(f64::NAN, FilterType::None, &DEFAULT_FILTER, 48_000.0),
+            state.process(f64::NAN, FilterType::None, &TEST_PARAMETERS, 48_000.0),
             0.0
         );
         // Noneでは使用しない周波数・Q・レートで信号を遮断しない。
