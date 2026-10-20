@@ -131,27 +131,31 @@ impl WindowHandler for Editor {
                             for i in 1..6 {
                                 ui.label(NAMES[i]);
                                 let time = parameters::is_time(i);
-                                let max = if time { parameters::max_tick() } else { 1.0 };
-                                let mut tick = selected[i] * max;
+                                let max: u32 = if time { 371 } else { 100 };
+                                let scale = if time {
+                                    parameters::time_scale()
+                                } else {
+                                    100.0
+                                };
+                                let mut tick = (selected[i] * scale).round() as u32;
                                 let response = ui.add(
-                                    egui::Slider::new(&mut tick, 0.0..=max)
+                                    egui::Slider::new(&mut tick, 0..=max)
                                         // 丸い数への補正で隣のtickが選べなくなるのを防ぐ。
                                         .smart_aim(false)
-                                        .step_by(if time { 1.0 } else { 0.01 })
                                         .show_value(false),
                                 );
-                                let normalized = (tick / max).clamp(0.0, 1.0);
-                                // step_byによる表示用の丸めはホスト更新を編集として再通知しない。
-                                let edited = response.changed()
-                                    && response.interact_pointer_pos().is_some()
-                                    && (normalized - selected[i]).abs() > 1e-12;
-                                if edited {
-                                    let _ = self.edits.try_send((i, normalized));
-                                }
-                                let value = parameters::to_plain(
-                                    i,
-                                    if edited { normalized } else { selected[i] },
-                                );
+                                // ホスト値から表示用の整数に丸めただけでは再通知しない。
+                                let edited =
+                                    response.changed() && response.interact_pointer_pos().is_some();
+                                let value = if edited {
+                                    let value = parameters::slider_to_plain(i, tick);
+                                    let _ = self
+                                        .edits
+                                        .try_send((i, parameters::to_normalized(i, value)));
+                                    value
+                                } else {
+                                    parameters::to_plain(i, selected[i])
+                                };
                                 // 等幅・固定桁数で整数部を右寄せし、1の位と小数点を揃える。
                                 ui.monospace(if time {
                                     format!("{value:7.2} ms")

@@ -346,26 +346,22 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             pump(); assert(handler.sequence.empty());
         }
         if (cycle == 0) {
-            // 整数ピクセルのマウス入力で全371tickと最大端点を選べることを確認。
-            std::array<bool, 372> reached{};
-            const double maxTick = 1.0 + 100.0 * std::log10(5000.0);
-            for (int x = 111; x <= 501; ++x) {
+            // 全整数tickをマウスで選択し、実単位への換算とホストへの反映を確認。
+            // 390pxの操作欄・18pxフォントでのハンドル移動範囲を整数ピクセルへ丸める。
+            for (int tick = 0; tick <= 371; ++tick) {
+                const int x = static_cast<int>(std::lround(117.64375 + 377.5875 * tick / 371.0));
+                const double ms = tick == 0 ? 0.0 : std::min(5000.0, std::pow(10.0, (tick - 1) / 100.0));
+                const double expected = controller->plainParamToNormalized(envelopeIds[0], ms);
                 parent.pointer(x, 113, true);
-                for (int step = 0; step < 5; ++step) {
-                    parent.pump(); frame.tick(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-                const double value = controller->getParamNormalized(envelopeIds[0]);
-                const int tick = value == 1.0 ? 371 : static_cast<int>(std::lround(value * maxTick));
-                assert(tick >= 0 && tick < static_cast<int>(reached.size()));
-                assert(value == 1.0 || std::abs(value * maxTick - tick) < 1e-9);
-                reached[tick] = true;
+                waitFor([&] {
+                    return std::abs(controller->getParamNormalized(envelopeIds[0]) - expected) < 1e-12;
+                }, ("envelope integer tick " + std::to_string(tick)).c_str());
                 parent.pointer(x, 113, false);
                 for (int step = 0; step < 3; ++step) {
                     parent.pump(); frame.tick(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
                 handler.sequence.clear();
             }
-            assert(std::all_of(reached.begin(), reached.end(), [](bool value) { return value; }));
         }
         parent.screenshot();
         assert(view->removed() == kResultOk);

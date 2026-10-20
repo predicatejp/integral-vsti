@@ -30,8 +30,8 @@ pub const IDS: [u32; 6] = [
     0x52454c53,
 ];
 pub const NAMES: [&str; 6] = ["Waveform", "Attack", "Hold", "Decay", "Sustain", "Release"];
-/// 時間軸はtick=0が0ms、tick=1が1ms、以降100tickで10倍。
-pub fn max_tick() -> f64 {
+/// VST3正規化値と時間を換算する連続軸のスケール。UIの整数tick上限とは区別する。
+pub fn time_scale() -> f64 {
     1.0 + 100.0 * 5000.0_f64.log10()
 }
 pub fn index(id: u32) -> Option<usize> {
@@ -39,6 +39,18 @@ pub fn index(id: u32) -> Option<usize> {
 }
 pub fn is_time(index: usize) -> bool {
     matches!(index, 1 | 2 | 3 | 5)
+}
+/// GUIの整数tickを実単位へ換算する。時間は0..=371、sustainは0..=100。
+pub fn slider_to_plain(index: usize, tick: u32) -> f64 {
+    if is_time(index) {
+        if tick == 0 {
+            0.0
+        } else {
+            10.0_f64.powf((f64::from(tick) - 1.0) / 100.0).min(5000.0)
+        }
+    } else {
+        f64::from(tick) / 100.0
+    }
 }
 pub fn to_plain(index: usize, normalized: f64) -> f64 {
     if index == 0 {
@@ -50,7 +62,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     if normalized == 1.0 {
         return 5000.0;
     }
-    let tick = normalized * max_tick();
+    let tick = normalized * time_scale();
     if tick <= 1.0 {
         tick
     } else {
@@ -71,7 +83,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         plain
     } else {
         1.0 + 100.0 * plain.log10()
-    }) / max_tick()
+    }) / time_scale()
 }
 pub fn valid_plain(index: usize, plain: f64) -> bool {
     (0.0..=if index == 0 {
@@ -513,27 +525,37 @@ mod tests {
                 (201.0, 100.0),
                 (301.0, 1000.0),
             ] {
-                assert!((to_plain(i, tick / max_tick()) - ms).abs() < 1e-10);
-                assert!((to_normalized(i, ms) * max_tick() - tick).abs() < 1e-10);
+                assert!((to_plain(i, tick / time_scale()) - ms).abs() < 1e-10);
+                assert!((to_normalized(i, ms) * time_scale() - tick).abs() < 1e-10);
             }
             assert_eq!(to_plain(i, 1.0), 5000.0);
             // GUIで選べる全tickの往復変換・単調性・100tickごとの倍率を確認。
             let mut previous = -1.0;
-            for tick in 0..=max_tick().floor() as u32 {
-                let normalized = f64::from(tick) / max_tick();
-                let ms = to_plain(i, normalized);
+            for tick in 0..=time_scale().floor() as u32 {
+                let normalized = f64::from(tick) / time_scale();
+                let ms = slider_to_plain(i, tick);
                 assert!(ms > previous && ms < 5000.0);
                 assert!((to_normalized(i, ms) - normalized).abs() < 1e-12);
+                assert!(ms == 0.0 || (to_plain(i, to_normalized(i, ms)) / ms - 1.0).abs() < 1e-12);
                 if tick > 100 {
-                    let earlier = to_plain(i, f64::from(tick - 100) / max_tick());
+                    let earlier = to_plain(i, f64::from(tick - 100) / time_scale());
                     assert!((ms / earlier - 10.0).abs() < 1e-12);
                 }
                 previous = ms;
             }
+            assert_eq!(slider_to_plain(i, 0), 0.0);
+            for (tick, ms) in [(1, 1.0), (101, 10.0), (201, 100.0), (301, 1000.0)] {
+                assert!((slider_to_plain(i, tick) / ms - 1.0).abs() < 1e-12);
+            }
+            assert_eq!(slider_to_plain(i, 371), 5000.0);
             // ホストの連続オートメーションは0〜1ms区間も線形で扱う。
             assert!((to_plain(i, to_normalized(i, 0.5)) - 0.5).abs() < 1e-12);
         }
         assert_eq!(to_plain(4, 0.35), 0.35);
         assert_eq!(to_normalized(4, 0.35), 0.35);
+        for tick in 0..=100 {
+            let value = slider_to_plain(4, tick);
+            assert_eq!((to_normalized(4, value) * 100.0).round() as u32, tick);
+        }
     }
 }
