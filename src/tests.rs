@@ -153,6 +153,8 @@ static EVENT_TABLE: EventListVTable = EventListVTable {
 struct TestPoint {
     /// 借用する1点のIParamValueQueue関数表。
     vtable: &'static ParamValueQueueVTable,
+    /// 変更対象のパラメーター。
+    id: u32,
     /// ブロック内の適用位置。
     offset: i32,
     /// ホストから送る正規化値。
@@ -167,8 +169,9 @@ struct TestChanges {
     queue: This,
 }
 
-unsafe extern "system" fn point_id(_: This) -> u32 {
-    parameters::WAVEFORM_ID
+unsafe extern "system" fn point_id(this: This) -> u32 {
+    // SAFETY: 呼び出し中有効なテストのキュー。
+    unsafe { (*this.cast::<TestPoint>()).id }
 }
 unsafe extern "system" fn point_get(
     this: This,
@@ -262,6 +265,16 @@ fn check_host_events(activate_events: bool) {
         silence_flags: 0,
         channel_buffers: channels.as_mut_ptr(),
     };
+    let mut bypass = TestPoint {
+        vtable: &POINT_TABLE,
+        id: parameters::IDS[9],
+        offset: 0,
+        value: 0.0,
+    };
+    let mut bypass_changes = TestChanges {
+        vtable: &CHANGES_TABLE,
+        queue: ptr::from_mut(&mut bypass).cast(),
+    };
     let mut data = ProcessData {
         process_mode: 0,
         symbolic_sample_size: SAMPLE64,
@@ -270,7 +283,7 @@ fn check_host_events(activate_events: bool) {
         num_outputs: 1,
         inputs: ptr::null_mut(),
         outputs: &mut bus,
-        input_parameter_changes: ptr::null_mut(),
+        input_parameter_changes: ptr::from_mut(&mut bypass_changes).cast(),
         output_parameter_changes: ptr::null_mut(),
         input_events: events_ptr.cast(),
         output_events: ptr::null_mut(),
@@ -297,7 +310,7 @@ fn check_host_events(activate_events: bool) {
             sample_rate: 1760.0,
         };
         assert_eq!((pt.setup_processing)(processor, &setup), OK);
-        assert_eq!((pt.get_tail_samples)(processor), 8800);
+        assert_eq!((pt.get_tail_samples)(processor), u32::MAX);
         assert_eq!((ct.activate_bus)(component, AUDIO, OUTPUT, 0, 1), OK);
         if activate_events {
             assert_eq!((ct.activate_bus)(component, EVENT, INPUT, 0, 1), OK);
@@ -376,6 +389,7 @@ fn check_host_events(activate_events: bool) {
         // 借用キュー経由で矩形波へ変更し、Miriでも入れ子の生ポインターを検査する。
         let mut point = TestPoint {
             vtable: &POINT_TABLE,
+            id: parameters::WAVEFORM_ID,
             offset: 0,
             value: 2.0 / 3.0,
         };

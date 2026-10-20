@@ -1,10 +1,11 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 波形・エンベロープ・ユニゾンパラメーターの値変換、VST3変更キューと保存ストリームの読み書き。
+//! 音源パラメーターの値変換、VST3変更キューと保存ストリームの読み書き。
 
 use crate::abi::*;
 use crate::envelope::{DEFAULT_ENVELOPE, EnvelopeParameters};
+use crate::filter::FilterType;
 use crate::oscillator::Waveform;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,9 +20,28 @@ pub const WAVEFORMS: [Waveform; 4] = [
     Waveform::Sawtooth,
 ];
 pub const WAVEFORM_NAMES: [&str; 4] = ["Sine", "Triangle", "Square", "Sawtooth"];
+/// フィルタ設定の順序。状態保存・オートメーションとの対応を固定する。
+pub const FILTER_TYPES: [FilterType; 7] = [
+    FilterType::None,
+    FilterType::LowPass1,
+    FilterType::LowPass2,
+    FilterType::HighPass1,
+    FilterType::HighPass2,
+    FilterType::BandPass1,
+    FilterType::BandPass2,
+];
+pub const FILTER_NAMES: [&str; 7] = [
+    "None",
+    "LowPass1",
+    "LowPass2",
+    "HighPass1",
+    "HighPass2",
+    "BandPass1",
+    "BandPass2",
+];
 
 /// 波形IDは従来どおり。追加IDも保存済みオートメーションとの対応を維持する。
-pub const IDS: [u32; 9] = [
+pub const IDS: [u32; 12] = [
     WAVEFORM_ID,
     0x4154544b,
     0x484f4c44,
@@ -31,8 +51,11 @@ pub const IDS: [u32; 9] = [
     0x554e4953, // UNIS
     0x4454554e, // DTUN
     0x504f4c59, // POLY
+    0x46545950, // FTYP
+    0x46435554, // FCUT
+    0x46524553, // FRES
 ];
-pub const NAMES: [&str; 9] = [
+pub const NAMES: [&str; 12] = [
     "Waveform",
     "Attack",
     "Hold",
@@ -42,6 +65,9 @@ pub const NAMES: [&str; 9] = [
     "Unison",
     "Detune",
     "Polyphony",
+    "Filter",
+    "Cutoff",
+    "Resonance",
 ];
 /// VST3正規化値と時間を換算する連続軸のスケール。UIの整数tick上限とは区別する。
 pub fn time_scale() -> f64 {
@@ -54,9 +80,9 @@ pub fn is_time(index: usize) -> bool {
     matches!(index, 1 | 2 | 3 | 5)
 }
 pub fn is_discrete(index: usize) -> bool {
-    matches!(index, 0 | 6 | 8)
+    matches!(index, 0 | 6 | 8 | 9 | 10)
 }
-/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune 0..=100、unison 0..=6、polyphony 0..=31。
+/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950。
 pub fn slider_to_plain(index: usize, tick: u32) -> f64 {
     if is_time(index) {
         if tick == 0 {
@@ -67,7 +93,9 @@ pub fn slider_to_plain(index: usize, tick: u32) -> f64 {
     } else {
         match index {
             6 | 8 => f64::from(tick) + 1.0,
-            7 => f64::from(tick),
+            7 | 9 => f64::from(tick),
+            10 => f64::from(tick) * 10.0 - 2400.0,
+            11 => 0.5 + f64::from(tick) / 100.0,
             _ => f64::from(tick) / 100.0,
         }
     }
@@ -81,6 +109,9 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         6 => return (normalized * 7.0).floor().min(6.0) + 1.0,
         7 => return normalized * 100.0,
         8 => return (normalized * 32.0).floor().min(31.0) + 1.0,
+        9 => return (normalized * 7.0).floor().min(6.0),
+        10 => return (normalized * 1201.0).floor().min(1200.0) * 10.0 - 2400.0,
+        11 => return 0.5 + normalized * 9.5,
         _ => {}
     }
     if normalized == 1.0 {
@@ -102,6 +133,9 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         6 => return (plain.clamp(1.0, 7.0).round() - 1.0) / 6.0,
         7 => return plain / 100.0,
         8 => return (plain.clamp(1.0, 32.0).round() - 1.0) / 31.0,
+        9 => return plain.clamp(0.0, 6.0).round() / 6.0,
+        10 => return ((plain.clamp(-2400.0, 9600.0) + 2400.0) / 10.0).round() / 1200.0,
+        11 => return (plain - 0.5) / 9.5,
         _ => {}
     }
     if plain == 5000.0 {
@@ -120,19 +154,22 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
         7 => (0.0..=100.0).contains(&plain),
         8 => (1.0..=32.0).contains(&plain) && plain.fract() == 0.0,
+        9 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
+        10 => (-2400.0..=9600.0).contains(&plain) && plain % 10.0 == 0.0,
+        11 => (0.5..=10.0).contains(&plain),
         _ => (0.0..=5000.0).contains(&plain),
     }
 }
 pub fn canonical(index: usize, value: f64) -> f64 {
     if index == 0 {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(index, 6 | 8) {
+    } else if matches!(index, 6 | 8 | 9 | 10) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
     }
 }
-pub fn defaults() -> [f64; 9] {
+pub fn defaults() -> [f64; 12] {
     let p = DEFAULT_ENVELOPE;
     let plain = [
         0.0,
@@ -144,10 +181,13 @@ pub fn defaults() -> [f64; 9] {
         1.0,
         0.0,
         1.0,
+        1.0,    // LowPass1
+        1200.0, // ノートから+1 oct
+        std::f64::consts::FRAC_1_SQRT_2,
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
-pub fn envelope(values: &[f64; 9]) -> EnvelopeParameters {
+pub fn envelope(values: &[f64; 12]) -> EnvelopeParameters {
     EnvelopeParameters {
         attack_ms: to_plain(1, values[1]),
         hold_ms: to_plain(2, values[2]),
@@ -160,7 +200,7 @@ pub fn envelope(values: &[f64; 9]) -> EnvelopeParameters {
 /// UI/音声スレッド間で受け渡す、検証済みの正規化値。オーディオ側でロックしない。
 pub struct SharedParameters {
     /// 要素順はIDSと同じ。値ごとの更新はatomicで、表示更新はDSPへ再通知しない。
-    values: [AtomicU64; 9],
+    values: [AtomicU64; 12],
 }
 impl SharedParameters {
     pub fn new() -> Self {
@@ -175,10 +215,10 @@ impl SharedParameters {
     pub fn set(&self, index: usize, value: f64) {
         self.values[index].store(canonical(index, value).to_bits(), Ordering::Relaxed);
     }
-    pub fn snapshot(&self) -> [f64; 9] {
+    pub fn snapshot(&self) -> [f64; 12] {
         std::array::from_fn(|i| self.get(i))
     }
-    pub fn store(&self, values: [f64; 9]) {
+    pub fn store(&self, values: [f64; 12]) {
         for (i, value) in values.into_iter().enumerate() {
             self.set(i, value);
         }
@@ -223,7 +263,7 @@ pub struct ParameterPoints<'a> {
     next: Option<(i32, f64)>,
     /// 補間の始点。前ブロックの最終値をoffset=-1として扱う。
     previous: (i32, f64),
-    /// 波形・ユニゾン数・ポリフォニー数は離散値。他のパラメーターは正規化空間で線形補間する。
+    /// 波形・ユニゾン数・ポリフォニー数・フィルタタイプ・カットオフは離散値。他のパラメーターは正規化空間で線形補間する。
     parameter: usize,
     /// 有効な変更点があるキューだけをDSPから共有値へ書き戻す。
     /// 他パラメーターの状態復元を、無関係なオートメーションで上書きしない。
@@ -315,18 +355,18 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v4: v3の68バイトにPolyphonyの実単位f64を追加（76バイト、little endian）。
-// v1/v2/v3と空状態は不足するパラメーターを初期値で復元する。
-const STATE_HEADER: [u8; 8] = *b"SVST\x04\0\0\0";
+// v5: v4の76バイトにフィルタ3値の実単位f64を追加（100バイト、little endian）。
+// v1〜v4はフィルタNoneとして旧音色を維持する。空状態は新規設定へ戻す。
+const STATE_HEADER: [u8; 8] = *b"SVST\x05\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
-pub unsafe fn read_state(stream: This) -> Result<[f64; 9], TResult> {
+pub unsafe fn read_state(stream: This) -> Result<[f64; 12], TResult> {
     if stream.is_null() {
         return Err(INVALID_ARGUMENT);
     }
     // SAFETY: IBStreamの関数表を借用し、固定長領域の範囲だけを読み取る。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 76];
+    let mut bytes = [0u8; 100];
     let mut position = 0;
     let mut length = 12;
     while position < length {
@@ -356,6 +396,7 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; 9], TResult> {
                 2 => length = 52,
                 3 => length = 68,
                 4 => length = 76,
+                5 => length = 100,
                 _ => return Err(FALSE),
             }
         }
@@ -366,6 +407,9 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; 9], TResult> {
     }
     let mut values = defaults();
     values[0] = f64::from(waveform) / 3.0;
+    if length < 100 {
+        values[9] = 0.0;
+    }
     if length >= 52 {
         for (i, value) in values
             .iter_mut()
@@ -385,13 +429,13 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; 9], TResult> {
 }
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
-pub unsafe fn write_state(stream: This, values: [f64; 9]) -> TResult {
+pub unsafe fn write_state(stream: This, values: [f64; 12]) -> TResult {
     if stream.is_null() {
         return INVALID_ARGUMENT;
     }
     // SAFETY: IBStreamは固定長バッファを呼び出し中だけ読む。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 76];
+    let mut bytes = [0u8; 100];
     bytes[..8].copy_from_slice(&STATE_HEADER);
     bytes[8..12].copy_from_slice(&(to_plain(0, values[0]) as u32).to_le_bytes());
     for (i, &value) in values.iter().enumerate().skip(1) {
@@ -427,7 +471,7 @@ mod tests {
         /// このテストだけで使うIBStream関数表。
         vtable: &'static StreamVTable,
         /// 形式の最大長だけを用意したテスト用領域。
-        bytes: [u8; 76],
+        bytes: [u8; 100],
         /// 初期化済みデータの長さ。
         length: usize,
         /// 次の読み書き位置。
@@ -497,11 +541,28 @@ mod tests {
     };
 
     #[test]
+    fn filter_controls_cover_all_steps_and_defaults() {
+        let values = defaults();
+        assert_eq!(to_plain(9, values[9]), 1.0);
+        assert_eq!(to_plain(10, values[10]), 1200.0);
+        assert!((to_plain(11, values[11]) - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-15);
+        for (index, max) in [(9, 6), (10, 1200), (11, 950)] {
+            for tick in 0..=max {
+                let plain = slider_to_plain(index, tick);
+                let normalized = to_normalized(index, plain);
+                assert!(valid_plain(index, plain));
+                assert!((to_plain(index, normalized) - plain).abs() < 1e-12);
+                assert_eq!((normalized * f64::from(max)).round() as u32, tick);
+            }
+        }
+    }
+
+    #[test]
     fn state_stream_handles_short_transfers_and_rejects_truncation() {
         for waveform in WAVEFORMS {
             let mut stream = Stream {
                 vtable: &STREAM_TABLE,
-                bytes: [0; 76],
+                bytes: [0; 100],
                 length: 0,
                 position: 0,
             };
@@ -513,18 +574,21 @@ mod tests {
                 values[6] = to_normalized(6, 7.0);
                 values[7] = to_normalized(7, 37.0);
                 values[8] = to_normalized(8, 32.0);
+                values[9] = to_normalized(9, 6.0);
+                values[10] = to_normalized(10, -1200.0);
+                values[11] = to_normalized(11, 5.0);
                 assert_eq!(write_state(stream.cast(), values), OK);
                 (*stream).position = 0;
                 let restored = read_state(stream.cast()).unwrap();
                 for (actual, expected) in restored.into_iter().zip(values) {
                     assert!((actual - expected).abs() < 1e-12);
                 }
-                for length in 1..76 {
+                for length in 1..100 {
                     (*stream).length = length;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                // v2は既存値を保持し、新規2パラメーターだけ初期値を補う。
+                // v2は既存値を保持し、追加パラメーターを補う。
                 (*stream).bytes[4] = 2;
                 (*stream).length = 52;
                 (*stream).position = 0;
@@ -532,7 +596,8 @@ mod tests {
                 for i in 0..6 {
                     assert!((legacy[i] - values[i]).abs() < 1e-12);
                 }
-                assert_eq!(&legacy[6..], &defaults()[6..]);
+                assert_eq!(&legacy[6..9], &defaults()[6..9]);
+                assert_eq!(legacy[9], 0.0);
                 (*stream).bytes[4] = 3;
                 (*stream).length = 68;
                 (*stream).position = 0;
@@ -543,6 +608,14 @@ mod tests {
                 assert_eq!(legacy[8], defaults()[8]);
                 (*stream).bytes[4] = 4;
                 (*stream).length = 76;
+                (*stream).position = 0;
+                let legacy = read_state(stream.cast()).unwrap();
+                assert_eq!(legacy[9], 0.0);
+                for i in 0..9 {
+                    assert!((legacy[i] - values[i]).abs() < 1e-12);
+                }
+                (*stream).bytes[4] = 5;
+                (*stream).length = 100;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -555,6 +628,14 @@ mod tests {
                     (8, 33.0),
                     (8, 1.5),
                     (8, f64::INFINITY),
+                    (9, 7.0),
+                    (9, 1.5),
+                    (10, -2410.0),
+                    (10, 9601.0),
+                    (10, 1001.0),
+                    (11, 0.49),
+                    (11, 10.1),
+                    (11, f64::NAN),
                 ] {
                     let offset = 12 + (index - 1) * 8;
                     let original: [u8; 8] =

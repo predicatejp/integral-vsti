@@ -3,7 +3,9 @@
 
 use crate::abi::*;
 use crate::host::HostRef;
-use crate::parameters::{self, IDS, NAMES, ParameterPoints, SharedParameters, WAVEFORM_NAMES};
+use crate::parameters::{
+    self, FILTER_NAMES, IDS, NAMES, ParameterPoints, SharedParameters, WAVEFORM_NAMES,
+};
 use crate::synth::Synthesizer;
 use crate::voice::Note;
 use std::cell::{RefCell, UnsafeCell};
@@ -44,9 +46,9 @@ struct Plugin {
     /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
     /// initialize時は互換性のためtrueとし、その後はactivateBusの明示的な指定に従う。
     event_active: AtomicBool,
-    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す9パラメーター。保存時にもatomicで読む。
+    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す12パラメーター。保存時にもatomicで読む。
     processor_parameters: SharedParameters,
-    /// Controllerが表示する9パラメーター。ホストのsetParamNormalized/setComponentStateで更新する。
+    /// Controllerが表示する12パラメーター。ホストのsetParamNormalized/setComponentStateで更新する。
     controller_parameters: Arc<SharedParameters>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
@@ -58,8 +60,6 @@ struct Plugin {
     max_samples: AtomicI32,
     /// 設定済みのサンプル形式（SAMPLE32またはSAMPLE64）。正の長さの処理には一致を要求する。
     sample_size: AtomicI32,
-    /// 設定済みレートでの最大release長（5秒）。オートメーション中も保守的な上限を返す。照会APIからDSPの可変状態を借用せずに読む。
-    tail_samples: AtomicU32,
 }
 
 const UNKNOWN: UnknownVTable = UnknownVTable {
@@ -158,7 +158,6 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         synth: UnsafeCell::new(Synthesizer::new()),
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
-        tail_samples: AtomicU32::new(220500),
     });
     let owner = Box::into_raw(plugin);
     // SAFETY: 公開前のBoxを生ポインター経由で初期化する。以後ownerと各Interfaceの
@@ -422,7 +421,7 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
             short_title: utf16(NAMES[i]),
             units: utf16(if parameters::is_time(i) {
                 "ms"
-            } else if i == 7 {
+            } else if matches!(i, 7 | 10) {
                 "cent"
             } else {
                 ""
@@ -431,11 +430,13 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
                 0 => 3,
                 6 => 6,
                 8 => 31,
+                9 => 6,
+                10 => 1200,
                 _ => 0,
             },
             default_normalized_value: parameters::defaults()[i],
             unit_id: 0,
-            flags: if i == 0 { 1 | (1 << 3) } else { 1 },
+            flags: if matches!(i, 0 | 9) { 1 | (1 << 3) } else { 1 },
         });
     }
     OK
@@ -449,7 +450,9 @@ unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *m
     }
     let text = if i == 0 {
         WAVEFORM_NAMES[parameters::to_plain(i, value) as usize].to_owned()
-    } else if matches!(i, 6 | 8) {
+    } else if i == 9 {
+        FILTER_NAMES[parameters::to_plain(i, value) as usize].to_owned()
+    } else if matches!(i, 6 | 8 | 10) {
         format!("{:.0}", parameters::to_plain(i, value))
     } else {
         format!("{:.3}", parameters::to_plain(i, value))
@@ -485,8 +488,13 @@ unsafe extern "system" fn parameter_value(
     let Ok(text) = String::from_utf16(&buffer) else {
         return INVALID_ARGUMENT;
     };
-    let plain = if i == 0 {
-        WAVEFORM_NAMES
+    let plain = if matches!(i, 0 | 9) {
+        let names: &[&str] = if i == 0 {
+            &WAVEFORM_NAMES
+        } else {
+            &FILTER_NAMES
+        };
+        names
             .iter()
             .position(|&name| name == text)
             .map(|v| v as f64)
@@ -647,13 +655,6 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
     }
     // SAFETY: setupProcessingは非アクティブ状態で呼ばれ、processと競合しない。
     unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) };
-    plugin.tail_samples.store(
-        (setup.sample_rate * 5.0)
-            .ceil()
-            // u32で有限長を表せないレートではVST3のkInfiniteTailを返す。
-            .min(f64::from(u32::MAX)) as u32,
-        Ordering::Relaxed,
-    );
     plugin
         .max_samples
         .store(setup.max_samples_per_block, Ordering::Relaxed);
@@ -663,11 +664,9 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
     OK
 }
 
-unsafe extern "system" fn get_tail_samples(this: This) -> u32 {
-    // SAFETY: thisは生存中のInterface。照会ではatomicだけにアクセスする。
-    unsafe { instance(this) }
-        .tail_samples
-        .load(Ordering::Relaxed)
+unsafe extern "system" fn get_tail_samples(_: This) -> u32 {
+    // フィルタのIIR残響をホストに途中で打ち切らせない。kInfiniteTailを保守的に返す。
+    u32::MAX
 }
 
 unsafe extern "system" fn set_processing(this: This, state: u8) -> TResult {
@@ -747,8 +746,8 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let synth = unsafe { &mut *plugin.synth.get() };
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
-    // SAFETY: 9本のカーソルはこのprocess中だけホストのキューを借用する。
-    let mut changes: [ParameterPoints<'_>; 9] =
+    // SAFETY: 12本のカーソルはこのprocess中だけホストのキューを借用する。
+    let mut changes: [ParameterPoints<'_>; 12] =
         std::array::from_fn(|i| unsafe { ParameterPoints::new(data, i, values[i]) });
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
@@ -835,7 +834,7 @@ unsafe fn render(
     data: &ProcessData,
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
-    changes: &mut [ParameterPoints<'_>; 9],
+    changes: &mut [ParameterPoints<'_>; 12],
 ) -> bool {
     let mut nonzero = false;
     for offset in range.clone() {
@@ -867,7 +866,7 @@ unsafe fn render(
 fn apply_parameters(
     plugin: &Plugin,
     synth: &mut Synthesizer,
-    changes: &mut [ParameterPoints<'_>; 9],
+    changes: &mut [ParameterPoints<'_>; 12],
     offset: i32,
 ) {
     let values = std::array::from_fn(|i| changes[i].value_at(offset));

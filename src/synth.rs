@@ -14,7 +14,7 @@ pub struct Synthesizer {
     /// 全オシレータに共通のサンプルレート（Hz）。
     sample_rate: f64,
     /// 適用済みの正規化値。変更時だけ実単位へ換算する。
-    parameters: [f64; 9],
+    parameters: [f64; 12],
 }
 
 impl Synthesizer {
@@ -33,7 +33,7 @@ impl Synthesizer {
     }
 
     /// 設定は全枠の入力に反映し、発振器の内部状態はイベント処理から変更しない。
-    pub fn set_parameters(&mut self, values: [f64; 9]) -> bool {
+    pub fn set_parameters(&mut self, values: [f64; 12]) -> bool {
         if values == self.parameters {
             return false;
         }
@@ -52,6 +52,11 @@ impl Synthesizer {
         let detune_cents = parameters::to_plain(7, values[7]);
         for voice in &mut self.voices {
             voice.set_parameters(waveform, envelope, unison_voices, detune_cents);
+            voice.set_filter(
+                parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
+                parameters::to_plain(10, values[10]),
+                parameters::to_plain(11, values[11]),
+            );
         }
         true
     }
@@ -92,13 +97,23 @@ mod tests {
     use crate::envelope::DEFAULT_ENVELOPE;
     use crate::oscillator::Waveform;
 
+    // 既存の発振器・ノート処理の期待値はフィルタをバイパスして検証する。
+    fn unfiltered() -> Synthesizer {
+        let mut synth = Synthesizer::new();
+        let mut values = parameters::defaults();
+        values[9] = 0.0;
+        synth.set_parameters(values);
+        synth
+    }
+
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
     }
 
     fn polyphonic(count: usize) -> Synthesizer {
-        let mut synth = Synthesizer::new();
+        let mut synth = unfiltered();
         let mut values = parameters::defaults();
+        values[9] = 0.0;
         values[0] = parameters::normalized(Waveform::Square);
         values[1] = 0.0;
         values[3] = 0.0;
@@ -108,6 +123,51 @@ mod tests {
         synth.set_parameters(values);
         synth.set_sample_rate(48000.0);
         synth
+    }
+
+    #[test]
+    fn filtered_voices_sum_independently_and_stop_without_tail() {
+        for filter_type in 0..7 {
+            let mut synth = Synthesizer::new();
+            let mut values = parameters::defaults();
+            values[1] = 0.0;
+            values[3] = 0.0;
+            values[4] = 1.0;
+            values[5] = 0.0;
+            values[8] = parameters::to_normalized(8, 2.0);
+            values[9] = parameters::to_normalized(9, f64::from(filter_type));
+            values[10] = parameters::to_normalized(10, -1200.0);
+            values[11] = parameters::to_normalized(11, 3.0);
+            synth.set_parameters(values);
+            let mut references: [Synthesizer; 2] = std::array::from_fn(|_| {
+                let mut single = Synthesizer::new();
+                let mut values = values;
+                values[8] = 0.0;
+                single.set_parameters(values);
+                single
+            });
+            for n in 0..96 {
+                for (at, slot, id, pitch) in [(0, 0, 1, 57), (3, 1, 2, 81), (32, 0, 3, 69)] {
+                    if n == at {
+                        synth.note_on(note(id, 0, pitch), 0.0, 1.0);
+                        references[slot].note_on(note(id, 0, pitch), 0.0, 1.0);
+                    }
+                }
+                if n == 48 {
+                    synth.note_off(note(2, 0, 81));
+                    references[1].note_off(note(2, 0, 81));
+                }
+                if n == 64 {
+                    values[8] = 0.0;
+                    synth.set_parameters(values);
+                    references[1].stop();
+                }
+                let expected: f64 = references.iter_mut().map(Synthesizer::next_sample).sum();
+                assert!((synth.next_sample() - expected).abs() < 1e-12);
+            }
+            synth.stop();
+            assert_eq!(synth.next_sample(), 0.0);
+        }
     }
 
     #[test]
@@ -256,7 +316,7 @@ mod tests {
         ] {
             for &(rate, samples) in measurements {
                 for velocity in [0.0, 0.25, 0.5, 1.0] {
-                    let mut synth = Synthesizer::new();
+                    let mut synth = unfiltered();
                     synth.voices[0].oscillator.input.waveform = waveform;
                     // 定常RMSの検証なので、立ち上がり・リリースだけ許容最短にする。
                     synth.voices[0].oscillator.input.envelope.attack_ms = 1.0;
@@ -294,7 +354,7 @@ mod tests {
 
     #[test]
     fn retrigger_release_and_stop_preserve_amplitude_and_phase() {
-        let mut synth = Synthesizer::new();
+        let mut synth = unfiltered();
         synth.set_sample_rate(1000.0); // 1サンプル=1ms。
         synth.voices[0].oscillator.input.waveform = Waveform::Square;
         synth.note_on(note(1, 0, 69), 0.0, 1.0);
@@ -330,7 +390,7 @@ mod tests {
 
     #[test]
     fn missing_note_ids_match_channel_and_pitch_and_invalid_notes_are_ignored() {
-        let mut synth = Synthesizer::new();
+        let mut synth = unfiltered();
         synth.set_sample_rate(1000.0);
         synth.voices[0].oscillator.input.waveform = Waveform::Square;
         synth.note_on(note(-1, 2, 69), 0.0, 1.0);

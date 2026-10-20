@@ -3,7 +3,7 @@
 
 //! 波形選択・音量エンベロープに必要なマウス入力とOpenGL描画だけを接続する。
 
-use crate::parameters::{self, NAMES, SharedParameters, WAVEFORM_NAMES};
+use crate::parameters::{self, FILTER_NAMES, NAMES, SharedParameters, WAVEFORM_NAMES};
 use baseview::{
     Event, EventStatus, HandlerError, MouseButton, MouseEvent, WindowContext, WindowHandler,
 };
@@ -31,7 +31,7 @@ pub(super) struct Editor {
     /// Controllerと共有する表示値。
     parameters: Arc<SharedParameters>,
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
-    displayed: Cell<[f64; 9]>,
+    displayed: Cell<[f64; 12]>,
     /// ホストUIスレッドへの編集キュー。描画中にはホストを呼ばない。
     edits: SyncSender<(usize, f64)>,
     #[cfg(target_os = "windows")]
@@ -67,7 +67,7 @@ impl Editor {
             pointer: Cell::new(egui::Pos2::ZERO),
             start: Instant::now(),
             parameters,
-            displayed: Cell::new([f64::NAN; 9]),
+            displayed: Cell::new([f64::NAN; 12]),
             edits,
             #[cfg(target_os = "windows")]
             view,
@@ -130,6 +130,24 @@ impl WindowHandler for Editor {
                             ui.spacing_mut().slider_width = 390.0;
                             for i in 1..NAMES.len() {
                                 ui.label(NAMES[i]);
+                                if i == 9 {
+                                    let mut index = parameters::to_plain(i, selected[i]) as usize;
+                                    if egui::ComboBox::from_id_salt("filter")
+                                        .width(200.0)
+                                        .show_index(ui, &mut index, FILTER_NAMES.len(), |n| {
+                                            FILTER_NAMES[n]
+                                        })
+                                        .changed()
+                                    {
+                                        let _ = self.edits.try_send((
+                                            i,
+                                            parameters::to_normalized(i, index as f64),
+                                        ));
+                                    }
+                                    ui.label("");
+                                    ui.end_row();
+                                    continue;
+                                }
                                 let time = parameters::is_time(i);
                                 let max: u32 = if time {
                                     371
@@ -137,6 +155,10 @@ impl WindowHandler for Editor {
                                     6
                                 } else if i == 8 {
                                     31
+                                } else if i == 10 {
+                                    1200
+                                } else if i == 11 {
+                                    950
                                 } else {
                                     100
                                 };
@@ -169,6 +191,8 @@ impl WindowHandler for Editor {
                                     format!("{value:7.2} ms")
                                 } else if matches!(i, 6 | 8) {
                                     format!("{value:8.0}")
+                                } else if i == 10 {
+                                    format!("{value:+5.0} cent")
                                 } else if i == 7 {
                                     format!("{value:5.1} cent")
                                 } else {

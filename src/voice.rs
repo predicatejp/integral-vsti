@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::envelope::{DEFAULT_ENVELOPE, EnvelopeParameters};
+use crate::filter::{FilterParameters, FilterState, FilterType};
 use crate::oscillator::{Oscillator, OscillatorInput, Waveform};
+use crate::parameters;
 
 /// 全波形共通のvelocityが1のときの基準実効値（RMS）。
 const BASE_RMS_AMPLITUDE: f64 = 0.5;
@@ -23,10 +25,19 @@ pub struct Voice {
     pub(super) oscillator: Oscillator,
     /// Note Offの照合対象。発音指示はoscillator.input.gateに反映し、発振器へノート情報を渡さない。
     note: Option<Note>,
+    /// Voiceの最終段のフィルタ。ノートオフ後も残響を処理する。
+    filter: FilterState,
+    /// 選択中の応答と段数。Noneでは完全にバイパスする。
+    filter_type: FilterType,
+    /// ノート周波数に乗じる倍率。centからの換算は設定変更時に行う。
+    cutoff_ratio: f64,
+    /// 各段へ渡す現在のQ。積分器の履歴とは独立した入力。
+    resonance_q: f64,
 }
 
 impl Voice {
     pub fn new() -> Self {
+        let values = parameters::defaults();
         Self {
             oscillator: Oscillator::new(OscillatorInput {
                 waveform: Waveform::Sine,
@@ -40,6 +51,10 @@ impl Voice {
                 reset_generation: 0,
             }),
             note: None,
+            filter: FilterState::new(),
+            filter_type: parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
+            cutoff_ratio: 2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0),
+            resonance_q: parameters::to_plain(11, values[11]),
         }
     }
 
@@ -89,6 +104,13 @@ impl Voice {
         self.oscillator.input.reset_generation =
             self.oscillator.input.reset_generation.wrapping_add(1);
         self.note = None;
+        self.filter.reset();
+    }
+
+    pub fn set_filter(&mut self, filter_type: FilterType, cutoff_cents: f64, resonance_q: f64) {
+        self.filter_type = filter_type;
+        self.cutoff_ratio = 2.0_f64.powf(cutoff_cents / 1200.0);
+        self.resonance_q = resonance_q;
     }
 
     pub fn set_parameters(
@@ -106,6 +128,83 @@ impl Voice {
 
     /// Voice内の処理パイプライン。生成した信号をSynthesizerが加算する。
     pub fn next_sample(&mut self, sample_rate: f64) -> f64 {
-        self.oscillator.next_sample(sample_rate)
+        let sample = self.oscillator.next_sample(sample_rate);
+        self.filter.process(
+            sample,
+            self.filter_type,
+            &FilterParameters {
+                cutoff_hz: (self.oscillator.input.frequency_hz * self.cutoff_ratio).min(f64::MAX),
+                resonance_q: self.resonance_q,
+            },
+            sample_rate,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cutoff_tracks_note_tuning_and_filters_after_unison() {
+        for filter_type in parameters::FILTER_TYPES {
+            for cents in [-2400.0, 1200.0, 9600.0] {
+                let mut voice = Voice::new();
+                voice.set_parameters(
+                    Waveform::Sawtooth,
+                    EnvelopeParameters {
+                        attack_ms: 0.0,
+                        hold_ms: 0.0,
+                        decay_ms: 0.0,
+                        sustain: 1.0,
+                        release_ms: 0.0,
+                    },
+                    3,
+                    37.0,
+                );
+                voice.set_filter(filter_type, cents, 2.0);
+                assert!(voice.note_on(
+                    Note {
+                        id: 1,
+                        channel: 0,
+                        pitch: 69
+                    },
+                    100.0,
+                    1.0
+                ));
+                let mut oscillator = Oscillator::new(voice.oscillator.input);
+                let mut reference = FilterState::new();
+                let settings = FilterParameters {
+                    cutoff_hz: 440.0 * 2.0_f64.powf(100.0 / 1200.0) * 2.0_f64.powf(cents / 1200.0),
+                    resonance_q: 2.0,
+                };
+                for _ in 0..64 {
+                    let expected = reference.process(
+                        oscillator.next_sample(48_000.0),
+                        filter_type,
+                        &settings,
+                        48_000.0,
+                    );
+                    assert!((voice.next_sample(48_000.0) - expected).abs() < 1e-12);
+                }
+                voice.note_off(Note {
+                    id: 1,
+                    channel: 0,
+                    pitch: 69,
+                });
+                oscillator.input.gate = false;
+                for _ in 0..16 {
+                    let expected = reference.process(
+                        oscillator.next_sample(48_000.0),
+                        filter_type,
+                        &settings,
+                        48_000.0,
+                    );
+                    assert!((voice.next_sample(48_000.0) - expected).abs() < 1e-12);
+                }
+                voice.stop();
+                assert_eq!(voice.next_sample(48_000.0), 0.0);
+            }
+        }
     }
 }

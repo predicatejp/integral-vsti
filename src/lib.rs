@@ -12,8 +12,6 @@ compile_error!("対応対象はLinux x86_64とWindows x86_64 MSVCです");
 mod abi;
 mod editor;
 mod envelope;
-// 音源への接続は次の段階。現時点ではフィルタ単体を検証する。
-#[cfg(test)]
 mod filter;
 mod gui;
 mod host;

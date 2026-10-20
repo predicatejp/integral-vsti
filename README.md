@@ -15,9 +15,9 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
-| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphonyを公開。eguiでも操作可能 |
-| 状態保存 | 波形・エンベロープ・ユニゾン・PolyphonyをVST3のIBStreamで保存・復元 |
-| レイテンシー・テール | レイテンシー0。テールは設定可能な最大releaseの5秒分を保守的に返す |
+| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphony、Filter / Cutoff / Resonanceを公開。eguiでも操作可能 |
+| 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタをVST3のIBStreamで保存・復元 |
+| レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
 ProcessorとControllerは、同一インスタンスから取得できます。
 左右に同じ合成波形を出力します。CC、ピッチベンド、
@@ -65,29 +65,34 @@ macOS・Windows ARM64・32ビット環境は未対応です。
 周波数・サンプルレート・測定区間によって誤差が生じます。帯域制限・アンチエイリアシングは未実装で、
 特に高音域では折り返し成分が発生します。
 
-## フィルタコンポーネント（音源へ未接続）
+## Voiceごとのフィルタ
 
-`src/filter.rs` にTPT SVF単体を実装しています。現時点では単体テストだけに組み込み、
-プラグインの出力・公開パラメーター・GUI・保存形式は変更していません。
-`FilterParameters` は具体的な周波数（Hz）とQを持ち、`SvfState` が1段の積分器の履歴を保持します。
-`SvfState::process` は入力1サンプルと設定、サンプルレートを受け取り、同じ状態から
-`SvfOutput { low, band, high }` を生成して状態を更新します。
-外側の `FilterState` が `FilterType` に応じた出力選択・直列接続を行います。
+音源は `Synthesizer → Voice → Oscillator` の階層です。各VoiceはOscillatorを1個持ち、
+その内部でユニゾンを生成します。各Voiceの最終段に独立したフィルタを適用し、その出力を加算します。
 
-- タイプは `None`、`LowPass1`、`LowPass2`、`HighPass1`、`HighPass2`、`BandPass1`、`BandPass2`。
-  LPF・HPFは1段で12 dB/oct、2段で24 dB/oct。BPFの両側はそれぞれ6／12 dB/octです。
-- 周波数は有限のHzを範囲制限なしで受け取ります。BPFでは中心周波数です。SVF内部の係数計算時だけ20〜20,000 Hzへクランプし、さらにサンプルレートの0.49倍を上限とします。極端に低いレートではこの上限を20 Hzの下限より優先します。要求値自体は書き換えません。
-- Qは0.5〜10。内部フィルタは既定値を持たず、周波数・Q・タイプを呼び出し側から受け取ります。
-- 2段は同じ設定で直列接続します。BPFの中心利得は1段でQ、2段でQ²です。
-- 設定変更時も有効な段の履歴を保持し、未使用の2段目は消去します。`None` は入力・設定値を検証せず入力をそのまま返し、両段の履歴を消去します。`reset` でも全履歴を消去できます。
-- HzとQはサンプルごとに変更でき、整数化しません。将来のエンベロープは呼び出し側で計算し、そのサンプルの値を渡せます。コンポーネント内に補間・クロスフェード・音量補正はありません。
+| パラメーター | 範囲 | 初期値 | ParamID |
+| --- | --- | --- | --- |
+| Filter | None / LowPass1 / LowPass2 / HighPass1 / HighPass2 / BandPass1 / BandPass2 | LowPass1 | `0x46545950` |
+| Cutoff | ノート周波数から−2400〜9600 cent（−2〜＋8 oct）、10 cent刻み | ＋1200 cent（＋1 oct） | `0x46435554` |
+| Resonance | Q=0.5〜10 | `1/√2` | `0x46524553` |
 
-音源は `Synthesizer → Voice → Oscillator` の階層です。各Voiceは現在Oscillatorを1個持ち、
-その内部でユニゾンを生成します。フィルタ接続は後続PRで行い、
-各Voiceの最終段に独立したフィルタを置いて、適用後の信号を加算します。
-その際の周波数指定は現在のノートから−2〜+8 oct（−2400〜9600 cent、10 cent単位）とし、
-呼び出し側で `ノート周波数 × 2^(cent/1200)` に換算して渡します。この範囲・換算とVST3／GUIへの公開は未実装です。
-既定値はUI／VST3設定側で定義し、カットオフの初期値は＋1 oct（＋1200 cent）、Qは `1/√2` とします。
+GUIではFilterをドロップダウン、CutoffとResonanceを整数スライダーで操作します。
+Cutoffは0〜1200 tickを10 cent刻みへ換算し、Resonanceは0〜950 tickをQ=0.5〜10（0.01刻み）へ換算します。
+画面上でCutoffの全tickをマウスで選べることは保証しません。VST3の値変換では全1201通りに対応します。
+Filterは`stepCount=6`のリスト、Cutoffは`stepCount=1200`の離散値として変更点で切り替えます。
+Resonanceは連続値で、ホストの変更点間を正規化値で線形補間します。
+
+Voiceはノートの音程とtuningを含む周波数に `2^(cent/1200)` を乗じ、具体的なHzをフィルタへ渡します。
+カットオフはユニゾンのデチューン前のノート周波数に追従し、Note Off後も最後のノート周波数を使用します。
+
+- `FilterParameters`はそのサンプルのHzとQを持ち、既定値はUI／VST3設定側で定義します。
+- `SvfState`はTPT SVF1段の状態を持ち、`low / band / high`を同時に返します。外側の`FilterState`が出力選択・直列接続を行います。
+- LPF・HPFは1段で12 dB/oct、2段で24 dB/oct。BPFの両側はそれぞれ6／12 dB/oct、中心利得はQ／Q²です。
+- 周波数は有限値を受け取り、内部の係数計算時だけ20〜20,000 Hzにクランプし、さらにサンプルレート×0.49を上限とします。極端に低いレートではこの上限を優先します。
+- 設定変更やVoiceの再使用でも有効な段の履歴を保持します。未使用の2段目とNone時の両段は消去します。Noneでは入力値を検証せずそのまま返します。
+- Note Off後のフィルタ残響も処理します。処理停止・Voice数の減少による停止ではフィルタの履歴も消去します。音量補正・クリッピングは追加しません。
+
+カットオフ・レゾナンスのエンベロープは未実装です。今後Voice側で計算した毎サンプルのHzとQを渡せる構成です。
 
 台形積分したSVFの連立方程式をRustで実装しています。数式の参考は
 [Andrew SimperによるSVFの解説](https://www.cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf)です。
@@ -103,7 +108,7 @@ Note Offと不正なNote OnではIDを進めません。処理停止でも次の
 再使用時は既存の位相と現在振幅を引き継ぎ、新しいノートのattackを開始します。
 
 各枠に独立した入力・位相・エンベロープ状態・ノートの対応を持ち、各枠で既存のユニゾンを生成します。
-波形、AHDSR、Unison、Detuneの設定は全枠共通です。
+波形、AHDSR、Unison、Detune、フィルタ設定は全枠共通です。フィルタ状態と実際のカットオフ周波数はVoiceごとに独立しています。
 出力は使用する全枠の単純加算で、音数による音量補正やクリッピングは行いません。
 最大ベロシティ・エンベロープ最大時の各枠の基準実効値は0.5のままで、合成ピークは1を超える場合があります。
 
@@ -192,8 +197,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v4は76バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphonyを各f64。little endian）です。
-旧v3の68バイトにはPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
+保存形式v5は100バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonanceを各f64。little endian）です。
+旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
 復元値は次の音声処理ブロックから適用し、Controllerは `setComponentState` で同期します。
 位相や発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
@@ -202,7 +207,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 
 ホストのプラグイン画面に、ライトテーマのパラメーターリストを表示します。
 左からパラメーター名、操作欄、現在値を配置し、縦方向に並べます。
-Waveformはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphonyはスライダーです。
+WaveformとFilterはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonanceはスライダーです。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
 サイズは640×480物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。自由なサイズ変更と
@@ -295,7 +300,7 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 `C:\Program Files\Common Files\VST3` に配置します。システム共通フォルダへの配置には管理者権限が必要です。
 
 ホストで再スキャンし、音源一覧の **Sample VSTi** を読み込みます。
-ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphonyの8スライダーを操作できます。
+ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonanceの10スライダーとFilterのドロップダウンを操作できます。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
 ## 検証
@@ -360,7 +365,7 @@ target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3
 ```
 
 Linuxでの確認済み環境: Linux x86_64、Rust 1.95.0 / 1.99.1、GCC 12.2、VST3 SDK 3.8.1
-（インターフェース定義も3.8.1）。Rustテスト17件、ABI検証、Validator 47件が成功しています。
+（インターフェース定義も3.8.1）。Rustテスト40件、ABI検証、Validator 47件が成功しています。
 参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
 イベントバス有効化通知への互換性対応後、サイン波はFL Studioで発音の動作報告があります。
 GUIの表示・クリック・復元・再表示はLinuxのXvfbとMesaで検証しています。
