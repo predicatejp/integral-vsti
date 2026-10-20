@@ -26,8 +26,8 @@ pub enum FilterType {
 /// 毎サンプル参照する設定。タイプ・ノート情報・積分器の履歴は含まない。
 #[derive(Clone, Copy)]
 pub struct FilterParameters {
-    /// そのサンプルで適用する具体的な周波数（Hz）。有限かつ正。
-    /// BPFでは中心周波数。処理時の上限はsample_rateの0.49倍。
+    /// そのサンプルで要求する具体的な周波数（Hz）。有限値を受理する。
+    /// BPFでは中心周波数。適正範囲へのクランプはSVF内部で行う。
     pub cutoff_hz: f64,
     /// そのサンプルで適用する各段のQ（0.5〜10）。BPFの中心利得もQとなる。
     pub resonance_q: f64,
@@ -40,9 +40,7 @@ pub const DEFAULT_FILTER: FilterParameters = FilterParameters {
 
 impl FilterParameters {
     pub fn is_valid(&self) -> bool {
-        self.cutoff_hz.is_finite()
-            && self.cutoff_hz > 0.0
-            && (0.5..=10.0).contains(&self.resonance_q)
+        self.cutoff_hz.is_finite() && (0.5..=10.0).contains(&self.resonance_q)
     }
 }
 
@@ -76,7 +74,10 @@ impl SvfState {
         if !valid_input(sample, parameters, sample_rate) {
             return SvfOutput::default();
         }
-        let g = (std::f64::consts::PI * (parameters.cutoff_hz / sample_rate).min(0.49)).tan();
+        // 入力設定を書き換えず、係数計算時だけ20〜20,000 Hzへクランプする。
+        // 極端に低いレートでもNyquist未満という上限を優先する。
+        let cutoff_hz = parameters.cutoff_hz.clamp(20.0, 20_000.0);
+        let g = (std::f64::consts::PI * (cutoff_hz / sample_rate).min(0.49)).tan();
         let damping = 1.0 / parameters.resonance_q;
         let [s1, s2] = self.integrators;
         // HP = input - damping * BP - LPと2つの台形積分器を連立して解く。
@@ -263,23 +264,48 @@ mod tests {
                 }
             }
         }
-        // Nyquist未満への上限制限は、実際にその周波数を指定した場合と等しい。
-        let mut limited = FilterState::new();
-        let mut explicit = FilterState::new();
-        for n in 0..32 {
-            let sample = if n == 0 { 1.0 } else { 0.0 };
-            assert_eq!(
-                limited.process(sample, FilterType::LowPass1, &DEFAULT_FILTER, 1000.0),
-                explicit.process(
-                    sample,
-                    FilterType::LowPass1,
-                    &FilterParameters {
-                        cutoff_hz: 490.0,
+    }
+
+    #[test]
+    fn frequencies_are_clamped_inside_filter_without_changing_input() {
+        for rate in [1.0_f64, 1000.0, 22_050.0, 44_100.0, 96_000.0] {
+            for filter_type in TYPES {
+                for requested in [
+                    -f64::MAX,
+                    -1.0,
+                    0.0,
+                    19.0,
+                    20.0,
+                    21.0,
+                    1000.0,
+                    19_999.0,
+                    20_000.0,
+                    20_001.0,
+                    f64::MAX,
+                ] {
+                    let parameters = FilterParameters {
+                        cutoff_hz: requested,
                         ..DEFAULT_FILTER
-                    },
-                    1000.0
-                )
-            );
+                    };
+                    assert!(parameters.is_valid());
+                    let boundary = FilterParameters {
+                        cutoff_hz: requested.clamp(20.0, 20_000.0).min(rate * 0.49),
+                        ..DEFAULT_FILTER
+                    };
+                    let mut limited = FilterState::new();
+                    let mut explicit = FilterState::new();
+                    for n in 0..16 {
+                        let sample = if n == 0 { 1.0 } else { 0.0 };
+                        let actual = limited.process(sample, filter_type, &parameters, rate);
+                        let expected = explicit.process(sample, filter_type, &boundary, rate);
+                        assert!(
+                            actual.is_finite() && (actual - expected).abs() < 1e-12,
+                            "{filter_type:?}, rate={rate}, requested={requested}, sample={n}"
+                        );
+                    }
+                    assert_eq!(parameters.cutoff_hz, requested);
+                }
+            }
         }
     }
 
@@ -293,22 +319,26 @@ mod tests {
         };
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0] {
             silent(state.process(1.0, &DEFAULT_FILTER, bad));
-            for parameters in [
-                FilterParameters {
-                    cutoff_hz: bad,
-                    ..DEFAULT_FILTER
-                },
-                FilterParameters {
+            silent(state.process(
+                1.0,
+                &FilterParameters {
                     resonance_q: bad,
                     ..DEFAULT_FILTER
                 },
-            ] {
-                silent(state.process(1.0, &parameters, 48_000.0));
-            }
+                48_000.0,
+            ));
             assert_eq!(state.integrators, previous);
         }
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             silent(state.process(bad, &DEFAULT_FILTER, 48_000.0));
+            silent(state.process(
+                1.0,
+                &FilterParameters {
+                    cutoff_hz: bad,
+                    ..DEFAULT_FILTER
+                },
+                48_000.0,
+            ));
             assert_eq!(state.integrators, previous);
         }
         for q in [0.499, 10.1] {
@@ -321,7 +351,7 @@ mod tests {
             );
         }
         // ノート周波数の上下オクターブ変換は呼び出し側で行う。固定Hz範囲で拒否しない。
-        for hz in [1.0, 100_000.0] {
+        for hz in [-100.0, 0.0, 1.0, 100_000.0] {
             assert!(
                 FilterParameters {
                     cutoff_hz: hz,
