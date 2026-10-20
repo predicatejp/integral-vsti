@@ -67,7 +67,6 @@
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState`、サンプル生成・状態更新。
 - `src/envelope.rs`: AHDSR設定、開始/目標振幅、経過ミリ秒から音量を計算する状態なしのモジュール。
 - `src/synth.rs`: オシレータの循環割り当て、ノート照合と加算出力。
-- `src/diagnostics.rs`: 環境変数で有効化する診断。音声処理中はatomic更新だけとし、終了時にファイルへ出力。
 - `src/tests.rs`: Rust側のABIレイアウト・参照管理・イベント処理テスト。
 - `tests/abi-smoke.cpp`: 公式SDKヘッダを用いる検証専用コード。本体にはリンクしない。
 - `scripts/`: ビルドと検証。生成物は `target/` 以下に配置する。
