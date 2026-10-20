@@ -124,7 +124,7 @@ impl FilterState {
     ) -> f64 {
         if matches!(filter_type, FilterType::None) {
             self.reset();
-            return if sample.is_finite() { sample } else { 0.0 };
+            return sample;
         }
         if !valid_input(sample, parameters, sample_rate) {
             return 0.0;
@@ -394,16 +394,21 @@ mod tests {
     fn bypass_is_exact_and_drops_old_tail() {
         let mut state = FilterState::new();
         state.process(1.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0);
-        for sample in [-2.0, -0.0, 0.0, 0.25, 3.0] {
+        for sample in [
+            -2.0,
+            -0.0,
+            0.0,
+            0.25,
+            3.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
             let output = state.process(sample, FilterType::None, &TEST_PARAMETERS, 48_000.0);
             assert_eq!(output.to_bits(), sample.to_bits());
         }
         assert_eq!(
             state.process(0.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
-            0.0
-        );
-        assert_eq!(
-            state.process(f64::NAN, FilterType::None, &TEST_PARAMETERS, 48_000.0),
             0.0
         );
         // Noneでは使用しない周波数・Q・レートで信号を遮断しない。
