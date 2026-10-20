@@ -21,6 +21,7 @@ mod oscillator;
 mod parameters;
 mod plugin;
 mod synth;
+mod voice;
 
 use abi::*;
 use std::ptr;

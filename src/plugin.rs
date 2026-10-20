@@ -4,7 +4,8 @@
 use crate::abi::*;
 use crate::host::HostRef;
 use crate::parameters::{self, IDS, NAMES, ParameterPoints, SharedParameters, WAVEFORM_NAMES};
-use crate::synth::{Note, Synth};
+use crate::synth::Synthesizer;
+use crate::voice::Note;
 use std::cell::{RefCell, UnsafeCell};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
@@ -52,7 +53,7 @@ struct Plugin {
     /// オシレータ・現在のノート・サンプルレートを所有する可変DSP状態。
     /// processとライフサイクルの更新はVST3規約に従いホストが直列化する。
     /// Controller・照会APIからは触れない。オーディオスレッドでロックしない。
-    synth: UnsafeCell<Synth>,
+    synth: UnsafeCell<Synthesizer>,
     /// 設定済みの最大ブロック長（サンプル数）。初期化前・終了後は0。
     max_samples: AtomicI32,
     /// 設定済みのサンプル形式（SAMPLE32またはSAMPLE64）。正の長さの処理には一致を要求する。
@@ -154,7 +155,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         processor_parameters: SharedParameters::new(),
         controller_parameters: Arc::new(SharedParameters::new()),
         component_handler: RefCell::new(None),
-        synth: UnsafeCell::new(Synth::new()),
+        synth: UnsafeCell::new(Synthesizer::new()),
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
         tail_samples: AtomicU32::new(220500),
@@ -830,7 +831,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
 // これまでの区間と順に処理する。同時刻の変更をすべて適用してからノートを処理する。
 unsafe fn render(
     plugin: &Plugin,
-    synth: &mut Synth,
+    synth: &mut Synthesizer,
     data: &ProcessData,
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
@@ -865,7 +866,7 @@ unsafe fn render(
 
 fn apply_parameters(
     plugin: &Plugin,
-    synth: &mut Synth,
+    synth: &mut Synthesizer,
     changes: &mut [ParameterPoints<'_>; 9],
     offset: i32,
 ) {

@@ -82,11 +82,12 @@ macOS・Windows ARM64・32ビット環境は未対応です。
 - 設定変更時も有効な段の履歴を保持し、未使用の2段目は消去します。`None` は入力・設定値を検証せず入力をそのまま返し、両段の履歴を消去します。`reset` でも全履歴を消去できます。
 - HzとQはサンプルごとに変更でき、整数化しません。将来のエンベロープは呼び出し側で計算し、そのサンプルの値を渡せます。コンポーネント内に補間・クロスフェード・音量補正はありません。
 
-音源への接続は後続PRで行います。設計方針は `Synthesizer → Voice → Oscillator` の階層とし、
+音源は `Synthesizer → Voice → Oscillator` の階層です。各Voiceは現在Oscillatorを1個持ち、
+その内部でユニゾンを生成します。フィルタ接続は後続PRで行い、
 各Voiceの最終段に独立したフィルタを置いて、適用後の信号を加算します。
 その際の周波数指定は現在のノートから−2〜+8 oct（−2400〜9600 cent、10 cent単位）とし、
 呼び出し側で `ノート周波数 × 2^(cent/1200)` に換算して渡します。この範囲・換算とVST3／GUIへの公開は未実装です。
-既定値はUI／VST3設定側で定義し、Qの初期値は `1/√2` とします。
+既定値はUI／VST3設定側で定義し、カットオフの初期値は＋1 oct（＋1200 cent）、Qは `1/√2` とします。
 
 台形積分したSVFの連立方程式をRustで実装しています。数式の参考は
 [Andrew SimperによるSVFの解説](https://www.cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf)です。
@@ -96,7 +97,7 @@ macOS・Windows ARM64・32ビット環境は未対応です。
 **Polyphony** は1〜32（初期値1）、ParamIDは `0x504F4C59`、`stepCount=31` / `kCanAutomate` です。
 GUIでは1刻みの整数スライダーで設定します。変更点では補間せず、ノートより先に適用します。
 
-`Synth.next_oscillator_id` は初期値0です。有効なNote OnをそのIDへ割り当てた後、
+`Synthesizer.next_oscillator_id` は初期値0です。有効なNote OnをそのIDへ割り当てた後、
 `(ID + 1) % Polyphony` へ進めます。空き枠の探索はせず、発音中・release中の枠もこの順に再使用します。
 Note Offと不正なNote OnではIDを進めません。処理停止でも次のIDは保持します。
 再使用時は既存の位相と現在振幅を引き継ぎ、新しいノートのattackを開始します。
@@ -439,7 +440,8 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した4波形オシレータ。
-- `src/synth.rs`: オシレータの循環割り当て、ノート照合と加算出力。
+- `src/synth.rs`: SynthesizerによるVoiceの循環割り当てと加算出力。
+- `src/voice.rs`: Voiceごとのノート照合と処理パイプライン。内部にユニゾン対応のOscillatorを1個所有。
 - `src/tests.rs`: Rust側のABIレイアウトと参照管理のテスト。
 - `tests/gui-smoke.h`: 埋め込み画面とマウス操作の検証専用コード。
 - `scripts/bundle-licenses.py`: 対象OSの依存ライブラリと付属フォントの通知収集。

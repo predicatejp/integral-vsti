@@ -99,6 +99,27 @@ impl OscillatorInput {
     }
 }
 
+/// 定常入力と内部状態を所有する発振器コンポーネント。
+pub struct Oscillator {
+    /// イベント・パラメーター変更で更新する回路の定常入力。
+    pub input: OscillatorInput,
+    /// サンプル生成時だけ更新する内部状態。
+    state: OscillatorState,
+}
+
+impl Oscillator {
+    pub fn new(input: OscillatorInput) -> Self {
+        Self {
+            input,
+            state: OscillatorState::new(),
+        }
+    }
+
+    pub fn next_sample(&mut self, sample_rate: f64) -> f64 {
+        self.state.next_sample(&self.input, sample_rate)
+    }
+}
+
 /// 発振器回路の内部状態。イベント処理からは書き換えない。
 #[derive(Clone, Copy)]
 pub struct OscillatorState {
