@@ -344,7 +344,7 @@ Linux x86_64とWindows x86_64のランナーを使用します。
 | ジョブ | 内容 |
 | --- | --- |
 | Format, Clippy, docs | rustfmt、警告をエラーにするClippyとドキュメント生成 |
-| Build and test | Linux/WindowsそれぞれでMSRV（Rust 1.95.0）と最新stableのcheck・debug/releaseテスト・releaseビルド |
+| Build and test | Linux/WindowsそれぞれでMSRV（Rust 1.95.0）と最新stableのdebug/releaseテスト・releaseビルド（全target・全feature） |
 | Miri | 固定したnightlyでRustテストの未定義動作を検査 |
 | Coverage | RustテストのLCOVレポートを生成・保存 |
 | Dependency audit | cargo-denyで脆弱性・ライセンス・依存元・依存バージョンを監査 |
@@ -354,6 +354,14 @@ Linux x86_64とWindows x86_64のランナーを使用します。
 CIは読み取り専用のリポジトリ権限で動作します。成果物は14日間保持します。
 Miriとカバレッジの対象はRustテストです。外部ホストとのABI互換性は別のVST3ジョブで検証します。
 現時点ではカバレッジ率の最低値は設けていません。
+
+Build and testとVST3検証では、Cargoの取得済み依存とビルド結果を
+GitHub公式の`actions/cache` v4.3.0（MIT、コミット固定）で再利用します。
+キャッシュはOS・ジョブ・Rustコンパイラー・Cargo.lock・ビルド設定ごとに分けます。
+依存変更時も同じコンパイラーのキャッシュから再利用できる分を復元し、Cargoが変更分を再ビルドします。
+初回やコンパイラー更新時にはキャッシュ生成が必要です。CIではincrementalを無効にしてキャッシュ容量を抑え、
+対象コミットを`SAMPLE_VSTI_COMMIT`でも明示して古いバージョン情報の再利用を防ぎます。
+独立した`cargo check`はテスト・ビルドと重複するため実行しません。
 
 CIと同じRust用ツールをローカルへ一括インストールするには、rustup導入済みの環境で次を実行します。
 stableの更新、MSRV・nightlyの追加、rustfmt・Clippy・LLVMツール・Miri・cargo-deny・cargo-llvm-covの導入を行います。
