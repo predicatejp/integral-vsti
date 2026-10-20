@@ -776,7 +776,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
             }
             // SAFETY: channelsは検証済みで、区間は0..num_samples内。
             nonzero |= unsafe {
-                render(
+                generate_samples(
                     plugin,
                     synth,
                     data,
@@ -809,7 +809,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     }
     // SAFETY: 最後のイベントからブロック末尾まで。バッファがなくても位相を進める。
     nonzero |= unsafe {
-        render(
+        generate_samples(
             plugin,
             synth,
             data,
@@ -828,7 +828,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
 // SAFETY契約: channelsの各要素はnum_samples個の書き込み領域。rangeは範囲内。
 // changesはこのprocessから借用し、
 // これまでの区間と順に処理する。同時刻の変更をすべて適用してからノートを処理する。
-unsafe fn render(
+unsafe fn generate_samples(
     plugin: &Plugin,
     synth: &mut Synthesizer,
     data: &ProcessData,
@@ -839,7 +839,7 @@ unsafe fn render(
     let mut nonzero = false;
     for offset in range.clone() {
         apply_parameters(plugin, synth, changes, offset);
-        let sample = synth.next_sample();
+        let sample = synth.generate_sample();
         if let Some(channels) = channels {
             // 同じ領域を指す左右チャンネルも許す。排他的sliceは作らず、同一サンプルを順に書く。
             if data.symbolic_sample_size == SAMPLE32 {
