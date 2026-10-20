@@ -18,21 +18,18 @@ pub struct Note {
     pub pitch: i16,
 }
 
-pub struct Synth {
+/// 同時発音の1枠。入力・内部状態・ノートの対応を他の枠から独立させる。
+struct Voice {
     /// 発振器へ継続的に与える波形・周波数・目標実効値・ゲート。ノートイベントはこの入力だけを更新する。
     oscillator_input: OscillatorInput,
     /// 発振器の内部状態。サンプル生成後にだけ更新し、ノート切り替え時にも作り直さない。
     oscillator_state: OscillatorState,
     /// Note Offの照合対象。発音指示はoscillator_input.gateに反映し、発振器へノート情報を渡さない。
     note: Option<Note>,
-    /// 波形生成に用いるサンプルレート（Hz）。初期値44100、処理設定でホストの値へ更新する。
-    sample_rate: f64,
-    /// 適用済みの正規化値。変更がないサンプルでは対数変換を繰り返さない。
-    parameters: [f64; 8],
 }
 
-impl Synth {
-    pub fn new() -> Self {
+impl Voice {
+    fn new() -> Self {
         Self {
             oscillator_input: OscillatorInput {
                 waveform: Waveform::Sine,
@@ -47,30 +44,10 @@ impl Synth {
             },
             oscillator_state: OscillatorState::new(),
             note: None,
-            sample_rate: 44100.0,
-            parameters: parameters::defaults(),
         }
     }
 
-    pub fn set_sample_rate(&mut self, sample_rate: f64) {
-        self.sample_rate = sample_rate;
-    }
-
-    /// 変更されたパラメーターを入力へ反映し、発振器の内部状態は保持する。
-    pub fn set_parameters(&mut self, values: [f64; 8]) -> bool {
-        if values == self.parameters {
-            return false;
-        }
-        self.parameters = values;
-        self.oscillator_input.waveform =
-            parameters::from_normalized(values[0]).expect("validated values");
-        self.oscillator_input.envelope = parameters::envelope(&values);
-        self.oscillator_input.unison_voices = parameters::to_plain(6, values[6]) as u32;
-        self.oscillator_input.detune_cents = parameters::to_plain(7, values[7]);
-        true
-    }
-
-    pub fn note_on(&mut self, note: Note, tuning: f32, velocity: f32) -> bool {
+    fn note_on(&mut self, note: Note, tuning: f32, velocity: f32) -> bool {
         if !(0..16).contains(&note.channel)
             || !(0..128).contains(&note.pitch)
             || !tuning.is_finite()
@@ -97,7 +74,7 @@ impl Synth {
         }
     }
 
-    pub fn note_off(&mut self, note: Note) {
+    fn note_off(&mut self, note: Note) {
         if self.note.is_some_and(|current| {
             if current.id != -1 && note.id != -1 {
                 current.id == note.id
@@ -110,17 +87,101 @@ impl Synth {
         }
     }
 
-    pub fn stop(&mut self) {
+    fn stop(&mut self) {
         // releaseとは区別し、次サンプルで即時消音する。位相は保持する。
         self.oscillator_input.gate = false;
         self.oscillator_input.reset_generation =
             self.oscillator_input.reset_generation.wrapping_add(1);
         self.note = None;
     }
+}
+
+pub struct Synth {
+    /// 最大32枠を初期化時に確保し、音声処理中は確保・解放しない。
+    voices: [Voice; 32],
+    /// 次の有効なNote Onを割り当てるオシレータID。初期値0、使用枠数で循環する。
+    next_oscillator_id: usize,
+    /// 現在使用する枠数（1..=32）。範囲外の枠は停止し、位相だけ保持する。
+    polyphony: usize,
+    /// 全オシレータに共通のサンプルレート（Hz）。
+    sample_rate: f64,
+    /// 適用済みの正規化値。変更時だけ実単位へ換算する。
+    parameters: [f64; 9],
+}
+
+impl Synth {
+    pub fn new() -> Self {
+        Self {
+            voices: std::array::from_fn(|_| Voice::new()),
+            next_oscillator_id: 0,
+            polyphony: 1,
+            sample_rate: 44100.0,
+            parameters: parameters::defaults(),
+        }
+    }
+
+    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate;
+    }
+
+    /// 設定は全枠の入力に反映し、発振器の内部状態はイベント処理から変更しない。
+    pub fn set_parameters(&mut self, values: [f64; 9]) -> bool {
+        if values == self.parameters {
+            return false;
+        }
+        self.parameters = values;
+        let count = parameters::to_plain(8, values[8]) as usize;
+        if count < self.polyphony {
+            for voice in &mut self.voices[count..self.polyphony] {
+                voice.stop();
+            }
+        }
+        self.polyphony = count;
+        self.next_oscillator_id %= count;
+        let waveform = parameters::from_normalized(values[0]).expect("validated values");
+        let envelope = parameters::envelope(&values);
+        let unison_voices = parameters::to_plain(6, values[6]) as u32;
+        let detune_cents = parameters::to_plain(7, values[7]);
+        for voice in &mut self.voices {
+            voice.oscillator_input.waveform = waveform;
+            voice.oscillator_input.envelope = envelope;
+            voice.oscillator_input.unison_voices = unison_voices;
+            voice.oscillator_input.detune_cents = detune_cents;
+        }
+        true
+    }
+
+    pub fn note_on(&mut self, note: Note, tuning: f32, velocity: f32) -> bool {
+        // 空き枠探索はせず、指定された循環順で発音中の枠も再使用する。
+        if !self.voices[self.next_oscillator_id].note_on(note, tuning, velocity) {
+            return false;
+        }
+        self.next_oscillator_id = (self.next_oscillator_id + 1) % self.polyphony;
+        true
+    }
+
+    pub fn note_off(&mut self, note: Note) {
+        // 同じID、またはID未提供の同チャンネル・同音高が複数あれば全一致をreleaseする。
+        for voice in &mut self.voices[..self.polyphony] {
+            voice.note_off(note);
+        }
+    }
+
+    pub fn stop(&mut self) {
+        for voice in &mut self.voices {
+            voice.stop();
+        }
+    }
 
     pub fn next_sample(&mut self) -> f64 {
-        self.oscillator_state
-            .next_sample(&self.oscillator_input, self.sample_rate)
+        self.voices[..self.polyphony]
+            .iter_mut()
+            .map(|voice| {
+                voice
+                    .oscillator_state
+                    .next_sample(&voice.oscillator_input, self.sample_rate)
+            })
+            .sum()
     }
 }
 
@@ -130,6 +191,150 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    fn polyphonic(count: usize) -> Synth {
+        let mut synth = Synth::new();
+        let mut values = parameters::defaults();
+        values[0] = parameters::normalized(Waveform::Square);
+        values[1] = 0.0;
+        values[3] = 0.0;
+        values[4] = 1.0;
+        values[5] = 0.0;
+        values[8] = parameters::to_normalized(8, count as f64);
+        synth.set_parameters(values);
+        synth.set_sample_rate(48000.0);
+        synth
+    }
+
+    #[test]
+    fn polyphony_cycles_all_counts_and_sums_independent_notes() {
+        for count in 1..=32 {
+            let mut synth = polyphonic(count);
+            for id in 0..count {
+                assert_eq!(synth.next_oscillator_id, id);
+                assert!(synth.note_on(note(id as i32, 0, 60 + id as i16), 0.0, 1.0));
+            }
+            assert_eq!(synth.next_oscillator_id, 0);
+            // 全枠の初回サンプルは矩形波の正側。音数による音量補正はしない。
+            assert!((synth.next_sample() - 0.5 * count as f64).abs() < 1e-12);
+            assert!(synth.note_on(note(100, 0, 100), 0.0, 0.5));
+            synth.note_off(note(0, 0, 60)); // 上書き済みのノートでは新しい音を消さない。
+            assert!(synth.voices[0].oscillator_input.gate);
+            assert!((synth.next_sample() - (0.5 * count as f64 - 0.25)).abs() < 1e-12);
+            let next = synth.next_oscillator_id;
+            synth.note_off(note(100, 0, 100));
+            assert_eq!(synth.next_oscillator_id, next);
+            for id in 1..count {
+                synth.note_off(note(id as i32, 0, 60 + id as i16));
+            }
+            assert_eq!(synth.next_sample(), 0.0);
+            assert!(!synth.note_on(note(200, 16, 60), 0.0, 1.0));
+            assert!(!synth.note_on(note(200, 0, 60), f32::MAX, 1.0));
+            assert_eq!(synth.next_oscillator_id, next);
+        }
+    }
+
+    #[test]
+    fn polyphony_envelopes_and_unison_match_independent_oscillators() {
+        let mut synth = polyphonic(3);
+        let mut values = synth.parameters;
+        values[0] = 0.0; // Sineで位相差も比較する。
+        values[1] = parameters::to_normalized(1, 5.0);
+        values[5] = parameters::to_normalized(5, 10.0);
+        values[6] = 1.0;
+        values[7] = 0.37;
+        synth.set_parameters(values);
+        let mut references: [Synth; 3] = std::array::from_fn(|_| {
+            let mut single = polyphonic(1);
+            let mut settings = values;
+            settings[8] = 0.0;
+            single.set_parameters(settings);
+            single
+        });
+        // 発音時刻・音高・ベロシティが異なる3音。4音目は0番を再使用。
+        for sample in 0..96 {
+            for (at, slot, id, pitch, velocity) in [
+                (0, 0, 1, 60, 1.0),
+                (7, 1, 2, 64, 0.5),
+                (15, 2, 3, 67, 0.75),
+                (48, 0, 4, 72, 0.25),
+            ] {
+                if sample == at {
+                    synth.note_on(note(id, 0, pitch), 0.0, velocity);
+                    references[slot].note_on(note(id, 0, pitch), 0.0, velocity);
+                }
+            }
+            if sample == 32 {
+                synth.note_off(note(2, 0, 64));
+                references[1].note_off(note(2, 0, 64));
+            }
+            if sample == 64 {
+                synth.note_off(note(1, 0, 60));
+            } // 0番の新しい音へ影響しない。
+            if sample == 80 {
+                synth.stop();
+                for single in &mut references {
+                    single.stop();
+                }
+            }
+            let expected: f64 = references.iter_mut().map(Synth::next_sample).sum();
+            assert!((synth.next_sample() - expected).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn polyphony_resize_stops_removed_notes_and_bounds_next_id() {
+        let mut synth = polyphonic(4);
+        for id in 0..3 {
+            synth.note_on(note(id, 0, 60), 0.0, 1.0);
+        }
+        assert_eq!(synth.next_sample(), 1.5);
+        let mut values = synth.parameters;
+        values[8] = parameters::to_normalized(8, 2.0);
+        synth.set_parameters(values);
+        assert_eq!(synth.next_oscillator_id, 1); // 3 % 2
+        assert_eq!(synth.next_sample(), 1.0);
+        values[8] = parameters::to_normalized(8, 4.0);
+        synth.set_parameters(values);
+        assert_eq!(synth.next_sample(), 1.0); // 除外したノートは復活しない。
+        synth.note_on(note(4, 0, 60), 0.0, 1.0); // 1番を上書き。
+        synth.note_on(note(5, 0, 60), 0.0, 1.0); // 2番を再使用。
+        assert_eq!(synth.next_sample(), 1.5);
+        // サンプル処理を挟まず減少→増加→再割り当てしても古い振幅を引き継がない。
+        values[8] = 0.0;
+        synth.set_parameters(values);
+        values[8] = parameters::to_normalized(8, 4.0);
+        values[1] = parameters::to_normalized(1, 10.0);
+        synth.set_parameters(values);
+        synth.note_on(note(6, 0, 60), 0.0, 1.0);
+        synth.note_on(note(7, 0, 60), 0.0, 1.0);
+        assert_eq!(synth.next_sample(), 0.5);
+        synth.stop();
+        assert_eq!(synth.next_sample(), 0.0);
+    }
+
+    #[test]
+    fn polyphony_note_off_matches_ids_and_missing_id_channel_pitch() {
+        let mut synth = polyphonic(4);
+        for n in [
+            note(1, 0, 60),
+            note(2, 0, 60),
+            note(-1, 1, 60),
+            note(-1, 1, 60),
+        ] {
+            synth.note_on(n, 0.0, 1.0);
+        }
+        assert_eq!(synth.next_sample(), 2.0);
+        synth.note_off(note(1, 0, 60));
+        assert_eq!(synth.next_sample(), 1.5);
+        synth.note_off(note(-1, 2, 60)); // 別チャンネルは無関係。
+        assert_eq!(synth.next_sample(), 1.5);
+        synth.note_off(note(-1, 1, 60)); // IDなし同音の全一致をrelease。
+        assert_eq!(synth.next_sample(), 0.5);
+        synth.note_off(note(2, 0, 60));
+        assert_eq!(synth.next_sample(), 0.0);
+        assert_eq!(synth.next_oscillator_id, 0);
     }
 
     #[test]
@@ -149,11 +354,11 @@ mod tests {
             for &(rate, samples) in measurements {
                 for velocity in [0.0, 0.25, 0.5, 1.0] {
                     let mut synth = Synth::new();
-                    synth.oscillator_input.waveform = waveform;
+                    synth.voices[0].oscillator_input.waveform = waveform;
                     // 定常RMSの検証なので、立ち上がり・リリースだけ許容最短にする。
-                    synth.oscillator_input.envelope.attack_ms = 1.0;
-                    synth.oscillator_input.envelope.decay_ms = 1.0;
-                    synth.oscillator_input.envelope.release_ms = 1.0;
+                    synth.voices[0].oscillator_input.envelope.attack_ms = 1.0;
+                    synth.voices[0].oscillator_input.envelope.decay_ms = 1.0;
+                    synth.voices[0].oscillator_input.envelope.release_ms = 1.0;
                     synth.set_sample_rate(f64::from(rate));
                     assert!(synth.note_on(note(1, 0, 69), 0.0, velocity));
                     // attack/decayが終わったsustain区間のRMSを測る。
@@ -188,7 +393,7 @@ mod tests {
     fn retrigger_release_and_stop_preserve_amplitude_and_phase() {
         let mut synth = Synth::new();
         synth.set_sample_rate(1000.0); // 1サンプル=1ms。
-        synth.oscillator_input.waveform = Waveform::Square;
+        synth.voices[0].oscillator_input.waveform = Waveform::Square;
         synth.note_on(note(1, 0, 69), 0.0, 1.0);
         for i in 0..5 {
             assert!((synth.next_sample().abs() - 0.05 * f64::from(i)).abs() < 1e-12);
@@ -224,7 +429,7 @@ mod tests {
     fn missing_note_ids_match_channel_and_pitch_and_invalid_notes_are_ignored() {
         let mut synth = Synth::new();
         synth.set_sample_rate(1000.0);
-        synth.oscillator_input.waveform = Waveform::Square;
+        synth.voices[0].oscillator_input.waveform = Waveform::Square;
         synth.note_on(note(-1, 2, 69), 0.0, 1.0);
         for _ in 0..5 {
             synth.next_sample();
