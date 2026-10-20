@@ -31,7 +31,7 @@ pub(super) struct Editor {
     /// Controllerと共有する表示値。
     parameters: Arc<SharedParameters>,
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
-    displayed: Cell<[f64; 6]>,
+    displayed: Cell<[f64; 8]>,
     /// ホストUIスレッドへの編集キュー。描画中にはホストを呼ばない。
     edits: SyncSender<(usize, f64)>,
     #[cfg(target_os = "windows")]
@@ -67,7 +67,7 @@ impl Editor {
             pointer: Cell::new(egui::Pos2::ZERO),
             start: Instant::now(),
             parameters,
-            displayed: Cell::new([f64::NAN; 6]),
+            displayed: Cell::new([f64::NAN; 8]),
             edits,
             #[cfg(target_os = "windows")]
             view,
@@ -128,14 +128,20 @@ impl WindowHandler for Editor {
                             ui.label("");
                             ui.end_row();
                             ui.spacing_mut().slider_width = 390.0;
-                            for i in 1..6 {
+                            for i in 1..NAMES.len() {
                                 ui.label(NAMES[i]);
                                 let time = parameters::is_time(i);
-                                let max: u32 = if time { 371 } else { 100 };
+                                let max: u32 = if time {
+                                    371
+                                } else if i == 6 {
+                                    6
+                                } else {
+                                    100
+                                };
                                 let scale = if time {
                                     parameters::time_scale()
                                 } else {
-                                    100.0
+                                    f64::from(max)
                                 };
                                 let mut tick = (selected[i] * scale).round() as u32;
                                 let response = ui.add(
@@ -159,6 +165,10 @@ impl WindowHandler for Editor {
                                 // 等幅・固定桁数で整数部を右寄せし、1の位と小数点を揃える。
                                 ui.monospace(if time {
                                     format!("{value:7.2} ms")
+                                } else if i == 6 {
+                                    format!("{value:8.0}")
+                                } else if i == 7 {
+                                    format!("{value:5.1} cent")
                                 } else {
                                     format!("{value:8.3}")
                                 });
