@@ -67,7 +67,7 @@ pub(super) struct ViewState {
     #[cfg(target_os = "linux")]
     /// UIスレッドで編集を配送するタイマー。取り外し時に必ず解除する。
     ticker: RefCell<Option<Ticker>>,
-    /// Controllerと共有する6個の正規化値。
+    /// Controllerと共有する12個の正規化値。
     parameters: Arc<SharedParameters>,
     /// 描画側からの操作の送り口。音声スレッドでは使用しない。
     sender: SyncSender<(usize, f64)>,
@@ -77,47 +77,46 @@ pub(super) struct ViewState {
     polling: Cell<bool>,
 }
 
-impl ViewState {
-    pub(super) fn poll(&self) {
-        if self.polling.replace(true) {
-            return;
-        }
-        let window = self.window.borrow().clone();
-        if let Some(_window) = window {
-            for _ in 0..32 {
-                let edit = self.receiver.borrow().try_recv();
-                let Ok((index, value)) = edit else {
-                    break;
-                };
-                // SAFETY: 両OSのタイマーはホストUIスレッドでのみ配送する。controllerが所有参照を保持する。
-                unsafe {
-                    crate::plugin::edit_parameter(self.controller.as_ptr(), index, value);
-                }
+pub(super) fn poll(state: &ViewState) {
+    if state.polling.replace(true) {
+        return;
+    }
+    let window = state.window.borrow().clone();
+    if let Some(_window) = window {
+        for _ in 0..32 {
+            let edit = state.receiver.borrow().try_recv();
+            let Ok((index, value)) = edit else {
+                break;
+            };
+            // SAFETY: 両OSのタイマーはホストUIスレッドでのみ配送する。controllerが所有参照を保持する。
+            unsafe {
+                crate::plugin::edit_parameter(state.controller.as_ptr(), index, value);
             }
         }
-        self.polling.set(false);
     }
-    fn close(&self) {
-        #[cfg(target_os = "windows")]
-        VIEWS.with(|views| {
-            views
-                .borrow_mut()
-                .remove(&(std::ptr::from_ref(self) as usize))
-        });
-        // 外部への呼び出し中にRefCellを借用し続けない。
-        #[cfg(target_os = "linux")]
-        {
-            let ticker = self.ticker.borrow_mut().take();
-            drop(ticker);
-        }
-        let window = self.window.borrow_mut().take();
-        drop(window);
-        while self.receiver.borrow().try_recv().is_ok() {}
-    }
+    state.polling.set(false);
 }
+fn close(state: &ViewState) {
+    #[cfg(target_os = "windows")]
+    VIEWS.with(|views| {
+        views
+            .borrow_mut()
+            .remove(&(std::ptr::from_ref(state) as usize))
+    });
+    // 外部への呼び出し中にRefCellを借用し続けない。
+    #[cfg(target_os = "linux")]
+    {
+        let ticker = state.ticker.borrow_mut().take();
+        drop(ticker);
+    }
+    let window = state.window.borrow_mut().take();
+    drop(window);
+    while state.receiver.borrow().try_recv().is_ok() {}
+}
+
 impl Drop for ViewState {
     fn drop(&mut self) {
-        self.close();
+        close(self);
     }
 }
 
@@ -318,20 +317,20 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
             let window = Rc::new(window);
             *state.window.borrow_mut() = Some(Rc::clone(&window));
             if window.show().is_err() {
-                state.close();
+                close(&state);
                 return FALSE;
             }
             OK
         }
         Err(_) => {
-            state.close();
+            close(&state);
             FALSE
         }
     }
 }
 unsafe extern "system" fn removed(this: This) -> TResult {
     // SAFETY: UIスレッド。DSPには触れず、GUIの借用と登録だけを終了する。
-    unsafe { state(this) }.close();
+    close(unsafe { state(this) }.as_ref());
     OK
 }
 unsafe extern "system" fn wheel(_: This, _: f32) -> TResult {
@@ -417,5 +416,5 @@ impl Drop for Ticker {
 #[cfg(target_os = "linux")]
 unsafe extern "system" fn tick(this: This) {
     // SAFETY: IRunLoopはホストのUIスレッドからだけ呼ぶ。
-    unsafe { state(this) }.poll();
+    poll(unsafe { state(this) }.as_ref());
 }

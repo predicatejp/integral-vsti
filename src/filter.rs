@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! TPT SVFの3出力と、その外側での出力選択・直列接続。
-//! 数式の参考: https://www.cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf
+//! 数式の参考: <https://www.cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf>
 
 /// SVFの外側で選ぶ応答と直列段数。各段に同じカットオフ・Qを適用する。
 #[derive(Clone, Copy, Debug)]
@@ -57,40 +57,38 @@ pub struct SvfState {
     integrators: [f64; 2],
 }
 
-impl SvfState {
-    /// 3出力を生成してから次サンプル用の状態を更新する。確保・ロック・I/Oは行わない。
-    /// 不正入力では状態を保持して無音、演算オーバーフローでは状態を消去して無音を返す。
-    pub fn process(
-        &mut self,
-        sample: f64,
-        parameters: &FilterParameters,
-        sample_rate: f64,
-    ) -> SvfOutput {
-        if !valid_input(sample, parameters, sample_rate) {
-            return SvfOutput::default();
-        }
-        // 入力設定を書き換えず、係数計算時だけ20〜20,000 Hzへクランプする。
-        // 極端に低いレートでもNyquist未満という上限を優先する。
-        let cutoff_hz = parameters.cutoff_hz.clamp(20.0, 20_000.0);
-        let g = (std::f64::consts::PI * (cutoff_hz / sample_rate).min(0.49)).tan();
-        let damping = 1.0 / parameters.resonance_q;
-        let [s1, s2] = self.integrators;
-        // HP = input - damping * BP - LPと2つの台形積分器を連立して解く。
-        let high = (sample - (damping + g) * s1 - s2) / (1.0 + g * (g + damping));
-        let band = s1 + g * high;
-        let low = s2 + g * band;
-        let next = [2.0 * band - s1, 2.0 * low - s2];
-        if [low, band, high]
-            .iter()
-            .chain(next.iter())
-            .any(|v| !v.is_finite())
-        {
-            *self = Self::default();
-            return SvfOutput::default();
-        }
-        self.integrators = next;
-        SvfOutput { low, band, high }
+/// 3出力を生成してから次サンプル用の状態を更新する。確保・ロック・I/Oは行わない。
+/// 不正入力では状態を保持して無音、演算オーバーフローでは状態を消去して無音を返す。
+pub fn process_svf_sample(
+    state: &mut SvfState,
+    sample: f64,
+    parameters: &FilterParameters,
+    sample_rate: f64,
+) -> SvfOutput {
+    if !valid_input(sample, parameters, sample_rate) {
+        return SvfOutput::default();
     }
+    // 入力設定を書き換えず、係数計算時だけ20〜20,000 Hzへクランプする。
+    // 極端に低いレートでもNyquist未満という上限を優先する。
+    let cutoff_hz = parameters.cutoff_hz.clamp(20.0, 20_000.0);
+    let g = (std::f64::consts::PI * (cutoff_hz / sample_rate).min(0.49)).tan();
+    let damping = 1.0 / parameters.resonance_q;
+    let [s1, s2] = state.integrators;
+    // HP = input - damping * BP - LPと2つの台形積分器を連立して解く。
+    let high = (sample - (damping + g) * s1 - s2) / (1.0 + g * (g + damping));
+    let band = s1 + g * high;
+    let low = s2 + g * band;
+    let next = [2.0 * band - s1, 2.0 * low - s2];
+    if [low, band, high]
+        .iter()
+        .chain(next.iter())
+        .any(|v| !v.is_finite())
+    {
+        *state = SvfState::default();
+        return SvfOutput::default();
+    }
+    state.integrators = next;
+    SvfOutput { low, band, high }
 }
 
 fn valid_input(sample: f64, parameters: &FilterParameters, sample_rate: f64) -> bool {
@@ -103,51 +101,49 @@ pub struct FilterState {
     stages: [SvfState; 2],
 }
 
-impl FilterState {
-    pub fn new() -> Self {
-        Self {
-            stages: [SvfState::default(), SvfState::default()],
-        }
+pub fn new_state() -> FilterState {
+    FilterState {
+        stages: [SvfState::default(), SvfState::default()],
     }
+}
 
-    /// 処理停止・再初期化用。残響を即座に消去する。
-    pub fn reset(&mut self) {
-        *self = Self::new();
+/// 処理停止・再初期化用。残響を即座に消去する。
+pub fn reset(state: &mut FilterState) {
+    *state = new_state();
+}
+
+pub fn process_sample(
+    state: &mut FilterState,
+    sample: f64,
+    filter_type: FilterType,
+    parameters: &FilterParameters,
+    sample_rate: f64,
+) -> f64 {
+    if matches!(filter_type, FilterType::None) {
+        reset(state);
+        return sample;
     }
-
-    pub fn process(
-        &mut self,
-        sample: f64,
-        filter_type: FilterType,
-        parameters: &FilterParameters,
-        sample_rate: f64,
-    ) -> f64 {
-        if matches!(filter_type, FilterType::None) {
-            self.reset();
-            return sample;
-        }
-        if !valid_input(sample, parameters, sample_rate) {
-            return 0.0;
-        }
-        let count = match filter_type {
-            FilterType::LowPass2 | FilterType::HighPass2 | FilterType::BandPass2 => 2,
-            _ => 1,
+    if !valid_input(sample, parameters, sample_rate) {
+        return 0.0;
+    }
+    let count = match filter_type {
+        FilterType::LowPass2 | FilterType::HighPass2 | FilterType::BandPass2 => 2,
+        _ => 1,
+    };
+    let mut sample = sample;
+    for stage in &mut state.stages[..count] {
+        let output = process_svf_sample(stage, sample, parameters, sample_rate);
+        sample = match filter_type {
+            FilterType::LowPass1 | FilterType::LowPass2 => output.low,
+            FilterType::HighPass1 | FilterType::HighPass2 => output.high,
+            FilterType::BandPass1 | FilterType::BandPass2 => output.band,
+            FilterType::None => unreachable!(),
         };
-        let mut sample = sample;
-        for stage in &mut self.stages[..count] {
-            let output = stage.process(sample, parameters, sample_rate);
-            sample = match filter_type {
-                FilterType::LowPass1 | FilterType::LowPass2 => output.low,
-                FilterType::HighPass1 | FilterType::HighPass2 => output.high,
-                FilterType::BandPass1 | FilterType::BandPass2 => output.band,
-                FilterType::None => unreachable!(),
-            };
-        }
-        if count == 1 {
-            self.stages[1] = SvfState::default();
-        }
-        sample
     }
+    if count == 1 {
+        state.stages[1] = SvfState::default();
+    }
+    sample
 }
 
 #[cfg(test)]
@@ -180,10 +176,11 @@ mod tests {
                         cutoff_hz: 1000.0,
                         resonance_q: q,
                     };
-                    let mut state = FilterState::new();
+                    let mut state = new_state();
                     let impulse: Vec<_> = (0..8192)
                         .map(|n| {
-                            state.process(
+                            process_sample(
+                                &mut state,
                                 if n == 0 { 1.0 } else { 0.0 },
                                 filter_type,
                                 &parameters,
@@ -227,40 +224,49 @@ mod tests {
     fn state_survives_parameter_changes_and_unused_stage_is_cleared() {
         let mut parameters = TEST_PARAMETERS;
         let mut filter_type = FilterType::LowPass1;
-        let mut state = FilterState::new();
-        assert_eq!(state.process(0.0, filter_type, &parameters, 48_000.0), 0.0);
-        state.process(1.0, filter_type, &parameters, 48_000.0);
+        let mut state = new_state();
+        assert_eq!(
+            process_sample(&mut state, 0.0, filter_type, &parameters, 48_000.0),
+            0.0
+        );
+        process_sample(&mut state, 1.0, filter_type, &parameters, 48_000.0);
         parameters.cutoff_hz = 1000.0;
         parameters.resonance_q = 10.0;
         filter_type = FilterType::BandPass2;
-        assert_ne!(state.process(0.0, filter_type, &parameters, 48_000.0), 0.0);
+        assert_ne!(
+            process_sample(&mut state, 0.0, filter_type, &parameters, 48_000.0),
+            0.0
+        );
         assert_ne!(state.stages[1].integrators, [0.0; 2]);
         filter_type = FilterType::BandPass1;
-        state.process(0.0, filter_type, &parameters, 48_000.0);
+        process_sample(&mut state, 0.0, filter_type, &parameters, 48_000.0);
         assert_eq!(state.stages[1].integrators, [0.0; 2]);
-        state.reset();
-        assert_eq!(state.process(0.0, filter_type, &parameters, 48_000.0), 0.0);
+        reset(&mut state);
+        assert_eq!(
+            process_sample(&mut state, 0.0, filter_type, &parameters, 48_000.0),
+            0.0
+        );
     }
 
     #[test]
     fn extremes_and_modulation_remain_finite() {
         for rate in [1000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
             for filter_type in TYPES {
-                let mut state = FilterState::new();
+                let mut state = new_state();
                 for n in 0..256 {
                     let parameters = FilterParameters {
                         cutoff_hz: if n % 2 == 0 { 1.0 } else { 100_000.0 },
                         resonance_q: if n % 3 == 0 { 0.5 } else { 10.0 },
                     };
                     assert!(
-                        state
-                            .process(
-                                if n % 7 == 0 { 16.0 } else { 0.0 },
-                                filter_type,
-                                &parameters,
-                                rate
-                            )
-                            .is_finite()
+                        process_sample(
+                            &mut state,
+                            if n % 7 == 0 { 16.0 } else { 0.0 },
+                            filter_type,
+                            &parameters,
+                            rate
+                        )
+                        .is_finite()
                     );
                 }
             }
@@ -293,12 +299,14 @@ mod tests {
                         cutoff_hz: requested.clamp(20.0, 20_000.0).min(rate * 0.49),
                         ..TEST_PARAMETERS
                     };
-                    let mut limited = FilterState::new();
-                    let mut explicit = FilterState::new();
+                    let mut limited = new_state();
+                    let mut explicit = new_state();
                     for n in 0..16 {
                         let sample = if n == 0 { 1.0 } else { 0.0 };
-                        let actual = limited.process(sample, filter_type, &parameters, rate);
-                        let expected = explicit.process(sample, filter_type, &boundary, rate);
+                        let actual =
+                            process_sample(&mut limited, sample, filter_type, &parameters, rate);
+                        let expected =
+                            process_sample(&mut explicit, sample, filter_type, &boundary, rate);
                         assert!(
                             actual.is_finite() && (actual - expected).abs() < 1e-12,
                             "{filter_type:?}, rate={rate}, requested={requested}, sample={n}"
@@ -313,14 +321,15 @@ mod tests {
     #[test]
     fn invalid_values_do_not_poison_state() {
         let mut state = SvfState::default();
-        state.process(1.0, &TEST_PARAMETERS, 48_000.0);
+        process_svf_sample(&mut state, 1.0, &TEST_PARAMETERS, 48_000.0);
         let previous = state.integrators;
         let silent = |output: SvfOutput| {
             assert_eq!([output.low, output.band, output.high], [0.0; 3]);
         };
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0] {
-            silent(state.process(1.0, &TEST_PARAMETERS, bad));
-            silent(state.process(
+            silent(process_svf_sample(&mut state, 1.0, &TEST_PARAMETERS, bad));
+            silent(process_svf_sample(
+                &mut state,
                 1.0,
                 &FilterParameters {
                     resonance_q: bad,
@@ -331,8 +340,14 @@ mod tests {
             assert_eq!(state.integrators, previous);
         }
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            silent(state.process(bad, &TEST_PARAMETERS, 48_000.0));
-            silent(state.process(
+            silent(process_svf_sample(
+                &mut state,
+                bad,
+                &TEST_PARAMETERS,
+                48_000.0,
+            ));
+            silent(process_svf_sample(
+                &mut state,
                 1.0,
                 &FilterParameters {
                     cutoff_hz: bad,
@@ -361,11 +376,15 @@ mod tests {
                 .is_valid()
             );
         }
-        silent(state.process(f64::MAX, &TEST_PARAMETERS, 48_000.0));
+        silent(process_svf_sample(
+            &mut state,
+            f64::MAX,
+            &TEST_PARAMETERS,
+            48_000.0,
+        ));
         assert_eq!(state.integrators, [0.0; 2]);
         assert!(
-            state
-                .process(1.0, &TEST_PARAMETERS, 48_000.0)
+            process_svf_sample(&mut state, 1.0, &TEST_PARAMETERS, 48_000.0)
                 .low
                 .is_finite()
         );
@@ -380,7 +399,7 @@ mod tests {
                 resonance_q: 0.5 + 9.5 * n as f64 / 127.0,
             };
             let input = if n == 0 { 1.0 } else { 0.0 };
-            let output = state.process(input, &parameters, 48_000.0);
+            let output = process_svf_sample(&mut state, input, &parameters, 48_000.0);
             // 回路の帰還式。各出力を得るために状態が複数回更新されていないことも確認する。
             assert!(
                 (output.high + output.band / parameters.resonance_q + output.low - input).abs()
@@ -392,8 +411,14 @@ mod tests {
 
     #[test]
     fn bypass_is_exact_and_drops_old_tail() {
-        let mut state = FilterState::new();
-        state.process(1.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0);
+        let mut state = new_state();
+        process_sample(
+            &mut state,
+            1.0,
+            FilterType::LowPass2,
+            &TEST_PARAMETERS,
+            48_000.0,
+        );
         for sample in [
             -2.0,
             -0.0,
@@ -404,16 +429,29 @@ mod tests {
             f64::INFINITY,
             f64::NEG_INFINITY,
         ] {
-            let output = state.process(sample, FilterType::None, &TEST_PARAMETERS, 48_000.0);
+            let output = process_sample(
+                &mut state,
+                sample,
+                FilterType::None,
+                &TEST_PARAMETERS,
+                48_000.0,
+            );
             assert_eq!(output.to_bits(), sample.to_bits());
         }
         assert_eq!(
-            state.process(0.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
+            process_sample(
+                &mut state,
+                0.0,
+                FilterType::LowPass2,
+                &TEST_PARAMETERS,
+                48_000.0
+            ),
             0.0
         );
         // Noneでは使用しない周波数・Q・レートで信号を遮断しない。
         assert_eq!(
-            state.process(
+            process_sample(
+                &mut state,
                 0.25,
                 FilterType::None,
                 &FilterParameters {
