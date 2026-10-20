@@ -3,7 +3,7 @@
 
 //! VST3 IPlugViewを直接公開するeguiエディター。音声処理にはアクセスしない。
 
-use crate::{abi::*, host::HostRef};
+use crate::{abi::*, host::HostRef, parameters::SharedParameters};
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 use std::{
     cell::{Cell, RefCell},
@@ -67,12 +67,12 @@ pub(super) struct ViewState {
     #[cfg(target_os = "linux")]
     /// UIスレッドで編集を配送するタイマー。取り外し時に必ず解除する。
     ticker: RefCell<Option<Ticker>>,
-    /// Controllerと共有する現在の波形番号。
-    waveform: Arc<AtomicU32>,
+    /// Controllerと共有する6個の正規化値。
+    parameters: Arc<SharedParameters>,
     /// 描画側からの操作の送り口。音声スレッドでは使用しない。
-    sender: SyncSender<u32>,
+    sender: SyncSender<(usize, f64)>,
     /// 操作の受け口。ホストUIスレッドだけで取り出す。
-    receiver: RefCell<Receiver<u32>>,
+    receiver: RefCell<Receiver<(usize, f64)>>,
     /// ホストコールバックによる再入で二重配送しないためのフラグ。
     polling: Cell<bool>,
 }
@@ -86,12 +86,12 @@ impl ViewState {
         if let Some(_window) = window {
             for _ in 0..32 {
                 let edit = self.receiver.borrow().try_recv();
-                let Ok(index) = edit else {
+                let Ok((index, value)) = edit else {
                     break;
                 };
                 // SAFETY: 両OSのタイマーはホストUIスレッドでのみ配送する。controllerが所有参照を保持する。
                 unsafe {
-                    crate::plugin::edit_waveform(self.controller.as_ptr(), index);
+                    crate::plugin::edit_parameter(self.controller.as_ptr(), index, value);
                 }
             }
         }
@@ -156,7 +156,7 @@ static TIMER_TABLE: TimerVTable = TimerVTable {
 };
 
 /// SAFETY: Controllerへの有効な借用参照をUIスレッドで渡す。
-pub unsafe fn create(controller: This, waveform: Arc<AtomicU32>) -> This {
+pub unsafe fn create(controller: This, parameters: Arc<SharedParameters>) -> This {
     let Some(controller) = (unsafe { HostRef::retain(controller) }) else {
         return ptr::null_mut();
     };
@@ -169,7 +169,7 @@ pub unsafe fn create(controller: This, waveform: Arc<AtomicU32>) -> This {
         window: RefCell::new(None),
         #[cfg(target_os = "linux")]
         ticker: RefCell::new(None),
-        waveform,
+        parameters,
         sender,
         receiver: RefCell::new(receiver),
         polling: Cell::new(false),
@@ -299,7 +299,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
         .with_resizable(false)
         .with_parent(Some(&parent))
         .with_gl_config(Some(baseview::gl::GlConfig::default()));
-    let waveform = Arc::clone(&state.waveform);
+    let parameters = Arc::clone(&state.parameters);
     let edits = state.sender.clone();
     match baseview::Window::create(settings, move |window| {
         #[cfg(target_os = "windows")]
@@ -308,7 +308,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
             .ok_or_else(|| std::io::Error::other("view closed"))?;
         super::editor::Editor::new(
             window,
-            waveform,
+            parameters,
             edits,
             #[cfg(target_os = "windows")]
             view,

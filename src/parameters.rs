@@ -1,11 +1,13 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 波形パラメーターの値変換、VST3変更キューと保存ストリームの読み書き。
+//! 波形・エンベロープパラメーターの値変換、VST3変更キューと保存ストリームの読み書き。
 
 use crate::abi::*;
+use crate::envelope::{DEFAULT_ENVELOPE, EnvelopeParameters};
 use crate::oscillator::Waveform;
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// ホストのオートメーションとの対応を維持する固定ID（"WAVE"）。
 pub const WAVEFORM_ID: u32 = 0x5741_5645;
@@ -17,6 +19,138 @@ pub const WAVEFORMS: [Waveform; 4] = [
     Waveform::Sawtooth,
 ];
 pub const WAVEFORM_NAMES: [&str; 4] = ["Sine", "Triangle", "Square", "Sawtooth"];
+
+/// 波形IDは従来どおり。追加IDも保存済みオートメーションとの対応を維持する。
+pub const IDS: [u32; 6] = [
+    WAVEFORM_ID,
+    0x4154544b,
+    0x484f4c44,
+    0x44454359,
+    0x53555354,
+    0x52454c53,
+];
+pub const NAMES: [&str; 6] = ["Waveform", "Attack", "Hold", "Decay", "Sustain", "Release"];
+/// VST3正規化値と時間を換算する連続軸のスケール。UIの整数tick上限とは区別する。
+pub fn time_scale() -> f64 {
+    1.0 + 100.0 * 5000.0_f64.log10()
+}
+pub fn index(id: u32) -> Option<usize> {
+    IDS.iter().position(|&candidate| candidate == id)
+}
+pub fn is_time(index: usize) -> bool {
+    matches!(index, 1 | 2 | 3 | 5)
+}
+/// GUIの整数tickを実単位へ換算する。時間は0..=371、sustainは0..=100。
+pub fn slider_to_plain(index: usize, tick: u32) -> f64 {
+    if is_time(index) {
+        if tick == 0 {
+            0.0
+        } else {
+            10.0_f64.powf((f64::from(tick) - 1.0) / 100.0).min(5000.0)
+        }
+    } else {
+        f64::from(tick) / 100.0
+    }
+}
+pub fn to_plain(index: usize, normalized: f64) -> f64 {
+    if index == 0 {
+        return from_normalized(normalized).map_or(0.0, |w| f64::from(waveform_index(w)));
+    }
+    if index == 4 {
+        return normalized;
+    }
+    if normalized == 1.0 {
+        return 5000.0;
+    }
+    let tick = normalized * time_scale();
+    if tick <= 1.0 {
+        tick
+    } else {
+        10.0_f64.powf((tick - 1.0) / 100.0).min(5000.0)
+    }
+}
+pub fn to_normalized(index: usize, plain: f64) -> f64 {
+    if index == 0 {
+        return plain.clamp(0.0, 3.0).round() / 3.0;
+    }
+    if index == 4 {
+        return plain;
+    }
+    if plain == 5000.0 {
+        return 1.0;
+    }
+    (if plain <= 1.0 {
+        plain
+    } else {
+        1.0 + 100.0 * plain.log10()
+    }) / time_scale()
+}
+pub fn valid_plain(index: usize, plain: f64) -> bool {
+    (0.0..=if index == 0 {
+        3.0
+    } else if index == 4 {
+        1.0
+    } else {
+        5000.0
+    })
+        .contains(&plain)
+}
+pub fn canonical(index: usize, value: f64) -> f64 {
+    if index == 0 {
+        normalized(from_normalized(value).expect("validated normalized value"))
+    } else {
+        value
+    }
+}
+pub fn defaults() -> [f64; 6] {
+    let p = DEFAULT_ENVELOPE;
+    let plain = [
+        0.0,
+        p.attack_ms,
+        p.hold_ms,
+        p.decay_ms,
+        p.sustain,
+        p.release_ms,
+    ];
+    std::array::from_fn(|i| to_normalized(i, plain[i]))
+}
+pub fn envelope(values: &[f64; 6]) -> EnvelopeParameters {
+    EnvelopeParameters {
+        attack_ms: to_plain(1, values[1]),
+        hold_ms: to_plain(2, values[2]),
+        decay_ms: to_plain(3, values[3]),
+        sustain: values[4],
+        release_ms: to_plain(5, values[5]),
+    }
+}
+
+/// UI/音声スレッド間で受け渡す、検証済みの正規化値。オーディオ側でロックしない。
+pub struct SharedParameters {
+    /// 要素順はIDSと同じ。値ごとの更新はatomicで、表示更新はDSPへ再通知しない。
+    values: [AtomicU64; 6],
+}
+impl SharedParameters {
+    pub fn new() -> Self {
+        let initial = defaults();
+        Self {
+            values: std::array::from_fn(|i| AtomicU64::new(initial[i].to_bits())),
+        }
+    }
+    pub fn get(&self, index: usize) -> f64 {
+        f64::from_bits(self.values[index].load(Ordering::Relaxed))
+    }
+    pub fn set(&self, index: usize, value: f64) {
+        self.values[index].store(canonical(index, value).to_bits(), Ordering::Relaxed);
+    }
+    pub fn snapshot(&self) -> [f64; 6] {
+        std::array::from_fn(|i| self.get(i))
+    }
+    pub fn store(&self, values: [f64; 6]) {
+        for (i, value) in values.into_iter().enumerate() {
+            self.set(i, value);
+        }
+    }
+}
 
 pub fn waveform_index(waveform: Waveform) -> u32 {
     match waveform {
@@ -38,8 +172,8 @@ pub fn from_normalized(value: f64) -> Option<Waveform> {
         .then(|| WAVEFORMS[((value * 4.0) as usize).min(3)])
 }
 
-/// 1回のprocess中だけホストから借用する、波形の変更点のカーソル。
-pub struct WaveformPoints<'a> {
+/// 1回のprocess中だけホストから借用する、1パラメーターの変更点のカーソル。
+pub struct ParameterPoints<'a> {
     /// ホスト所有のIParamValueQueue。利用可能なキューがなければnull。
     queue: This,
     /// dataと同じ呼び出し中だけ有効な関数表。所有参照を取得しない。
@@ -53,12 +187,19 @@ pub struct WaveformPoints<'a> {
     /// 今回のブロック長。0ではoffset 0だけを受理する。
     samples: i32,
     /// 次に適用する変更点。同じoffsetの変更はキュー順に適用する。
-    pub next: Option<(i32, Waveform)>,
+    next: Option<(i32, f64)>,
+    /// 補間の始点。前ブロックの最終値をoffset=-1として扱う。
+    previous: (i32, f64),
+    /// 波形だけは離散値。他のパラメーターは正規化空間で線形補間する。
+    parameter: usize,
+    /// 有効な変更点があるキューだけをDSPから共有値へ書き戻す。
+    /// 他パラメーターの状態復元を、無関係なオートメーションで上書きしない。
+    pub automated: bool,
 }
 
-impl<'a> WaveformPoints<'a> {
+impl<'a> ParameterPoints<'a> {
     /// SAFETY: dataの入れ子のインターフェースはホスト所有で、dataの借用期間中有効。
-    pub unsafe fn new(data: &'a ProcessData) -> Self {
+    pub unsafe fn new(data: &'a ProcessData, parameter: usize, previous_value: f64) -> Self {
         let mut result = Self {
             queue: ptr::null_mut(),
             table: None,
@@ -67,6 +208,9 @@ impl<'a> WaveformPoints<'a> {
             previous_offset: 0,
             samples: data.num_samples,
             next: None,
+            previous: (-1, previous_value),
+            parameter,
+            automated: false,
         };
         if !data.input_parameter_changes.is_null() {
             // SAFETY: ホストのIParameterChangesと借用キューを読み、保持期間をprocess内に限定する。
@@ -79,7 +223,7 @@ impl<'a> WaveformPoints<'a> {
                         continue;
                     }
                     let queue_table = &**queue.cast::<*const ParamValueQueueVTable>();
-                    if (queue_table.get_parameter_id)(queue) == WAVEFORM_ID {
+                    if (queue_table.get_parameter_id)(queue) == IDS[parameter] {
                         result.queue = queue;
                         result.table = Some(queue_table);
                         result.count = (queue_table.get_point_count)(queue);
@@ -89,7 +233,25 @@ impl<'a> WaveformPoints<'a> {
             }
         }
         result.advance();
+        result.automated = result.next.is_some();
         result
+    }
+
+    pub fn value_at(&mut self, offset: i32) -> f64 {
+        while let Some((at, value)) = self.next {
+            if at > offset {
+                break;
+            }
+            self.previous = (at, value);
+            self.advance();
+        }
+        if self.parameter != 0
+            && let Some((at, value)) = self.next
+        {
+            let fraction = f64::from(offset - self.previous.0) / f64::from(at - self.previous.0);
+            return self.previous.1 + (value - self.previous.1) * fraction;
+        }
+        self.previous.1
     }
 
     pub fn advance(&mut self) {
@@ -111,31 +273,32 @@ impl<'a> WaveformPoints<'a> {
             {
                 continue;
             }
-            if let Some(waveform) = from_normalized(value) {
+            if (0.0..=1.0).contains(&value) {
                 self.previous_offset = offset;
-                self.next = Some((offset, waveform));
+                self.next = Some((offset, canonical(self.parameter, value)));
                 break;
             }
         }
     }
 }
 
-// IBStreamへ渡す音源状態: magic 4バイト、形式バージョンu32、波形番号u32。
-// 整数はlittle endian。オシレータの位相・発音中のノートは保存しない。
-const STATE_HEADER: [u8; 8] = *b"SVST\x01\0\0\0";
+// v2: magic/version/waveformの12バイト + 5個の実単位f64（little endian）。
+// v1の12バイトと旧版の空状態は初期エンベロープで復元する。
+const STATE_HEADER: [u8; 8] = *b"SVST\x02\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
-pub unsafe fn read_state(stream: This) -> Result<Waveform, TResult> {
+pub unsafe fn read_state(stream: This) -> Result<[f64; 6], TResult> {
     if stream.is_null() {
         return Err(INVALID_ARGUMENT);
     }
-    // SAFETY: IBStreamの関数表を借用。読み取り領域の長さだけを要求する。
+    // SAFETY: IBStreamの関数表を借用し、固定長領域の範囲だけを読み取る。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 12];
+    let mut bytes = [0u8; 52];
     let mut position = 0;
-    while position < bytes.len() {
+    let mut length = 12;
+    while position < length {
         let mut read = 0;
-        let remaining = bytes.len() - position;
+        let remaining = length - position;
         let status = unsafe {
             (table.read)(
                 stream,
@@ -144,32 +307,57 @@ pub unsafe fn read_state(stream: This) -> Result<Waveform, TResult> {
                 &mut read,
             )
         };
-        // 旧版が保存した空の状態をサイン波として復元。EOFでFALSEを返すストリームも許す。
         if position == 0 && read == 0 && matches!(status, OK | FALSE) {
-            return Ok(Waveform::Sine);
+            return Ok(defaults());
         }
         if status != OK || read <= 0 || read as usize > remaining {
             return Err(FALSE);
         }
         position += read as usize;
+        if position == 12 {
+            if bytes[..4] != *b"SVST" {
+                return Err(FALSE);
+            }
+            match u32::from_le_bytes(bytes[4..8].try_into().unwrap()) {
+                1 => {}
+                2 => length = 52,
+                _ => return Err(FALSE),
+            }
+        }
     }
-    if bytes[..8] != STATE_HEADER {
+    let waveform = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    if waveform > 3 {
         return Err(FALSE);
     }
-    let index = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    WAVEFORMS.get(index as usize).copied().ok_or(FALSE)
+    let mut values = defaults();
+    values[0] = f64::from(waveform) / 3.0;
+    if length == 52 {
+        for (i, value) in values.iter_mut().enumerate().skip(1) {
+            let offset = 12 + (i - 1) * 8;
+            let plain = f64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            if !valid_plain(i, plain) {
+                return Err(FALSE);
+            }
+            *value = to_normalized(i, plain);
+        }
+    }
+    Ok(values)
 }
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
-pub unsafe fn write_state(stream: This, waveform: Waveform) -> TResult {
+pub unsafe fn write_state(stream: This, values: [f64; 6]) -> TResult {
     if stream.is_null() {
         return INVALID_ARGUMENT;
     }
-    // SAFETY: IBStreamの関数表を借用。書き込み関数はバッファを読み取るだけで保持しない。
+    // SAFETY: IBStreamは固定長バッファを呼び出し中だけ読む。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 12];
+    let mut bytes = [0u8; 52];
     bytes[..8].copy_from_slice(&STATE_HEADER);
-    bytes[8..].copy_from_slice(&waveform_index(waveform).to_le_bytes());
+    bytes[8..12].copy_from_slice(&(to_plain(0, values[0]) as u32).to_le_bytes());
+    for (i, &value) in values.iter().enumerate().skip(1) {
+        let offset = 12 + (i - 1) * 8;
+        bytes[offset..offset + 8].copy_from_slice(&to_plain(i, value).to_le_bytes());
+    }
     let mut position = 0;
     while position < bytes.len() {
         let mut written = 0;
@@ -199,7 +387,7 @@ mod tests {
         /// このテストだけで使うIBStream関数表。
         vtable: &'static StreamVTable,
         /// 形式の最大長だけを用意したテスト用領域。
-        bytes: [u8; 12],
+        bytes: [u8; 52],
         /// 初期化済みデータの長さ。
         length: usize,
         /// 次の読み書き位置。
@@ -236,7 +424,7 @@ mod tests {
         // SAFETY: テストのStreamと、呼び出し元が確保した入力領域。両者は重ならない。
         unsafe {
             let stream = &mut *this.cast::<Stream>();
-            let count = (size as usize).min(2).min(12 - stream.position);
+            let count = (size as usize).min(2).min(52 - stream.position);
             ptr::copy_nonoverlapping(
                 input.cast(),
                 stream.bytes.as_mut_ptr().add(stream.position),
@@ -271,26 +459,37 @@ mod tests {
         for waveform in WAVEFORMS {
             let mut stream = Stream {
                 vtable: &STREAM_TABLE,
-                bytes: [0; 12],
+                bytes: [0; 52],
                 length: 0,
                 position: 0,
             };
             let stream = ptr::from_mut(&mut stream);
             // SAFETY: スタック上のStreamを同じポインターから順に使う。借用を外へ保持しない。
             unsafe {
-                assert_eq!(write_state(stream.cast(), waveform), OK);
+                let mut values = defaults();
+                values[0] = normalized(waveform);
+                assert_eq!(write_state(stream.cast(), values), OK);
                 (*stream).position = 0;
-                assert_eq!(read_state(stream.cast()), Ok(waveform));
-                for length in 1..12 {
+                let restored = read_state(stream.cast()).unwrap();
+                for (actual, expected) in restored.into_iter().zip(values) {
+                    assert!((actual - expected).abs() < 1e-12);
+                }
+                for length in 1..52 {
                     (*stream).length = length;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = 0;
                 (*stream).position = 0;
-                assert_eq!(read_state(stream.cast()), Ok(Waveform::Sine));
+                for (actual, expected) in read_state(stream.cast())
+                    .unwrap()
+                    .into_iter()
+                    .zip(defaults())
+                {
+                    assert!((actual - expected).abs() < 1e-12);
+                }
                 (*stream).length = 12;
-                (*stream).bytes[4] = 2;
+                (*stream).bytes[4] = 3;
                 assert_eq!(read_state(stream.cast()), Err(FALSE));
             }
         }
@@ -313,6 +512,50 @@ mod tests {
         }
         for value in [-1.0, 1.1, f64::NAN, f64::INFINITY] {
             assert_eq!(from_normalized(value), None);
+        }
+    }
+
+    #[test]
+    fn time_axes_have_zero_endpoint_and_one_decade_per_hundred_ticks() {
+        for i in [1, 2, 3, 5] {
+            for (tick, ms) in [
+                (0.0, 0.0),
+                (1.0, 1.0),
+                (101.0, 10.0),
+                (201.0, 100.0),
+                (301.0, 1000.0),
+            ] {
+                assert!((to_plain(i, tick / time_scale()) - ms).abs() < 1e-10);
+                assert!((to_normalized(i, ms) * time_scale() - tick).abs() < 1e-10);
+            }
+            assert_eq!(to_plain(i, 1.0), 5000.0);
+            // GUIで選べる全tickの往復変換・単調性・100tickごとの倍率を確認。
+            let mut previous = -1.0;
+            for tick in 0..=time_scale().floor() as u32 {
+                let normalized = f64::from(tick) / time_scale();
+                let ms = slider_to_plain(i, tick);
+                assert!(ms > previous && ms < 5000.0);
+                assert!((to_normalized(i, ms) - normalized).abs() < 1e-12);
+                assert!(ms == 0.0 || (to_plain(i, to_normalized(i, ms)) / ms - 1.0).abs() < 1e-12);
+                if tick > 100 {
+                    let earlier = to_plain(i, f64::from(tick - 100) / time_scale());
+                    assert!((ms / earlier - 10.0).abs() < 1e-12);
+                }
+                previous = ms;
+            }
+            assert_eq!(slider_to_plain(i, 0), 0.0);
+            for (tick, ms) in [(1, 1.0), (101, 10.0), (201, 100.0), (301, 1000.0)] {
+                assert!((slider_to_plain(i, tick) / ms - 1.0).abs() < 1e-12);
+            }
+            assert_eq!(slider_to_plain(i, 371), 5000.0);
+            // ホストの連続オートメーションは0〜1ms区間も線形で扱う。
+            assert!((to_plain(i, to_normalized(i, 0.5)) - 0.5).abs() < 1e-12);
+        }
+        assert_eq!(to_plain(4, 0.35), 0.35);
+        assert_eq!(to_normalized(4, 0.35), 0.35);
+        for tick in 0..=100 {
+            let value = slider_to_plain(4, tick);
+            assert_eq!((to_normalized(4, value) * 100.0).round() as u32, tick);
         }
     }
 }

@@ -12,6 +12,7 @@ compile_error!("対応対象はLinux x86_64とWindows x86_64 MSVCです");
 mod abi;
 mod diagnostics;
 mod editor;
+mod envelope;
 mod gui;
 mod host;
 mod oscillator;

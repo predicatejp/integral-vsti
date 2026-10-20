@@ -83,11 +83,15 @@ Event note(bool on, int32 offset, int32 id, int16 pitch = 69, int16 channel = 0,
     return event;
 }
 
+void configureEnvelope(IAudioProcessor*, bool);
+
 template <typename Sample>
 void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precision, double rate, int32 mode,
                 bool activateEvents) {
+    configureEnvelope(processor, true); // 既存の波形・イベント検証は時間0、sustain=1で行う。
     ProcessSetup setup {mode, precision, 257, rate};
     assert(processor->setupProcessing(setup) == kResultOk);
+    assert(processor->getTailSamples() == static_cast<uint32>(std::ceil(rate * 5.0)));
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
     // 有効化通知を省略するホストの経路でも、同じ波形・イベント時刻を検証する。
     if (activateEvents) assert(component->activateBus(kEvent, kInput, 0, true) == kResultOk);
@@ -204,6 +208,7 @@ void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precisi
     events.values = {note(true, 0, 23)}; check(7, low);
     assert(processor->setProcessing(false) == kResultOk);
     assert(component->setActive(false) == kResultOk);
+    configureEnvelope(processor, false);
 }
 
 // ここからも検証専用のホスト模擬。プラグインは標準VST3 ABIだけでアクセスする。
@@ -235,6 +240,23 @@ public:
     IParamValueQueue* PLUGIN_API getParameterData(int32 index) override { return queues.at(static_cast<size_t>(index)); }
     IParamValueQueue* PLUGIN_API addParameterData(const ParamID&, int32&) override { assert(false); return nullptr; }
 };
+constexpr std::array<ParamID, 5> envelopeIds {0x4154544b, 0x484f4c44, 0x44454359, 0x53555354, 0x52454c53};
+double timeNormalized(double ms) {
+    return (ms <= 1.0 ? ms : 1.0 + 100.0 * std::log10(ms)) / (1.0 + 100.0 * std::log10(5000.0));
+}
+void configureEnvelope(IAudioProcessor* processor, bool immediate) {
+    std::array<Points, 5> points;
+    Changes changes;
+    const std::array<double, 5> defaults {timeNormalized(10), 0.0, timeNormalized(100), 0.7, timeNormalized(100)};
+    for (size_t i = 0; i < 5; ++i) {
+        points[i].id = envelopeIds[i];
+        points[i].values = {{0, immediate ? (i == 3 ? 1.0 : 0.0) : defaults[i]}};
+        changes.queues.push_back(&points[i]);
+    }
+    ProcessData data; data.inputParameterChanges = &changes;
+    assert(processor->process(data) == kResultOk);
+}
+
 class StateStream final : public IBStream {
 public:
     std::vector<uint8> bytes;
@@ -272,7 +294,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(info.id == waveformId && info.stepCount == 3 && info.defaultNormalizedValue == 0.0);
     assert(info.unitId == 0 && info.flags == (ParameterInfo::kCanAutomate | ParameterInfo::kIsList));
     assert(std::u16string(info.title) == u"Waveform");
-    assert(controller->getParameterInfo(1, info) == kInvalidArgument);
+    assert(controller->getParameterInfo(6, info) == kInvalidArgument);
     const std::array<std::u16string, 4> names {u"Sine", u"Triangle", u"Square", u"Sawtooth"};
     for (size_t i = 0; i < names.size(); ++i) {
         const double normalized = static_cast<double>(i) / 3.0;
@@ -291,7 +313,8 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(controller->setParamNormalized(0, 0.0) == kInvalidArgument);
     StateStream initial;
     assert(component->getState(&initial) == kResultOk);
-    assert(initial.bytes == (std::vector<uint8>{'S','V','S','T',1,0,0,0,0,0,0,0}));
+    assert(initial.bytes.size() == 52 && initial.bytes[4] == 2 && initial.bytes[8] == 0);
+    configureEnvelope(processor, true);
     // Controllerへの表示更新だけではProcessorの値は変わらない。
     assert(controller->getParamNormalized(waveformId) == 1.0);
 
@@ -372,7 +395,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     for (int error = 0; error < 5; ++error) {
         StateStream broken; broken.bytes = saved.bytes;
         if (error == 0) broken.bytes.resize(11);
-        if (error == 1) broken.bytes[4] = 2;
+        if (error == 1) broken.bytes[4] = 3;
         if (error == 2) broken.bytes[8] = 4;
         if (error == 3) broken.bytes[0] = 0;
         if (error == 4) broken.fail = true;
@@ -390,6 +413,91 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(controller->setComponentState(nullptr) == kInvalidArgument);
     events.values = {note(true, 0, 3)};
     check({-triangle}); // 復元で位相を変えず、保存したノコギリ波を発音。
+    assert(processor->setProcessing(false) == kResultOk);
+    assert(component->setActive(false) == kResultOk);
+}
+
+template <typename Sample>
+void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
+    configureEnvelope(processor, false);
+    ProcessSetup setup {kRealtime, precision, 16, 1000.0};
+    assert(processor->setupProcessing(setup) == kResultOk);
+    assert(processor->getTailSamples() == 5000);
+    assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
+    assert(component->activateBus(kEvent, kInput, 0, true) == kResultOk);
+    // 全追加パラメーターは連続値として公開し、実単位・文字列表現を往復できる。
+    for (size_t i = 0; i < envelopeIds.size(); ++i) {
+        ParameterInfo info;
+        assert(controller->getParameterInfo(static_cast<int32>(i + 1), info) == kResultOk);
+        assert(info.id == envelopeIds[i] && info.stepCount == 0 && info.flags == ParameterInfo::kCanAutomate);
+        for (double value : {0.0, 1.0}) {
+            const double plain = controller->normalizedParamToPlain(info.id, value);
+            assert(plain == value * (i == 3 ? 1.0 : 5000.0));
+            assert(controller->plainParamToNormalized(info.id, plain) == value);
+            String128 text; double parsed = -1;
+            assert(controller->getParamStringByValue(info.id, value, text) == kResultOk);
+            assert(controller->getParamValueByString(info.id, text, parsed) == kResultOk && parsed == value);
+        }
+    }
+    Points wave; wave.values = {{0, 2.0 / 3.0}};
+    Changes changes; changes.queues = {&wave};
+    Events events;
+    std::array<Sample, 16> buffer;
+    Sample* channels[] = {buffer.data(), buffer.data()};
+    AudioBusBuffers bus; bus.numChannels = 2;
+    if constexpr (std::is_same_v<Sample, float>) bus.channelBuffers32 = channels;
+    else bus.channelBuffers64 = channels;
+    ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
+    assert(processor->process(data) == kResultOk); // 波形の0サンプルフラッシュ。
+    wave.values.clear();
+    assert(component->setActive(true) == kResultOk);
+    assert(processor->setProcessing(true) == kResultOk);
+    data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
+    auto check = [&](std::initializer_list<double> expected) {
+        data.numSamples = static_cast<int32>(expected.size());
+        assert(processor->process(data) == kResultOk);
+        size_t i = 0; bool audible = false;
+        for (double value : expected) {
+            assert(std::abs(std::abs(buffer[i++]) - value) < 1e-6);
+            audible |= value != 0.0;
+        }
+        assert(bus.silenceFlags == (audible ? 0u : 3u));
+    };
+    events.values = {note(true, 2, 1)};
+    check({0, 0, 0, .05, .1, .15, .2, .25, .3, .35, .4, .45});
+    // 再ノートオンは新しいベロシティが小さくても現在の実効振幅を引き継ぐ。
+    events.values = {note(true, 0, 2, 81, 0, .5f), note(false, 0, 1)};
+    check({.5, .475, .45, .425});
+    events.values = {note(false, 0, 2, 81)}; check({.4, .396, .392});
+    events.values = {note(true, 0, 3)}; check({.388, .3992});
+    Points release; release.id = envelopeIds[4]; release.values = {{0, 0.0}};
+    changes.queues = {&release}; events.values = {note(false, 0, 3)};
+    check({0, 0}); // 同位置のrelease=0をノートオフに先立って適用。
+    Points attack, decay;
+    attack.id = envelopeIds[0]; attack.values = {{0, 0.0}};
+    decay.id = envelopeIds[2]; decay.values = {{0, 0.0}};
+    changes.queues = {&attack, &decay}; events.values = {note(true, 0, 4)};
+    check({.35, .35});
+    Points sustain; sustain.id = envelopeIds[3]; sustain.values = {{3, .3}};
+    changes.queues = {&sustain}; events.values.clear();
+    check({.3, .25, .2, .15}); // offset=-1の0.7からoffset=3の0.3へ線形補間。
+    changes.queues.clear(); check({.15, .15});
+    StateStream saved; assert(component->getState(&saved) == kResultOk);
+    assert(saved.bytes.size() == 52 && saved.bytes[4] == 2);
+    assert(controller->setComponentState(&saved) == kResultOk);
+    assert(std::abs(controller->getParamNormalized(envelopeIds[3]) - .3) < 1e-12);
+    // 旧v1を読み込むと波形以外は既定値へ復帰する。
+    StateStream legacy; legacy.bytes = {'S','V','S','T',1,0,0,0,2,0,0,0};
+    assert(component->setState(&legacy) == kResultOk); legacy.position = 0;
+    assert(controller->setComponentState(&legacy) == kResultOk);
+    assert(controller->getParamNormalized(envelopeIds[3]) == .7);
+    // 不正な時間値を含むv2はControllerにもDSPにも適用しない。
+    saved.position = 0;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::memcpy(saved.bytes.data() + 12, &nan, sizeof(nan));
+    assert(component->setState(&saved) != kResultOk); saved.position = 0;
+    assert(controller->setComponentState(&saved) != kResultOk);
+    assert(controller->getParamNormalized(envelopeIds[3]) == .7);
     assert(processor->setProcessing(false) == kResultOk);
     assert(component->setActive(false) == kResultOk);
 }
@@ -525,12 +633,14 @@ int main(int argc, char** argv) {
         assert(bus.channelCount == 2 && bus.name[0] == u'S');
         SpeakerArrangement output = SpeakerArr::kStereo;
         assert(processor->setBusArrangements(nullptr, 0, &output, 1) == kResultOk);
-        assert(controller->getParameterCount() == 1);
+        assert(controller->getParameterCount() == 6);
         checkViewContract(controller);
         assert(controller->setComponentHandler(nullptr) == kResultOk);
-        assert(processor->getLatencySamples() == 0 && processor->getTailSamples() == 0);
+        assert(processor->getLatencySamples() == 0 && processor->getTailSamples() == 220500);
         checkSilence<float>(component, processor, kSample32);
         checkSilence<double>(component, processor, kSample64);
+        if (iteration == 15) checkEnvelope<float>(component, processor, controller, kSample32);
+        if (iteration == 16) checkEnvelope<double>(component, processor, controller, kSample64);
         if (iteration < 12) {
             const double rate = std::array<double, 3> {44100.0, 48000.0, 96000.0}[iteration % 3];
             if (iteration % 2 == 0) checkNotes<float>(component, processor, kSample32, rate, iteration % 3, iteration < 6);
