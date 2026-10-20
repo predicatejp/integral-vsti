@@ -36,7 +36,7 @@ pub(super) struct Editor {
     edits: SyncSender<(usize, f64)>,
     #[cfg(target_os = "windows")]
     /// Windowsでは同じUIスレッドのウィンドウタイマーから編集を配送する。
-    view: std::rc::Weak<super::gui::ViewState>,
+    view: std::rc::Weak<super::gui::EditorView>,
 }
 
 impl Editor {
@@ -44,7 +44,7 @@ impl Editor {
         window: WindowContext,
         parameters: Arc<SharedParameters>,
         edits: SyncSender<(usize, f64)>,
-        #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::ViewState>,
+        #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::EditorView>,
     ) -> Result<Self, HandlerError> {
         let gl = window
             .gl_context()
