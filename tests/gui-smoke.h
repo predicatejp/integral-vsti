@@ -200,7 +200,7 @@ public:
     uint32 PLUGIN_API release() override { assert(refs > 1); return --refs; }
     tresult PLUGIN_API beginEdit(ParamID id) override {
         assert(std::this_thread::get_id() == uiThread);
-        assert(id == waveformId || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(id == waveformId || id == unisonId || id == detuneId || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -362,6 +362,20 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 }
                 handler.sequence.clear();
             }
+        }
+        // 追加2行は整数で操作し、ホスト値の表示更新では編集通知しない。
+        for (int row = 0; row < 2; ++row) {
+            const ParamID id = row == 0 ? unisonId : detuneId;
+            for (int x : {500, 111}) {
+                parent.pointer(x, 258 + row * 29, true); pump();
+                parent.pointer(x, 258 + row * 29, false);
+                waitFor([&] { return handler.sequence.size() >= 3; }, "unison/detune slider edit");
+                assert(handler.editedId == id && handler.value == (x == 500 ? 1.0 : 0.0));
+                assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+                handler.sequence.clear(); pump();
+            }
+            assert(controller->setParamNormalized(id, .5) == kResultOk);
+            pump(); assert(handler.sequence.empty());
         }
         parent.screenshot();
         assert(view->removed() == kResultOk);

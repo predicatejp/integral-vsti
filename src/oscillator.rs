@@ -54,6 +54,10 @@ impl Waveform {
 pub struct OscillatorInput {
     /// 生成する波形。変更しても内部の位相を初期化しない。
     pub waveform: Waveform,
+    /// 同じノートを鳴らすユニゾンのボイス数（1..=7）。
+    pub unison_voices: u32,
+    /// 中心音程から両端までの幅（0..=100 cent）。1ボイス時には適用しない。
+    pub detune_cents: f64,
     /// 目標周波数（Hz）。有限の0以上の値。入力を変更しても位相は初期化しない。
     pub frequency_hz: f64,
     /// 理想波形の目標実効値（0..=1）。ピーク値は波形に依存する。0でもgateがtrueなら位相は進む。
@@ -69,10 +73,28 @@ pub struct OscillatorInput {
 }
 
 impl OscillatorInput {
+    fn rendered_voices(&self) -> usize {
+        if self.detune_cents == 0.0 {
+            1
+        } else {
+            self.unison_voices as usize
+        }
+    }
+
+    fn frequency_ratio(&self, k: usize) -> f64 {
+        if self.unison_voices == 1 || self.detune_cents == 0.0 {
+            return 1.0;
+        }
+        let cents = self.detune_cents * (2.0 * k as f64 / f64::from(self.unison_voices - 1) - 1.0);
+        2.0_f64.powf(cents / 1200.0)
+    }
+
     pub fn is_valid(&self) -> bool {
         self.frequency_hz.is_finite()
             && self.frequency_hz >= 0.0
             && (0.0..=1.0).contains(&self.amplitude)
+            && (1..=7).contains(&self.unison_voices)
+            && (0.0..=100.0).contains(&self.detune_cents)
             && self.envelope.is_valid()
     }
 }
@@ -82,7 +104,8 @@ impl OscillatorInput {
 pub struct OscillatorState {
     /// 次に生成するサンプルの位相（周期単位、0以上1未満）。
     /// 初期値は0。入力変更や再発音でも保持し、release完了後と処理停止中は進めない。
-    phase: f64,
+    /// 未使用ボイスも位相を保持し、再使用時に引き継ぐ。
+    phases: [f64; 7],
     /// 次サンプル時点の実効振幅。再Note Onの開始音量として引き継ぐ。
     current_amplitude: f64,
     /// 直近のNote On時の実効振幅。次のNote Onまで固定する。
@@ -102,7 +125,7 @@ pub struct OscillatorState {
 impl OscillatorState {
     pub fn new() -> Self {
         Self {
-            phase: 0.0,
+            phases: [0.0; 7],
             current_amplitude: 0.0,
             start_amplitude: 0.0,
             elapsed_samples: 0,
@@ -147,17 +170,27 @@ impl OscillatorState {
 
     /// 現在の状態を読み取るだけで、位相を進めずにサンプルを生成する。
     fn generate_sample(&self, input: &OscillatorInput) -> f64 {
-        self.current_amplitude
-            * input.waveform.peak_per_rms()
-            * input.waveform.unit_sample(self.phase)
+        // Detune=0は保持した先頭位相から1ボイス相当で生成し、同相加算を避ける。
+        let count = input.rendered_voices();
+        let sum: f64 = self.phases[..count]
+            .iter()
+            .map(|&phase| input.waveform.unit_sample(phase))
+            .sum();
+        self.current_amplitude * input.waveform.peak_per_rms() * sum / (count as f64).sqrt()
     }
 
     /// サンプル生成後に、定常入力を用いて内部状態を1サンプル分進める。
     fn update(&mut self, input: &OscillatorInput, sample_rate: f64) {
         if self.active {
             // 小さなサンプルレートでも除算のオーバーフローを起こさない。
-            let increment = (input.frequency_hz % sample_rate) / sample_rate;
-            self.phase = (self.phase + increment).fract();
+            for (k, phase) in self.phases[..input.rendered_voices()]
+                .iter_mut()
+                .enumerate()
+            {
+                let frequency = (input.frequency_hz * input.frequency_ratio(k)).min(f64::MAX);
+                let increment = (frequency % sample_rate) / sample_rate;
+                *phase = (*phase + increment).fract();
+            }
             self.elapsed_samples = self.elapsed_samples.saturating_add(1);
             self.refresh_amplitude(input, sample_rate);
         }
@@ -194,6 +227,8 @@ mod tests {
     fn test_input() -> OscillatorInput {
         OscillatorInput {
             waveform: Waveform::Sine,
+            unison_voices: 1,
+            detune_cents: 0.0,
             frequency_hz: 1.0,
             amplitude: 0.5,
             gate: true,
@@ -331,6 +366,87 @@ mod tests {
     }
 
     #[test]
+    fn unison_spreads_pitch_and_preserves_each_phase() {
+        for voices in 1..=7 {
+            let mut input = OscillatorInput {
+                unison_voices: voices,
+                detune_cents: 100.0,
+                frequency_hz: 440.0,
+                ..test_input()
+            };
+            let mut state = sustained();
+            let mut expected_phases = [0.0_f64; 7];
+            for sample in 0..32 {
+                if sample == 16 {
+                    input.frequency_hz = 660.0;
+                    input.note_generation += 1;
+                }
+                // 新しいノートでも全位相を引き継ぎ、生成後に指定の周波数分だけ進む。
+                state.next_sample(&input, 48000.0);
+                for (k, phase) in expected_phases.iter_mut().enumerate().take(voices as usize) {
+                    let cents = if voices == 1 {
+                        0.0
+                    } else {
+                        -100.0 + 200.0 * k as f64 / f64::from(voices - 1)
+                    };
+                    *phase = (*phase + input.frequency_hz * 2.0_f64.powf(cents / 1200.0) / 48000.0)
+                        .fract();
+                    assert!((state.phases[k] - *phase).abs() < 1e-12);
+                }
+            }
+            let held_phases = state.phases;
+            input.gate = false;
+            input.reset_generation += 1;
+            state.next_sample(&input, 48000.0);
+            assert_eq!(state.phases, held_phases);
+            // 0 centに切り替えると、過去に異なる位相へ進んでいても先頭だけで生成。
+            input.detune_cents = 0.0;
+            input.gate = true;
+            input.note_generation += 1;
+            input.envelope.attack_ms = 0.0;
+            let expected =
+                0.5 * std::f64::consts::SQRT_2 * (std::f64::consts::TAU * expected_phases[0]).sin();
+            assert!((state.next_sample(&input, 48000.0) - expected).abs() < 1e-12);
+            assert_eq!(&state.phases[1..], &held_phases[1..]);
+        }
+    }
+
+    #[test]
+    #[cfg(not(miri))] // 長時間平均の数値検証は通常のRust実行で行う。
+    fn unison_waveforms_have_target_long_term_rms() {
+        for waveform in [
+            Waveform::Sine,
+            Waveform::Triangle,
+            Waveform::Square,
+            Waveform::Sawtooth,
+        ] {
+            for voices in 1..=7 {
+                for detune in [0.0, 100.0] {
+                    let input = OscillatorInput {
+                        waveform,
+                        unison_voices: voices,
+                        detune_cents: detune,
+                        frequency_hz: 440.0,
+                        ..test_input()
+                    };
+                    let mut state = sustained();
+                    let mut energy = 0.0;
+                    for _ in 0..48000 {
+                        let sample = state.next_sample(&input, 24000.0);
+                        assert!(sample.is_finite());
+                        energy += sample * sample;
+                    }
+                    let rms = (energy / 48000.0).sqrt();
+                    assert!(
+                        (rms - 0.5).abs() < 0.01,
+                        "{waveform:?}: N={voices}, detune={detune}, rms={rms}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn invalid_inputs_preserve_state_and_never_emit_nonfinite_samples() {
         let mut state = sustained();
         let input = OscillatorInput {
@@ -353,6 +469,30 @@ mod tests {
             let invalid = OscillatorInput { amplitude, ..input };
             assert!(!invalid.is_valid());
             assert_eq!(state.next_sample(&invalid, 4.0), 0.0);
+        }
+        for unison_voices in [0, 8, u32::MAX] {
+            assert_eq!(
+                state.next_sample(
+                    &OscillatorInput {
+                        unison_voices,
+                        ..input
+                    },
+                    4.0
+                ),
+                0.0
+            );
+        }
+        for detune_cents in [-1.0, 101.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                state.next_sample(
+                    &OscillatorInput {
+                        detune_cents,
+                        ..input
+                    },
+                    4.0
+                ),
+                0.0
+            );
         }
         for rate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert_eq!(state.next_sample(&input, rate), 0.0);

@@ -28,7 +28,7 @@ pub struct Synth {
     /// 波形生成に用いるサンプルレート（Hz）。初期値44100、処理設定でホストの値へ更新する。
     sample_rate: f64,
     /// 適用済みの正規化値。変更がないサンプルでは対数変換を繰り返さない。
-    parameters: [f64; 6],
+    parameters: [f64; 8],
 }
 
 impl Synth {
@@ -36,6 +36,8 @@ impl Synth {
         Self {
             oscillator_input: OscillatorInput {
                 waveform: Waveform::Sine,
+                unison_voices: 1,
+                detune_cents: 0.0,
                 frequency_hz: 440.0,
                 amplitude: 0.0,
                 gate: false,
@@ -55,7 +57,7 @@ impl Synth {
     }
 
     /// 変更されたパラメーターを入力へ反映し、発振器の内部状態は保持する。
-    pub fn set_parameters(&mut self, values: [f64; 6]) -> bool {
+    pub fn set_parameters(&mut self, values: [f64; 8]) -> bool {
         if values == self.parameters {
             return false;
         }
@@ -63,6 +65,8 @@ impl Synth {
         self.oscillator_input.waveform =
             parameters::from_normalized(values[0]).expect("validated values");
         self.oscillator_input.envelope = parameters::envelope(&values);
+        self.oscillator_input.unison_voices = parameters::to_plain(6, values[6]) as u32;
+        self.oscillator_input.detune_cents = parameters::to_plain(7, values[7]);
         true
     }
 
