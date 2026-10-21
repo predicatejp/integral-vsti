@@ -744,6 +744,9 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         None
     };
 
+    // process内のイベント・パラメーター読出しを含む音声処理に限定する。
+    // 戻り時にはホストのMXCSRを復元し、ブロック外へFTZ/DAZを持ち越さない。
+    let _float_mode = crate::float_mode::FloatMode::flush_subnormals();
     // SAFETY: 同一インスタンスのprocess（ゼロサンプルも含む）およびDSPを更新する
     // ライフサイクル呼び出しをホストが直列化する。ホストからの再入processは許されない。
     // synthの参照・ホストのイベントやバッファのポインターを呼び出し後へ保持しない。

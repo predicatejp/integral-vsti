@@ -317,7 +317,9 @@ fn check_host_events(activate_events: bool) {
         }
         assert_eq!((ct.set_active)(component, 1), OK);
         assert_eq!((pt.set_processing)(processor, 1), OK);
+        let before_mode = crate::float_mode::read();
         assert_eq!((pt.process)(processor, &mut data), OK);
+        assert_eq!(crate::float_mode::read(), before_mode);
         assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0, 0.0, 9.0, 9.0]);
         assert_eq!((*data.outputs).silence_flags, STEREO);
         // ブロック先頭で音程を変更しても、前ブロック末尾の位相1/4を継承する。

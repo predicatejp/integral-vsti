@@ -8,6 +8,8 @@ mod abi;
 mod envelope;
 #[path = "../src/filter.rs"]
 mod filter;
+#[path = "../src/float_mode.rs"]
+mod float_mode;
 #[path = "../src/oscillator.rs"]
 mod oscillator;
 #[path = "../src/parameters.rs"]
@@ -24,10 +26,16 @@ use std::{hint::black_box, time::Instant};
 use synth::Synthesizer;
 use voice::{Note, Voice};
 
+static SCOPED_FTZ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn batch(iterations: usize, operation: &mut impl FnMut(usize) -> f64) -> f64 {
     let start = Instant::now();
-    for i in 0..iterations {
-        black_box(operation(i));
+    let scoped = SCOPED_FTZ.load(std::sync::atomic::Ordering::Relaxed);
+    for start in (0..iterations).step_by(256) {
+        let _mode = scoped.then(float_mode::FloatMode::flush_subnormals);
+        for i in start..(start + 256).min(iterations) {
+            black_box(operation(i));
+        }
     }
     start.elapsed().as_secs_f64()
 }
@@ -81,6 +89,10 @@ fn main() {
         .map_or(48_000.0, |s| s.parse().expect("sample rate"));
     assert!(rate.is_finite() && rate > 0.0);
     let selection = args.get(2).map_or("", String::as_str);
+    SCOPED_FTZ.store(
+        args.get(3).is_some_and(|s| s == "--scoped-ftz"),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let mut mxcsr = 0u32;
     // SAFETY: x86_64のSSE制御レジスタを、有効な4バイト領域へ読み出す。
     // 計測専用プロセスの実行スレッドだけを対象とし、プラグイン本体は変更しない。

@@ -13,6 +13,7 @@ mod abi;
 mod editor;
 mod envelope;
 mod filter;
+mod float_mode;
 mod gui;
 mod host;
 mod oscillator;
