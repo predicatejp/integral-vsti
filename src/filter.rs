@@ -289,10 +289,13 @@ mod tests {
                         _ => high,
                     };
                 }
-                assert_eq!(
-                    filter.process_sample(input, kind, &parameters, rate),
-                    expected
-                );
+                let actual = filter.process_sample(input, kind, &parameters, rate);
+                // Miriはtanなどの演算に許容範囲の非決定的誤差を加えるため、
+                // 独立に計算した係数の末尾ビットまでの一致は通常CPUで検証する。
+                #[cfg(miri)]
+                assert!((actual - expected).abs() < 1e-12 * (1.0 + expected.abs()));
+                #[cfg(not(miri))]
+                assert_eq!(actual, expected);
             }
         }
     }
