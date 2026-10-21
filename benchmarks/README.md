@@ -84,3 +84,19 @@ python3 benchmarks/run-lookup-ablation.py --cpu 0
 サンプル単位のケースでは256サンプルのブロック相当です。設定切替の費用を含めて計測します。
 比較前後のコミットで同じケース・レート・CPU・フラグを指定し、逐次実行してください。
 `--flush-subnormals`は従来どおり測定全体のFTZ/DAZ切替です。
+
+Detuneの連続変調は`oscillator/Sine/u7/detune-changing`と`synth/p32/u7/detune`で測定します。
+どちらも5〜79.925 centを0.075 centずつ毎サンプル更新します。後者は正弦波・LP2です。
+定常入力のキャッシュ後に残るテーブル参照の効果を、同じ計測コードで比較してください。
+
+本体の固定テーブルは`src/oscillator_tables.rs`（f64、Detune 201値・四半周期正弦波1025値、合計9808 bytes）です。
+初期化や確保は音声処理内で行いません。正弦波の実効値補正は行いません。
+再生成が必要なときだけ次を実行します（通常のビルドには不要）:
+
+```sh
+rustc --edition=2024 scripts/generate-oscillator-tables.rs -o target/generate-oscillator-tables
+target/generate-oscillator-tables > src/oscillator_tables.rs
+```
+
+以前の全候補比較スクリプトは、計算式を差し替えるため、その実験時のソースを対象とします。
+再現にはPR #15のマージ時点`bc84079`を使用してください。以後の実装では一致しない式を検出して停止します。
