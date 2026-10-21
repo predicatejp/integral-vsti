@@ -120,6 +120,16 @@ pub struct OscillatorState {
     note_generation: u64,
     /// サンプル処理へ反映済みの即時停止番号。
     reset_generation: u64,
+    /// 周波数倍率・合成音量の計算に使った（ユニゾン数, Detune）。Noneは未計算。
+    unison_input: Option<(u32, f64)>,
+    /// 位相増分の計算に使った（基音Hz, サンプルレート）。
+    frequency_input: Option<(f64, f64)>,
+    /// 各ユニゾンの基音に対する周波数倍率。入力の音程幅が変わったときだけ更新する。
+    frequency_ratios: [f64; 7],
+    /// 各ユニゾンの1サンプル当たりの位相増分。周波数・レート変更時も更新する。
+    phase_increments: [f64; 7],
+    /// 合成波形を割る√ボイス数。Detune=0では1。
+    unison_divisor: f64,
 }
 
 /// Oscillatorの処理を担当し、専用のStateを所有するコンポーネント。
@@ -140,6 +150,11 @@ impl Oscillator {
                 active: false,
                 note_generation: 0,
                 reset_generation: 0,
+                unison_input: None,
+                frequency_input: None,
+                frequency_ratios: [1.0; 7],
+                phase_increments: [0.0; 7],
+                unison_divisor: 1.0,
             },
         }
     }
@@ -175,6 +190,7 @@ impl Oscillator {
             self.state = next.state;
             return 0.0;
         }
+        next.refresh_frequency(input, sample_rate);
         let sample = next.generate_waveform_sample(input);
         next.update_sample(input, sample_rate);
         self.state = next.state;
@@ -189,19 +205,43 @@ impl Oscillator {
             .iter()
             .map(|&phase| input.waveform.unit_sample(phase))
             .sum();
-        self.state.current_amplitude * input.waveform.peak_per_rms() * sum / (count as f64).sqrt()
+        self.state.current_amplitude * input.waveform.peak_per_rms() * sum
+            / self.state.unison_divisor
+    }
+
+    /// 定常入力が変わったサンプルでだけ周波数倍率・位相増分を再計算する。
+    fn refresh_frequency(&mut self, input: &OscillatorInput, sample_rate: f64) {
+        let unison = (input.unison_voices, input.detune_cents);
+        let changed = self.state.unison_input != Some(unison);
+        let count = input.rendered_voices();
+        if changed {
+            for (k, ratio) in self.state.frequency_ratios[..count].iter_mut().enumerate() {
+                *ratio = input.frequency_ratio(k);
+            }
+            self.state.unison_divisor = (count as f64).sqrt();
+            self.state.unison_input = Some(unison);
+        }
+        let frequency = (input.frequency_hz, sample_rate);
+        if changed || self.state.frequency_input != Some(frequency) {
+            for (increment, ratio) in self.state.phase_increments[..count]
+                .iter_mut()
+                .zip(&self.state.frequency_ratios[..count])
+            {
+                let hz = (input.frequency_hz * ratio).min(f64::MAX);
+                // 極端に小さなレートでも除算をオーバーフローさせない。
+                *increment = (hz % sample_rate) / sample_rate;
+            }
+            self.state.frequency_input = Some(frequency);
+        }
     }
 
     /// サンプル生成後に、定常入力を用いて内部状態を1サンプル分進める。
     fn update_sample(&mut self, input: &OscillatorInput, sample_rate: f64) {
         if self.state.active {
-            // 小さなサンプルレートでも除算のオーバーフローを起こさない。
-            for (k, phase) in self.state.phases[..input.rendered_voices()]
+            for (phase, increment) in self.state.phases[..input.rendered_voices()]
                 .iter_mut()
-                .enumerate()
+                .zip(&self.state.phase_increments)
             {
-                let frequency = (input.frequency_hz * input.frequency_ratio(k)).min(f64::MAX);
-                let increment = (frequency % sample_rate) / sample_rate;
                 *phase = (*phase + increment).fract();
             }
             self.state.elapsed_samples = self.state.elapsed_samples.saturating_add(1);
@@ -300,6 +340,36 @@ mod tests {
         input.reset_generation += 1;
         assert_eq!(oscillator.generate_sample(&input, 1000.0), 0.0);
         assert_eq!(oscillator.state.reset_generation, input.reset_generation);
+    }
+
+    #[test]
+    fn cached_increments_follow_samplewise_input_changes_without_resetting_phase() {
+        let mut oscillator = sustained();
+        let mut input = test_input();
+        let mut phases = [0.0_f64; 7];
+        for i in 0..128 {
+            input.unison_voices = 1 + (i % 7);
+            input.detune_cents = if i % 5 == 0 {
+                0.0
+            } else {
+                f64::from(i) * 0.735
+            };
+            input.frequency_hz = 220.0 + f64::from(i % 11) * 31.0;
+            let rate = if i % 3 == 0 { 96_000.0 } else { 48_000.0 };
+            oscillator.generate_sample(&input, rate);
+            for (k, phase) in phases.iter_mut().enumerate().take(input.rendered_voices()) {
+                let cents = if input.unison_voices == 1 {
+                    0.0
+                } else {
+                    input.detune_cents * (2.0 * k as f64 / f64::from(input.unison_voices - 1) - 1.0)
+                };
+                *phase =
+                    (*phase + input.frequency_hz * 2.0_f64.powf(cents / 1200.0) / rate).fract();
+            }
+            for (actual, expected) in oscillator.state.phases.iter().zip(phases) {
+                assert!((actual - expected).abs() < 1e-14);
+            }
+        }
     }
 
     #[test]
