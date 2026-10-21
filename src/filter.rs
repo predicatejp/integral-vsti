@@ -53,10 +53,6 @@ pub struct SvfOutput {
 /// 同じHz・Q・レートで共用できる係数。積分器の状態は含まない。
 #[derive(Clone, Copy)]
 struct SvfCoefficients {
-    /// 再計算の要否を判定する入力設定。
-    parameters: FilterParameters,
-    /// 再計算の要否を判定するサンプルレート。
-    sample_rate: f64,
     /// プリワープ後の積分係数。
     g: f64,
     /// HP式の積分器側の倍率（1/Q + g）。
@@ -71,7 +67,7 @@ pub struct SvfState {
     /// 台形積分器の履歴。[帯域通過側, 低域通過側]。設定変更時も保持する。
     integrators: [f64; 2],
     /// 最後に使用した係数。未計算時はNone。
-    coefficients: Option<SvfCoefficients>,
+    coefficients: Option<(FilterParameters, f64, SvfCoefficients)>,
 }
 
 /// TPT SVFの処理。Stateは積分器の履歴と計算済み係数を保持する。
@@ -85,6 +81,7 @@ impl Svf {
     /// 3出力を生成してから次サンプル用の状態を更新する。確保・ロック・I/Oは行わない。
     /// 不正入力では状態を保持して無音、演算オーバーフローでは状態を消去して無音を返す。
     #[allow(dead_code)] // SVF単体の入口。多段Filterは係数を共用してprocess_prepared_sampleを呼ぶ。
+    #[inline]
     pub fn process_sample(
         &mut self,
         sample: f64,
@@ -102,14 +99,15 @@ impl Svf {
         self.process_prepared_sample(sample, coefficients)
     }
 
+    #[inline]
     fn prepare_coefficients(
         &mut self,
         parameters: &FilterParameters,
         sample_rate: f64,
     ) -> SvfCoefficients {
-        if let Some(cached) = self.state.coefficients
-            && cached.parameters == *parameters
-            && cached.sample_rate == sample_rate
+        if let Some((previous, rate, cached)) = self.state.coefficients
+            && previous == *parameters
+            && rate == sample_rate
         {
             return cached;
         }
@@ -119,17 +117,16 @@ impl Svf {
         let g = (std::f64::consts::PI * (cutoff_hz / sample_rate).min(0.49)).tan();
         let damping = 1.0 / parameters.resonance_q;
         let coefficients = SvfCoefficients {
-            parameters: *parameters,
-            sample_rate,
             g,
             damping_plus_g: damping + g,
             denominator: 1.0 + g * (g + damping),
         };
-        self.state.coefficients = Some(coefficients);
+        self.state.coefficients = Some((*parameters, sample_rate, coefficients));
         coefficients
     }
 
     // 呼び出し側で検証済みの入力・係数を使い、この段の積分器だけを更新する。
+    #[inline]
     fn process_prepared_sample(&mut self, sample: f64, coefficients: SvfCoefficients) -> SvfOutput {
         if sample == 0.0 && self.state.integrators == [0.0; 2] {
             return SvfOutput::default();
@@ -186,6 +183,7 @@ impl Filter {
         }
     }
 
+    #[inline]
     pub fn process_sample(
         &mut self,
         sample: f64,
