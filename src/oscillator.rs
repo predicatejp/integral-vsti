@@ -165,35 +165,32 @@ impl Oscillator {
         if !input.is_valid() || !sample_rate.is_finite() || sample_rate <= 0.0 {
             return 0.0;
         }
-        // 入力を反映した作業値で生成し、内部状態の書き戻しは生成・更新後に行う。
-        let mut next = Self { state: self.state };
-        if input.reset_generation != self.state.reset_generation {
-            next.state.active = false;
-            next.state.current_amplitude = 0.0;
+        // ノート境界を反映し、保持した位相で生成した後に次サンプルへ進める。
+        // キャッシュを含むState全体のサンプルごとのコピーは行わない。
+        let reset = input.reset_generation != self.state.reset_generation;
+        if reset {
+            self.state.active = false;
+            self.state.current_amplitude = 0.0;
         }
-        if input.note_generation != self.state.note_generation
-            && (input.gate || input.reset_generation == self.state.reset_generation)
-        {
-            next.state.start_amplitude = next.state.current_amplitude;
-            next.state.elapsed_samples = 0;
-            next.state.note_off_sample = None;
-            next.state.active = true;
+        if input.note_generation != self.state.note_generation && (input.gate || !reset) {
+            self.state.start_amplitude = self.state.current_amplitude;
+            self.state.elapsed_samples = 0;
+            self.state.note_off_sample = None;
+            self.state.active = true;
         }
-        next.state.note_generation = input.note_generation;
-        next.state.reset_generation = input.reset_generation;
-        if !input.gate && next.state.active && next.state.note_off_sample.is_none() {
-            next.state.note_off_sample = Some(next.state.elapsed_samples);
+        self.state.note_generation = input.note_generation;
+        self.state.reset_generation = input.reset_generation;
+        if !input.gate && self.state.active && self.state.note_off_sample.is_none() {
+            self.state.note_off_sample = Some(self.state.elapsed_samples);
         }
-        next.refresh_amplitude(input, sample_rate);
+        self.refresh_amplitude(input, sample_rate);
         // 世代更新とrelease完了を反映してから判定する。振幅0のattack中は省略しない。
-        if !next.state.active {
-            self.state = next.state;
+        if !self.state.active {
             return 0.0;
         }
-        next.refresh_frequency(input, sample_rate);
-        let sample = next.generate_waveform_sample(input);
-        next.update_sample(input, sample_rate);
-        self.state = next.state;
+        self.refresh_frequency(input, sample_rate);
+        let sample = self.generate_waveform_sample(input);
+        self.update_sample(input, sample_rate);
         sample
     }
 
