@@ -76,6 +76,10 @@ impl Svf {
         if !valid_input(sample, parameters, sample_rate) {
             return SvfOutput::default();
         }
+        // 厳密に無入力・無履歴のときだけ省略する。微小な通常数の残響は打ち切らない。
+        if sample == 0.0 && self.state.integrators == [0.0; 2] {
+            return SvfOutput::default();
+        }
         // 入力設定を書き換えず、係数計算時だけ20〜20,000 Hzへクランプする。
         // 極端に低いレートでもNyquist未満という上限を優先する。
         let cutoff_hz = parameters.cutoff_hz.clamp(20.0, 20_000.0);
@@ -184,6 +188,28 @@ mod tests {
         FilterType::BandPass1,
         FilterType::BandPass2,
     ];
+
+    #[test]
+    fn silence_keeps_tails_and_clears_unused_stages() {
+        let mut filter = Filter::new();
+        // 第1段が無音でも、第2段に残った信号は処理する。
+        filter.state.stages[1].state.integrators = [1e-100, 2e-100];
+        assert_ne!(
+            filter.process_sample(0.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
+            0.0
+        );
+        assert_ne!(filter.state.stages[1].state.integrators, [0.0; 2]);
+        filter.process_sample(0.0, FilterType::LowPass1, &TEST_PARAMETERS, 48_000.0);
+        assert_eq!(filter.state.stages[1].state.integrators, [0.0; 2]);
+        assert_eq!(
+            filter.process_sample(0.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
+            0.0
+        );
+        assert_ne!(
+            filter.process_sample(1.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
+            0.0
+        );
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)] // 長いインパルス応答のDFTは通常のRustテストで検証する。

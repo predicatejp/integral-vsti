@@ -170,6 +170,11 @@ impl Oscillator {
             next.state.note_off_sample = Some(next.state.elapsed_samples);
         }
         next.refresh_amplitude(input, sample_rate);
+        // 世代更新とrelease完了を反映してから判定する。振幅0のattack中は省略しない。
+        if !next.state.active {
+            self.state = next.state;
+            return 0.0;
+        }
         let sample = next.generate_waveform_sample(input);
         next.update_sample(input, sample_rate);
         self.state = next.state;
@@ -260,6 +265,41 @@ mod tests {
                 ..Oscillator::new().state
             },
         }
+    }
+
+    #[test]
+    fn inactive_samples_preserve_phase_but_new_notes_and_silent_attack_advance() {
+        let mut oscillator = Oscillator::new();
+        let mut input = test_input();
+        input.frequency_hz = 100.0;
+        input.gate = false;
+        input.note_generation = 0;
+        for _ in 0..16 {
+            assert_eq!(oscillator.generate_sample(&input, 1000.0), 0.0);
+        }
+        assert_eq!(oscillator.state.elapsed_samples, 0);
+        input.gate = true;
+        input.note_generation += 1;
+        assert_eq!(oscillator.generate_sample(&input, 1000.0), 0.0);
+        assert_eq!(oscillator.state.elapsed_samples, 1);
+        assert_eq!(oscillator.state.phases[0], 0.1);
+        assert!(oscillator.generate_sample(&input, 1000.0) > 0.0);
+        input.gate = false;
+        input.envelope.release_ms = 0.0;
+        assert_eq!(oscillator.generate_sample(&input, 1000.0), 0.0);
+        let phase = oscillator.state.phases;
+        for _ in 0..16 {
+            assert_eq!(oscillator.generate_sample(&input, 1000.0), 0.0);
+        }
+        assert_eq!(oscillator.state.phases, phase);
+        input.gate = true;
+        input.note_generation += 1;
+        oscillator.generate_sample(&input, 1000.0);
+        assert_ne!(oscillator.state.phases, phase);
+        input.gate = false;
+        input.reset_generation += 1;
+        assert_eq!(oscillator.generate_sample(&input, 1000.0), 0.0);
+        assert_eq!(oscillator.state.reset_generation, input.reset_generation);
     }
 
     #[test]
