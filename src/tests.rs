@@ -521,6 +521,17 @@ fn gui_gesture_keeps_handler_alive_during_reentrant_replacement() {
             1.0
         );
         assert_eq!(plugin::edit_parameter(controller, 0, 0.0), FALSE);
+        assert_eq!((ct.set_component_handler)(controller, handler.cast()), OK);
+        (*handler).sequence.set(0);
+        // 配送前の再描画で同じ値が複数回キューへ入っても、編集通知は重複させない。
+        assert_eq!(plugin::edit_parameter(controller, 0, 1.0), OK);
+        assert_eq!(plugin::edit_parameter(controller, 0, 1.0), OK);
+        assert_eq!((*handler).sequence.get(), 0);
+        assert_eq!((*handler).refs.get(), 2);
+        // 異なる値へ戻す編集は通知する。
+        assert_eq!(plugin::edit_parameter(controller, 0, 0.0), OK);
+        assert_eq!((*handler).sequence.get(), 123);
+        assert_eq!((*handler).refs.get(), 1);
         assert_eq!((ct.unknown.release)(controller), 0);
         assert_eq!((ft.unknown.release)(factory), 0);
     }

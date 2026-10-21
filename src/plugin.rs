@@ -569,6 +569,10 @@ pub unsafe fn edit_parameter(this: This, index: usize, value: f64) -> TResult {
     let Some(handler) = plugin.component_handler.borrow().clone() else {
         return FALSE;
     };
+    // 編集配送前に再描画されると同じ値が複数回キューへ入るため、適用済みなら通知しない。
+    if plugin.controller_parameters.get(index) == value {
+        return OK;
+    }
     let p = handler.as_ptr();
     // SAFETY: ローカル参照が再入時のhandler置換から保護する。
     let table = unsafe { &**p.cast::<*const ComponentHandlerVTable>() };
