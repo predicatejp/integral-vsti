@@ -24,7 +24,7 @@ pub enum FilterType {
 }
 
 /// 毎サンプル参照する設定。タイプ・ノート情報・積分器の履歴は含まない。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct FilterParameters {
     /// そのサンプルで要求する具体的な周波数（Hz）。有限値を受理する。
     /// BPFでは中心周波数。適正範囲へのクランプはSVF内部で行う。
@@ -50,14 +50,31 @@ pub struct SvfOutput {
     pub high: f64,
 }
 
+/// 同じHz・Q・レートで共用できる係数。積分器の状態は含まない。
+#[derive(Clone, Copy)]
+struct SvfCoefficients {
+    /// 再計算の要否を判定する入力設定。
+    parameters: FilterParameters,
+    /// 再計算の要否を判定するサンプルレート。
+    sample_rate: f64,
+    /// プリワープ後の積分係数。
+    g: f64,
+    /// HP式の積分器側の倍率（1/Q + g）。
+    damping_plus_g: f64,
+    /// HP式の分母（1 + g * (g + 1/Q)）。
+    denominator: f64,
+}
+
 /// 1段のTPT SVF。フィルタタイプ・多段化・ノートを扱わない。
 #[derive(Default)]
 pub struct SvfState {
     /// 台形積分器の履歴。[帯域通過側, 低域通過側]。設定変更時も保持する。
     integrators: [f64; 2],
+    /// 最後に使用した係数。未計算時はNone。
+    coefficients: Option<SvfCoefficients>,
 }
 
-/// TPT SVFの処理。Stateは積分器の履歴のみを保持する。
+/// TPT SVFの処理。Stateは積分器の履歴と計算済み係数を保持する。
 #[derive(Default)]
 pub struct Svf {
     /// この段の積分器の状態。
@@ -67,6 +84,7 @@ pub struct Svf {
 impl Svf {
     /// 3出力を生成してから次サンプル用の状態を更新する。確保・ロック・I/Oは行わない。
     /// 不正入力では状態を保持して無音、演算オーバーフローでは状態を消去して無音を返す。
+    #[allow(dead_code)] // SVF単体の入口。多段Filterは係数を共用してprocess_prepared_sampleを呼ぶ。
     pub fn process_sample(
         &mut self,
         sample: f64,
@@ -80,14 +98,46 @@ impl Svf {
         if sample == 0.0 && self.state.integrators == [0.0; 2] {
             return SvfOutput::default();
         }
+        let coefficients = self.prepare_coefficients(parameters, sample_rate);
+        self.process_prepared_sample(sample, coefficients)
+    }
+
+    fn prepare_coefficients(
+        &mut self,
+        parameters: &FilterParameters,
+        sample_rate: f64,
+    ) -> SvfCoefficients {
+        if let Some(cached) = self.state.coefficients
+            && cached.parameters == *parameters
+            && cached.sample_rate == sample_rate
+        {
+            return cached;
+        }
         // 入力設定を書き換えず、係数計算時だけ20〜20,000 Hzへクランプする。
         // 極端に低いレートでもNyquist未満という上限を優先する。
         let cutoff_hz = parameters.cutoff_hz.clamp(20.0, 20_000.0);
         let g = (std::f64::consts::PI * (cutoff_hz / sample_rate).min(0.49)).tan();
         let damping = 1.0 / parameters.resonance_q;
+        let coefficients = SvfCoefficients {
+            parameters: *parameters,
+            sample_rate,
+            g,
+            damping_plus_g: damping + g,
+            denominator: 1.0 + g * (g + damping),
+        };
+        self.state.coefficients = Some(coefficients);
+        coefficients
+    }
+
+    // 呼び出し側で検証済みの入力・係数を使い、この段の積分器だけを更新する。
+    fn process_prepared_sample(&mut self, sample: f64, coefficients: SvfCoefficients) -> SvfOutput {
+        if sample == 0.0 && self.state.integrators == [0.0; 2] {
+            return SvfOutput::default();
+        }
+        let g = coefficients.g;
         let [s1, s2] = self.state.integrators;
         // HP = input - damping * BP - LPと2つの台形積分器を連立して解く。
-        let high = (sample - (damping + g) * s1 - s2) / (1.0 + g * (g + damping));
+        let high = (sample - coefficients.damping_plus_g * s1 - s2) / coefficients.denominator;
         let band = s1 + g * high;
         let low = s2 + g * band;
         let next = [2.0 * band - s1, 2.0 * low - s2];
@@ -96,7 +146,7 @@ impl Svf {
             .chain(next.iter())
             .any(|v| !v.is_finite())
         {
-            self.state = SvfState::default();
+            self.state.integrators = [0.0; 2];
             return SvfOutput::default();
         }
         self.state.integrators = next;
@@ -131,7 +181,9 @@ impl Filter {
 
     /// 処理停止・再初期化用。残響を即座に消去する。
     pub fn reset(&mut self) {
-        self.state = Self::new().state;
+        for stage in &mut self.state.stages {
+            stage.state.integrators = [0.0; 2];
+        }
     }
 
     pub fn process_sample(
@@ -152,18 +204,27 @@ impl Filter {
             FilterType::LowPass2 | FilterType::HighPass2 | FilterType::BandPass2 => 2,
             _ => 1,
         };
+        if count == 1 {
+            self.state.stages[1].state.integrators = [0.0; 2];
+        }
+        if sample == 0.0
+            && self.state.stages[..count]
+                .iter()
+                .all(|s| s.state.integrators == [0.0; 2])
+        {
+            return 0.0;
+        }
+        // 同設定の2段で係数計算を共有し、積分器は各段に保持する。
+        let coefficients = self.state.stages[0].prepare_coefficients(parameters, sample_rate);
         let mut sample = sample;
         for stage in &mut self.state.stages[..count] {
-            let output = stage.process_sample(sample, parameters, sample_rate);
+            let output = stage.process_prepared_sample(sample, coefficients);
             sample = match filter_type {
                 FilterType::LowPass1 | FilterType::LowPass2 => output.low,
                 FilterType::HighPass1 | FilterType::HighPass2 => output.high,
                 FilterType::BandPass1 | FilterType::BandPass2 => output.band,
                 FilterType::None => unreachable!(),
             };
-        }
-        if count == 1 {
-            self.state.stages[1] = Svf::default();
         }
         sample
     }
@@ -188,6 +249,55 @@ mod tests {
         FilterType::BandPass1,
         FilterType::BandPass2,
     ];
+
+    #[test]
+    fn cached_coefficients_match_direct_calculation_during_modulation() {
+        for kind in TYPES {
+            let mut filter = Filter::new();
+            let mut history = [[0.0; 2]; 2];
+            let mut parameters = TEST_PARAMETERS;
+            let mut rate = 48_000.0;
+            for n in 0..256 {
+                if n % 7 == 0 {
+                    parameters.cutoff_hz = 100.0 + n as f64 * 71.0;
+                }
+                if n % 11 == 0 {
+                    parameters.resonance_q = 0.5 + (n % 17) as f64 * 0.5;
+                }
+                if n % 13 == 0 {
+                    rate = if rate == 48_000.0 { 96_000.0 } else { 48_000.0 };
+                }
+                let input = if n % 3 == 0 { 0.5 } else { -0.25 };
+                let g = (PI * (parameters.cutoff_hz.clamp(20.0, 20_000.0) / rate).min(0.49)).tan();
+                let damping = 1.0 / parameters.resonance_q;
+                let count = if matches!(
+                    kind,
+                    FilterType::LowPass2 | FilterType::HighPass2 | FilterType::BandPass2
+                ) {
+                    2
+                } else {
+                    1
+                };
+                let mut expected = input;
+                for state in &mut history[..count] {
+                    let [s1, s2] = *state;
+                    let high = (expected - (damping + g) * s1 - s2) / (1.0 + g * (g + damping));
+                    let band = s1 + g * high;
+                    let low = s2 + g * band;
+                    *state = [2.0 * band - s1, 2.0 * low - s2];
+                    expected = match kind {
+                        FilterType::LowPass1 | FilterType::LowPass2 => low,
+                        FilterType::BandPass1 | FilterType::BandPass2 => band,
+                        _ => high,
+                    };
+                }
+                assert_eq!(
+                    filter.process_sample(input, kind, &parameters, rate),
+                    expected
+                );
+            }
+        }
+    }
 
     #[test]
     fn silence_keeps_tails_and_clears_unused_stages() {
