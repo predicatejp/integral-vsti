@@ -384,13 +384,16 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(component->getState(&saved) == kResultOk && saved.bytes[8] == 3);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(waveformId) == 1.0);
-    // 空状態は旧版のサイン波として移行。ComponentとControllerの設定を独立に同期する。
+    // 一体型なのでComponentの復元だけでもControllerの表示を同期する。
+    // 空状態は旧版のサイン波として移行する。
     StateStream empty;
     assert(component->setState(&empty) == kResultOk);
+    assert(controller->getParamNormalized(waveformId) == 0.0);
     assert(controller->setComponentState(&empty) == kResultOk);
     assert(controller->getParamNormalized(waveformId) == 0.0);
     saved.position = 0;
     assert(component->setState(&saved) == kResultOk);
+    assert(controller->getParamNormalized(waveformId) == 1.0);
     saved.position = 0;
     assert(controller->setComponentState(&saved) == kResultOk);
     StateStream own;
@@ -763,6 +766,53 @@ T* query(FUnknown* object, const TUID iid) {
     return static_cast<T*>(result);
 }
 
+void checkStateReload(IPluginFactory* factory, const TUID cid) {
+    // 全設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
+    const std::array<double, 12> plain {3, 25, 15, 250, 0.45, 350, 7, 25, 32, 6, 2400, 2.5};
+    std::array<double, 12> expected {};
+    StateStream saved;
+    for (bool restore : {false, true}) {
+        void* object = nullptr;
+        assert(factory->createInstance(cid, IComponent_iid, &object) == kResultOk);
+        auto* component = static_cast<IComponent*>(object);
+        auto* processor = query<IAudioProcessor>(component, IAudioProcessor_iid);
+        auto* controller = query<IEditController>(component, IEditController_iid);
+        assert(component->initialize(factory) == kResultOk);
+        if (!restore) {
+            std::array<Points, 12> points;
+            Changes changes;
+            for (size_t i = 0; i < points.size(); ++i) {
+                ParameterInfo info {};
+                assert(controller->getParameterInfo(static_cast<int32>(i), info) == kResultOk);
+                expected[i] = controller->plainParamToNormalized(info.id, plain[i]);
+                points[i].id = info.id;
+                points[i].values = {{0, expected[i]}};
+                changes.queues.push_back(&points[i]);
+            }
+            ProcessData data;
+            data.inputParameterChanges = &changes;
+            assert(processor->process(data) == kResultOk);
+            assert(component->getState(&saved) == kResultOk);
+        } else {
+            // setComponentStateの追加呼び出しやprocessより前に、表示が復元されること。
+            assert(component->setState(&saved) == kResultOk);
+            StateStream own;
+            assert(controller->setState(&own) == kResultOk);
+            for (size_t i = 0; i < expected.size(); ++i) {
+                ParameterInfo info {};
+                assert(controller->getParameterInfo(static_cast<int32>(i), info) == kResultOk);
+                assert(std::abs(controller->getParamNormalized(info.id) - expected[i]) < 1e-12);
+            }
+            StateStream restored;
+            assert(component->getState(&restored) == kResultOk && restored.bytes == saved.bytes);
+        }
+        assert(component->terminate() == kResultOk);
+        controller->release();
+        processor->release();
+        assert(component->release() == 0);
+    }
+}
+
 template <typename Sample>
 void checkSilence(IComponent* component, IAudioProcessor* processor, int32 precision) {
     ProcessSetup setup {kRealtime, precision, 257, 48000.0};
@@ -862,6 +912,7 @@ int main(int argc, char** argv) {
     assert(factory2->getClassInfo2(1, &info) == kInvalidArgument);
     factory2->release();
 
+    checkStateReload(factory, info.cid);
     for (int iteration = 0; iteration < 100; ++iteration) {
         void* result = nullptr;
         assert(factory->createInstance(info.cid, IComponent_iid, &result) == kResultOk);

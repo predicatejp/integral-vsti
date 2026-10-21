@@ -48,7 +48,7 @@ struct Plugin {
     event_active: AtomicBool,
     /// DSPへ適用済み、またはsetStateから次のprocessへ渡す12パラメーター。保存時にもatomicで読む。
     processor_parameters: SharedParameters,
-    /// Controllerが表示する12パラメーター。ホストのsetParamNormalized/setComponentStateで更新する。
+    /// Controllerが表示する12パラメーター。ホストの値通知とComponentの状態復元で更新する。
     controller_parameters: Arc<SharedParameters>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
@@ -383,7 +383,12 @@ unsafe extern "system" fn set_processor_state(this: This, stream: This) -> TResu
     // SAFETY: ホストのストリームを検証し、成功時だけatomicへ反映する。
     match unsafe { parameters::read_state(stream) } {
         Ok(values) => {
-            unsafe { instance(this) }.processor_parameters.store(values);
+            // SAFETY: thisは生存中のComponentインターフェース。
+            let plugin = unsafe { instance(this) };
+            plugin.processor_parameters.store(values);
+            // ComponentとControllerは同一インスタンス。追加のsetComponentState呼び出しに
+            // 依存せず表示も復元する。atomicの更新だけで、ホストへの編集通知は送らない。
+            plugin.controller_parameters.store(values);
             OK
         }
         Err(status) => status,
