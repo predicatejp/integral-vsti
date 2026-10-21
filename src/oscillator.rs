@@ -5,6 +5,34 @@
 
 use crate::envelope::{self, EnvelopeParameters};
 
+#[path = "oscillator_tables.rs"]
+mod tables;
+
+/// 等間隔テーブルの隣接点を線形補間する。positionは0以上、最終要素の位置以下。
+fn interpolate(position: f64, table: &[f64]) -> f64 {
+    let index = (position as usize).min(table.len() - 2);
+    table[index] + (table[index + 1] - table[index]) * (position - index as f64)
+}
+
+/// −100〜100 centの倍率。ホストの連続値やユニゾン配置の小数centも保持する。
+fn detune_ratio(cents: f64) -> f64 {
+    interpolate(cents + 100.0, &tables::DETUNE)
+}
+
+/// 1/4周期1024区間と対称性による正弦波。入力位相は[0, 1)。実効値補正は行わない。
+fn sine_sample(phase: f64) -> f64 {
+    let position = phase * 4.0;
+    let quadrant = position as usize;
+    let fraction = position - quadrant as f64;
+    let folded = if quadrant & 1 == 0 {
+        fraction
+    } else {
+        1.0 - fraction
+    };
+    let value = interpolate(folded * 1024.0, &tables::SINE);
+    if quadrant & 2 == 0 { value } else { -value }
+}
+
 /// 対称な三角波・ノコギリ波の実効値をピーク振幅へ変換する倍率（√3）。
 const SQRT_3: f64 = 1.732_050_807_568_877_2;
 
@@ -34,7 +62,7 @@ impl Waveform {
     /// 位相[0, 1)からピーク振幅1の波形を生成する。帯域制限は行わない。
     fn unit_sample(self, phase: f64) -> f64 {
         match self {
-            Self::Sine => (std::f64::consts::TAU * phase).sin(),
+            Self::Sine => sine_sample(phase),
             Self::Triangle => 1.0 - 4.0 * ((phase + 0.25).fract() - 0.5).abs(),
             Self::Square => {
                 if phase < 0.5 {
@@ -86,7 +114,7 @@ impl OscillatorInput {
             return 1.0;
         }
         let cents = self.detune_cents * (2.0 * k as f64 / f64::from(self.unison_voices - 1) - 1.0);
-        2.0_f64.powf(cents / 1200.0)
+        detune_ratio(cents)
     }
 
     pub fn is_valid(&self) -> bool {
@@ -340,6 +368,45 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // 密な補間誤差・実効値走査は通常のCPUテストで検証する。
+    fn lookup_error_bounds_and_uncorrected_rms() {
+        let (mut sine_error, mut detune_error, mut energy) = (0.0_f64, 0.0_f64, 0.0);
+        let points = 200_003;
+        for i in 0..points {
+            let phase = i as f64 / points as f64;
+            let value = sine_sample(phase);
+            sine_error = sine_error.max((value - (std::f64::consts::TAU * phase).sin()).abs());
+            energy += value * value;
+            let cents = -100.0 + 200.0 * phase;
+            detune_error =
+                detune_error.max((detune_ratio(cents) / 2.0_f64.powf(cents / 1200.0) - 1.0).abs());
+        }
+        assert!(sine_error < 2.95e-7);
+        assert!(detune_error < 4.18e-8);
+        let rms = (energy / points as f64).sqrt() * 0.5 * std::f64::consts::SQRT_2;
+        assert!((rms - 0.499_999_902).abs() < 1e-9);
+    }
+
+    #[test]
+    fn table_endpoints_and_quadrant_edges_are_continuous() {
+        for cents in -100..=100 {
+            assert!(
+                (detune_ratio(cents as f64) - 2.0_f64.powf(cents as f64 / 1200.0)).abs() < 1e-15
+            );
+        }
+        assert_eq!(detune_ratio(0.0), 1.0);
+        for edge in [0.0_f64, 0.25, 0.5, 0.75, 1.0] {
+            for phase in [edge.next_down(), edge, edge.next_up()] {
+                if (0.0..1.0).contains(&phase) {
+                    assert!(
+                        (sine_sample(phase) - (std::f64::consts::TAU * phase).sin()).abs() < 1e-14
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cached_increments_follow_samplewise_input_changes_without_resetting_phase() {
         let mut oscillator = sustained();
         let mut input = test_input();
@@ -364,7 +431,8 @@ mod tests {
                     (*phase + input.frequency_hz * 2.0_f64.powf(cents / 1200.0) / rate).fract();
             }
             for (actual, expected) in oscillator.state.phases.iter().zip(phases) {
-                assert!((actual - expected).abs() < 1e-14);
+                // 倍率補間の相対誤差4.18e-8が128サンプルの位相へ累積する範囲。
+                assert!((actual - expected).abs() < 1e-7);
             }
         }
     }
@@ -509,7 +577,7 @@ mod tests {
                     };
                     *phase = (*phase + input.frequency_hz * 2.0_f64.powf(cents / 1200.0) / 48000.0)
                         .fract();
-                    assert!((state.state.phases[k] - *phase).abs() < 1e-12);
+                    assert!((state.state.phases[k] - *phase).abs() < 3e-8);
                 }
             }
             let held_phases = state.state.phases;
@@ -522,8 +590,7 @@ mod tests {
             input.gate = true;
             input.note_generation += 1;
             input.envelope.attack_ms = 0.0;
-            let expected =
-                0.5 * std::f64::consts::SQRT_2 * (std::f64::consts::TAU * expected_phases[0]).sin();
+            let expected = 0.5 * std::f64::consts::SQRT_2 * sine_sample(held_phases[0]);
             assert!((state.generate_sample(&input, 48000.0) - expected).abs() < 1e-12);
             assert_eq!(&state.state.phases[1..], &held_phases[1..]);
         }

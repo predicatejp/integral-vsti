@@ -159,6 +159,17 @@ fn main() {
             );
         }
     }
+    let mut modulated = Oscillator::new();
+    let mut modulated_input = input(Waveform::Sine, 7, 30.0);
+    measure(
+        "oscillator/Sine/u7/detune-changing",
+        "sample",
+        selection,
+        |i| {
+            modulated_input.detune_cents = 5.0 + (i % 1000) as f64 * 0.075;
+            modulated.generate_sample(black_box(&modulated_input), black_box(rate))
+        },
+    );
     let mut idle = Oscillator::new();
     let mut idle_input = input(Waveform::Sine, 7, 30.0);
     idle_input.gate = false;
@@ -254,11 +265,19 @@ fn main() {
                 "idle",
                 "released",
                 "sine",
+                "detune",
             ] {
                 let mut synth = Synthesizer::new();
                 synth.set_sample_rate(rate);
                 let mut values = parameters::defaults();
-                values[0] = parameters::to_normalized(0, if mode == "sine" { 0.0 } else { 3.0 });
+                values[0] = parameters::to_normalized(
+                    0,
+                    if matches!(mode, "sine" | "detune") {
+                        0.0
+                    } else {
+                        3.0
+                    },
+                );
                 values[6] = parameters::to_normalized(6, unison as f64);
                 values[7] = parameters::to_normalized(7, 30.0);
                 values[8] = parameters::to_normalized(8, polyphony as f64);
@@ -287,6 +306,9 @@ fn main() {
                     |i| {
                         if mode == "automation" {
                             values[11] = 0.05 + (i % 256) as f64 / 512.0;
+                        }
+                        if mode == "detune" {
+                            values[7] = (5.0 + (i % 1000) as f64 * 0.075) / 100.0;
                         }
                         if mode != "render" {
                             synth.set_parameters(black_box(values));
