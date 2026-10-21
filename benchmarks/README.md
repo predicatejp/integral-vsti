@@ -100,3 +100,42 @@ target/generate-oscillator-tables > src/oscillator_tables.rs
 
 以前の全候補比較スクリプトは、計算式を差し替えるため、その実験時のソースを対象とします。
 再現にはPR #15のマージ時点`bc84079`を使用してください。以後の実装では一致しない式を検出して停止します。
+
+## 最適化前後の波形・疎なオートメーションの比較
+
+```sh
+python3 benchmarks/run-waveform-audit.py
+python3 benchmarks/run-waveform-audit.py --user-case
+python3 benchmarks/run-waveform-audit.py --automation
+```
+
+`waveform-audit.rs`を同じRustコンパイラで最適化前（`bc84079`）、各改善段階、
+テーブル導入後（`94c4221`）のDSPとともにビルドします。この履歴が取得済みのcheckoutで実行してください。
+さらに正弦波のみ／Detuneのみをテーブル化した比較用コピーで原因を分離します。
+通常のテスト・CIには追加せず、本体と依存関係を変更しません。Python・Rust標準機能だけを使用します。
+
+通常実行は4,468条件・各版18,345,984サンプル。フィルタ単体の同一入力と音源全体を分け、
+全フィルタ・4波形・周波数クランプ・Q両端・32/44.1/48/96kHz・急変・無入力残響を比較します。
+音源の通常条件は44.1/48/96kHz、長時間条件は48kHzです。長時間条件はノート108・7ユニゾン・
+Detune=37.5 centで10秒間、係数差の蓄積と波形の不連続点も調べます。
+
+`--user-case`はSaw・Unison=7・Detune=25・Polyphony=32・48kHzの203条件です。
+発音数1/32（ノート48、または48〜79）、Cutoff=−2400/0/1200/9600 cent、Q=0.5/1/√2/10、
+全フィルタを1秒比較し、10秒発音・Cutoff/Qの急変・ノートの再割当も検証します。
+
+`--automation`は`automation-audit.rs`の試験用IParameterChanges/IParamValueQueueから、
+本体の`ParameterPoints`を実際に呼びます。32ノート、Saw、Unison=7、Detune=25、LP2、48kHzで、
+CutoffまたはQに1/16/64/256サンプル間隔の点を送ります。各条件49,152サンプル（1.024秒）。
+ブロック末尾のランプ点、先頭1点、段差を示す隣接2点を区別し、適用値もCSVに記録します。
+ランプは4,096サンプルで下限から上限へ進み、続く4,096サンプルで戻ります。
+ホストから実際に採取したデータではありません。
+
+出力は`target/waveform-audit{,-user,-automation}/`。`metadata.json`は対象コミットとコンパイラ、
+各版の`manifest.csv`と`audio.f64le`は条件と連続したf64波形です。`*-vs-*.csv`に変更サンプル数、
+最大絶対差、差分RMS、基準RMSに対する比、前後のピーク、非有限値数を保存します。
+相対RMSは`RMS(after − before) / RMS(before)`で、波形の位相合わせやゲイン合わせは行いません。
+無音に近い基準の大きな相対誤差と、大振幅での絶対誤差は、聴感差そのものではありません。
+`parameter-trace.csv`は疎なキューのサンプル別適用値です。
+
+比較対象の浮動小数点モードは本体に合わせ、最適化前はFTZ/DAZを追加せず、その後は有効にします。
+測定波形には正規化・クリッピングを加えません。GUI・実DAW・Windowsでの聴感確認は別途必要です。
