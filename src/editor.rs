@@ -270,6 +270,8 @@ impl WindowHandler for Editor {
                                     31
                                 } else if i == 10 {
                                     1200
+                                } else if i == 13 {
+                                    600
                                 } else if i == 11 {
                                     950
                                 } else {
@@ -303,6 +305,8 @@ impl WindowHandler for Editor {
                                     self.numeric_input(ui, i, value, edited);
                                     ui.label(if time {
                                         "ms"
+                                    } else if i == 13 {
+                                        "dB"
                                     } else if matches!(i, 7 | 10) {
                                         "cent"
                                     } else {

@@ -17,8 +17,8 @@ use std::{
     },
 };
 
-const WIDTH: i32 = 720;
-const HEIGHT: i32 = 480;
+const WIDTH: i32 = 1024;
+const HEIGHT: i32 = 768;
 const RECT: ViewRect = ViewRect {
     left: 0,
     top: 0,
@@ -67,7 +67,7 @@ struct ViewState {
     #[cfg(target_os = "linux")]
     /// UIスレッドで編集を配送するタイマー。取り外し時に必ず解除する。
     ticker: RefCell<Option<Ticker>>,
-    /// Controllerと共有する12個の正規化値。
+    /// Controllerと共有する14個の正規化値。
     parameters: Arc<SharedParameters>,
     /// 描画側からの操作の送り口。音声スレッドでは使用しない。
     sender: SyncSender<(usize, f64)>,

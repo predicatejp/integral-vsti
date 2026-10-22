@@ -46,9 +46,9 @@ struct Plugin {
     /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
     /// initialize時は互換性のためtrueとし、その後はactivateBusの明示的な指定に従う。
     event_active: AtomicBool,
-    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す13パラメーター。保存時にもatomicで読む。
+    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す14パラメーター。保存時にもatomicで読む。
     processor_parameters: SharedParameters,
-    /// Controllerが表示する13パラメーター。ホストの値通知とComponentの状態復元で更新する。
+    /// Controllerが表示する14パラメーター。ホストの値通知とComponentの状態復元で更新する。
     controller_parameters: Arc<SharedParameters>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
@@ -426,6 +426,8 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
             short_title: utf16(NAMES[i]),
             units: utf16(if parameters::is_time(i) {
                 "ms"
+            } else if i == 13 {
+                "dB"
             } else if matches!(i, 7 | 10) {
                 "cent"
             } else {
@@ -766,7 +768,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let synth = unsafe { &mut *plugin.synth.get() };
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
-    // SAFETY: 13本のカーソルはこのprocess中だけホストのキューを借用する。
+    // SAFETY: 14本のカーソルはこのprocess中だけホストのキューを借用する。
     let mut changes: [ParameterPoints<'_>; parameters::COUNT] =
         std::array::from_fn(|i| unsafe { ParameterPoints::new(data, i, values[i]) });
     let event_active = plugin.event_active.load(Ordering::Relaxed);

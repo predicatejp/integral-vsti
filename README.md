@@ -15,8 +15,8 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
-| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphony、Filter / Cutoff / Resonance、Phase（3択）を公開。eguiでも操作可能 |
-| 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタをVST3のIBStreamで保存・復元 |
+| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volumeを公開。eguiでも操作可能 |
+| 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・VolumeをVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
 ProcessorとControllerは、同一インスタンスから取得できます。
@@ -110,6 +110,14 @@ Voiceはノートの音程とtuningを含む周波数に `2^(cent/1200)` を乗�
 
 台形積分したSVFの連立方程式をRustで実装しています。数式の参考は
 [Andrew SimperによるSVFの解説](https://www.cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf)です。
+
+## マスターボリューム
+
+Volumeは全Voiceのフィルタ出力を加算した後の音量です（ParamID `0x4d564f4c`）。
+範囲は−48〜＋12 dB、初期値は0 dBです。整数スライダーの0〜600 tickを
+`dB = tick / 10 − 48` で換算し、0.1 dB刻みで設定します。右の数値欄からも直接入力できます。
+出力へ掛ける振幅倍率は `10^(dB / 20)` で、値が変わったときだけ計算して保持します。
+VST3では連続値として公開し、オートメーションの変更点間はdB値で線形補間します。
 
 ## ポリフォニー
 
@@ -211,8 +219,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v6は108バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phaseを各f64。little endian）です。
-旧v5（100バイト）以前はPhase=Keepを補います。旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
+保存形式v7は116バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volumeを各f64。little endian）です。
+旧v6（108バイト）以前はVolume=0 dBを補います。旧v5（100バイト）以前はPhase=Keepを補います。旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
 復元値は次の音声処理ブロックから適用し、Controllerは `setComponentState` で同期します。
 位相や発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
@@ -221,12 +229,12 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 
 ホストのプラグイン画面に、ライトテーマのパラメーターリストを表示します。
 左からパラメーター名、操作欄、現在値を配置し、縦方向に並べます。
-Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonanceはスライダーです。
+Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeはスライダーです。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは720×480物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
+サイズは1024×768物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
 各スライダー右の数値欄をクリックして直接入力できます。Enterまたは別の欄へのフォーカス移動で確定し、Escで取り消します。
-時間はms、DetuneとCutoffはcent、ResonanceはQで入力します。UnisonとPolyphonyは範囲内の整数、その他は範囲内の小数値も受け付けます。
+時間はms、DetuneとCutoffはcent、ResonanceはQ、VolumeはdBで入力します。UnisonとPolyphonyは範囲内の整数、その他は範囲内の小数値も受け付けます。
 直接入力した値はスライダーの刻みに丸めず、音源へ反映して保存します。範囲外や不正な文字列は確定時に元の表示へ戻します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
@@ -314,7 +322,7 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 `C:\Program Files\Common Files\VST3` に配置します。システム共通フォルダへの配置には管理者権限が必要です。
 
 ホストで再スキャンし、音源一覧の **Sample VSTi** を読み込みます。
-ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonanceの10スライダーとFilter・Phaseのドロップダウンを操作できます。
+ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonance・Volumeの11スライダーとFilter・Phaseのドロップダウンを操作できます。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
 ## 検証
