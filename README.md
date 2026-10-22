@@ -15,7 +15,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
-| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphony、Filter / Cutoff / Resonanceを公開。eguiでも操作可能 |
+| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphony、Filter / Cutoff / Resonance、Phase（3択）を公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタをVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
@@ -32,14 +32,14 @@ macOS・Windows ARM64・32ビット環境は未対応です。
   `BASE_RMS_AMPLITUDE × velocity` とします。velocityが0のNote Onもノートを更新し、attack時間をかけて目標振幅0へ移行します。
 - Note Offは、両イベントにnoteIdがあればIDで照合します。どちらかが `-1` の場合はチャンネルと音高で照合します。
   同じID、またはIDがない同チャンネル・同音高が複数枠にあれば、全一致をreleaseします。上書き済みの旧IDへのNote Offは新しいノートを消しません。
-- `OscillatorInput` は発振器回路の定常入力で、波形・ユニゾン数・Detune・目標周波数・目標実効値・ゲート・エンベロープ設定・ノート/停止の世代番号を持ちます。
+- `OscillatorInput` は発振器回路の定常入力で、波形・位相モード・ユニゾン数・Detune・目標周波数・目標実効値・ゲート・エンベロープ設定・ノート/停止の世代番号を持ちます。
   `OscillatorState` はボイスごとの位相、現在の実効振幅、attack開始振幅、経過サンプル数、ノートオフ位置を保持します。イベント処理は入力だけを書き換えます。
 - 各サンプルで「現在の入力と状態からサンプル生成 → 入力を用いて状態更新」を繰り返します。
   エンベロープの計算はサンプル数をミリ秒へ変換して行い、位相と時間の更新はサンプル生成後です。
-  初期位相は0。ノートの追加・音程変更・ブロック境界で位相をリセットしません。
+  初期位相は0。Note On時の位相はPhaseの選択に従います。音程変更・ブロック境界では位相を保持します。
 - Note Offではreleaseへ移行し、終了後に位相を止めます。release=0msなら即時に消音します。
   再Note Onではreleaseを挟まず、その時点の実効振幅から新しい目標へattack時間全体を使って移行します。
-  位相は引き継ぎます。周波数・波形の即時変更や0ms設定ではクリックが発生し得ます。
+  位相はPhaseの選択に従います。周波数・波形の即時変更や0ms設定ではクリックが発生し得ます。
 - `sampleOffset` の位置でイベントを反映します。同位置ではリスト順です。取得失敗、未対応の種類・バス、
   不正な値、範囲外または処理済み位置より前のイベントは無視します。
 - イベントがないブロックでも発音を継続します。処理中は出力バッファがなくてもイベントを処理し、
@@ -50,6 +50,18 @@ macOS・Windows ARM64・32ビット環境は未対応です。
   音声出力バスはホストによる有効化を必要とします。
 - 処理停止・無効化では消音しますが位相は保持します。処理停止中の0サンプルフラッシュではノートを受け付けません。
   ホストのトランスポート再生状態は参照しないため、停止中でもホストが処理とノートを送れば演奏できます。
+
+PhaseはNote On時の位相を選ぶ3択パラメーターです（ParamID `0x50484153`、初期値Keep）。
+
+| 選択 | Note On時の動作 |
+| --- | --- |
+| Keep（維持） | 割り当て先オシレータの直前の位相を引き継ぐ |
+| Zero（ゼロ） | 割り当て先オシレータの全ユニゾン位相を0にする |
+| Random（ランダム） | 全ユニゾン位相をそれぞれ独立に0以上1周期未満へ設定する |
+
+選択の変更は次のNote Onから適用し、同じサンプル位置ではパラメーターを先に反映します。
+疑似乱数にはSplitMix64を使用し、各オシレータの作成時に初期シードを取得します。
+同じ乱数状態とノート入力からは同じ位相列を生成し、新しく作成したインスタンスでは異なる位相列になります。
 
 内部では `OscillatorInput.waveform` の `Waveform` で波形を指定します。既定は `Sine` です。
 波形を変更しても位相を引き継ぎ、次のNote Onでも選択した波形を維持します。
@@ -107,7 +119,7 @@ GUIでは1刻みの整数スライダーで設定します。変更点では補�
 `Synthesizer.next_oscillator_id` は初期値0です。有効なNote OnをそのIDへ割り当てた後、
 `(ID + 1) % Polyphony` へ進めます。空き枠の探索はせず、発音中・release中の枠もこの順に再使用します。
 Note Offと不正なNote OnではIDを進めません。処理停止でも次のIDは保持します。
-再使用時は既存の位相と現在振幅を引き継ぎ、新しいノートのattackを開始します。
+再使用時は現在振幅を引き継ぎ、新しいノートのattackを開始します。位相はPhaseの選択に従います。
 
 各枠に独立した入力・位相・エンベロープ状態・ノートの対応を持ち、各枠で既存のユニゾンを生成します。
 波形、AHDSR、Unison、Detune、フィルタ設定は全枠共通です。フィルタ状態と実際のカットオフ周波数はVoiceごとに独立しています。
@@ -133,8 +145,8 @@ Detuneが正なら合成音を `1/√N` 倍にし、最大ベロシティ・エ�
 長時間平均の理想実効値を0.5に合わせます。うなりにより短時間の実効値は変動します。
 Detune=0では保持した先頭ボイスの位相だけで1ボイス相当の音を生成し、実効値0.5を保ちます。
 
-各ボイスの位相は0から開始し、ノート・音程・設定変更ではリセットしません。
-未使用ボイスの位相は停止して保持し、再使用時に引き継ぎます。
+各ボイスの初期位相は0で、Note On時にはPhaseの選択を全7位相へ適用します。
+音程・設定変更では位相を保持します。未使用ボイスの位相は停止し、ユニゾン数を増やすと保持した位置から再開します。
 設定の即時切り替えではクリックが発生する場合があります。ピーク制限は行いません。
 
 Unisonは `stepCount=6`、Detuneは `stepCount=0`、ともに `kCanAutomate` で公開します。
@@ -199,8 +211,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v5は100バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonanceを各f64。little endian）です。
-旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
+保存形式v6は108バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phaseを各f64。little endian）です。
+旧v5（100バイト）以前はPhase=Keepを補います。旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
 復元値は次の音声処理ブロックから適用し、Controllerは `setComponentState` で同期します。
 位相や発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
@@ -209,7 +221,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 
 ホストのプラグイン画面に、ライトテーマのパラメーターリストを表示します。
 左からパラメーター名、操作欄、現在値を配置し、縦方向に並べます。
-WaveformとFilterはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonanceはスライダーです。
+Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonanceはスライダーです。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
 サイズは720×480物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
@@ -302,7 +314,7 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 `C:\Program Files\Common Files\VST3` に配置します。システム共通フォルダへの配置には管理者権限が必要です。
 
 ホストで再スキャンし、音源一覧の **Sample VSTi** を読み込みます。
-ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonanceの10スライダーとFilterのドロップダウンを操作できます。
+ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonanceの10スライダーとFilter・Phaseのドロップダウンを操作できます。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
 ## 検証

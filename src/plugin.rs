@@ -46,9 +46,9 @@ struct Plugin {
     /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
     /// initialize時は互換性のためtrueとし、その後はactivateBusの明示的な指定に従う。
     event_active: AtomicBool,
-    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す12パラメーター。保存時にもatomicで読む。
+    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す13パラメーター。保存時にもatomicで読む。
     processor_parameters: SharedParameters,
-    /// Controllerが表示する12パラメーター。ホストの値通知とComponentの状態復元で更新する。
+    /// Controllerが表示する13パラメーター。ホストの値通知とComponentの状態復元で更新する。
     controller_parameters: Arc<SharedParameters>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
@@ -436,11 +436,16 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
                 6 => 6,
                 8 => 31,
                 9 => 6,
+                12 => 2,
                 _ => 0,
             },
             default_normalized_value: parameters::defaults()[i],
             unit_id: 0,
-            flags: if matches!(i, 0 | 9) { 1 | (1 << 3) } else { 1 },
+            flags: if matches!(i, 0 | 9 | 12) {
+                1 | (1 << 3)
+            } else {
+                1
+            },
         });
     }
     OK
@@ -456,6 +461,8 @@ unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *m
         WAVEFORM_NAMES[parameters::to_plain(i, value) as usize].to_owned()
     } else if i == 9 {
         FILTER_NAMES[parameters::to_plain(i, value) as usize].to_owned()
+    } else if i == 12 {
+        parameters::PHASE_NAMES[parameters::to_plain(i, value) as usize].to_owned()
     } else if matches!(i, 6 | 8) {
         format!("{:.0}", parameters::to_plain(i, value))
     } else {
@@ -492,11 +499,13 @@ unsafe extern "system" fn parameter_value(
     let Ok(text) = String::from_utf16(&buffer) else {
         return INVALID_ARGUMENT;
     };
-    let plain = if matches!(i, 0 | 9) {
+    let plain = if matches!(i, 0 | 9 | 12) {
         let names: &[&str] = if i == 0 {
             &WAVEFORM_NAMES
-        } else {
+        } else if i == 9 {
             &FILTER_NAMES
+        } else {
+            &parameters::PHASE_NAMES
         };
         names
             .iter()
@@ -757,8 +766,8 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let synth = unsafe { &mut *plugin.synth.get() };
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
-    // SAFETY: 12本のカーソルはこのprocess中だけホストのキューを借用する。
-    let mut changes: [ParameterPoints<'_>; 12] =
+    // SAFETY: 13本のカーソルはこのprocess中だけホストのキューを借用する。
+    let mut changes: [ParameterPoints<'_>; parameters::COUNT] =
         std::array::from_fn(|i| unsafe { ParameterPoints::new(data, i, values[i]) });
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
@@ -845,7 +854,7 @@ unsafe fn generate_samples(
     data: &ProcessData,
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
-    changes: &mut [ParameterPoints<'_>; 12],
+    changes: &mut [ParameterPoints<'_>; parameters::COUNT],
 ) -> bool {
     let mut nonzero = false;
     for offset in range.clone() {
@@ -877,7 +886,7 @@ unsafe fn generate_samples(
 fn apply_parameters(
     plugin: &Plugin,
     synth: &mut Synthesizer,
-    changes: &mut [ParameterPoints<'_>; 12],
+    changes: &mut [ParameterPoints<'_>; parameters::COUNT],
     offset: i32,
 ) {
     let values = std::array::from_fn(|i| changes[i].value_at(offset));

@@ -4,6 +4,7 @@
 //! 発振器回路の定常入力と内部状態を分離した単一のオシレータ。
 
 use crate::envelope::{self, EnvelopeParameters};
+use std::{collections::hash_map::RandomState, hash::BuildHasher};
 
 #[path = "oscillator_tables.rs"]
 mod tables;
@@ -76,12 +77,25 @@ impl Waveform {
     }
 }
 
+/// Note On境界で各ユニゾン位相へ適用する動作。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhaseMode {
+    /// 直前の位相を保持する。
+    Keep,
+    /// すべての位相を0にする。
+    Zero,
+    /// 各位相を独立した疑似乱数で[0, 1)へ設定する。
+    Random,
+}
+
 /// イベントではなく、サンプルごとに参照する発振器回路の定常入力。
 /// 周波数・振幅は目標値。現在の音量と時間はOscillatorStateが保持する。
 #[derive(Clone, Copy)]
 pub struct OscillatorInput {
     /// 生成する波形。変更しても内部の位相を初期化しない。
     pub waveform: Waveform,
+    /// 次のNote Onで適用する位相モード。
+    pub phase_mode: PhaseMode,
     /// 同じノートを鳴らすユニゾンのボイス数（1..=7）。
     pub unison_voices: u32,
     /// 中心音程から両端までの幅（0..=100 cent）。1ボイス時には適用しない。
@@ -131,9 +145,10 @@ impl OscillatorInput {
 #[derive(Clone, Copy)]
 pub struct OscillatorState {
     /// 次に生成するサンプルの位相（周期単位、0以上1未満）。
-    /// 初期値は0。入力変更や再発音でも保持し、release完了後と処理停止中は進めない。
-    /// 未使用ボイスも位相を保持し、再使用時に引き継ぐ。
+    /// 初期値は0。Note On時はphase_modeに従い、release完了後と処理停止中は進めない。
     phases: [f64; 7],
+    /// Note On時だけ進めるSplitMix64の内部状態。初期化時に発振器ごとの種を取得する。
+    random: u64,
     /// 次サンプル時点の実効振幅。再Note Onの開始音量として引き継ぐ。
     current_amplitude: f64,
     /// 直近のNote On時の実効振幅。次のNote Onまで固定する。
@@ -171,6 +186,7 @@ impl Oscillator {
         Self {
             state: OscillatorState {
                 phases: [0.0; 7],
+                random: RandomState::new().hash_one(0_u64),
                 current_amplitude: 0.0,
                 start_amplitude: 0.0,
                 elapsed_samples: 0,
@@ -193,7 +209,7 @@ impl Oscillator {
         if !input.is_valid() || !sample_rate.is_finite() || sample_rate <= 0.0 {
             return 0.0;
         }
-        // ノート境界を反映し、保持した位相で生成した後に次サンプルへ進める。
+        // ノート境界と位相モードを反映して生成した後、次サンプルへ進める。
         // キャッシュを含むState全体のサンプルごとのコピーは行わない。
         let reset = input.reset_generation != self.state.reset_generation;
         if reset {
@@ -201,6 +217,15 @@ impl Oscillator {
             self.state.current_amplitude = 0.0;
         }
         if input.note_generation != self.state.note_generation && (input.gate || !reset) {
+            match input.phase_mode {
+                PhaseMode::Keep => {}
+                PhaseMode::Zero => self.state.phases.fill(0.0),
+                PhaseMode::Random => {
+                    for k in 0..self.state.phases.len() {
+                        self.state.phases[k] = self.random_phase();
+                    }
+                }
+            }
             self.state.start_amplitude = self.state.current_amplitude;
             self.state.elapsed_samples = 0;
             self.state.note_off_sample = None;
@@ -220,6 +245,17 @@ impl Oscillator {
         let sample = self.generate_waveform_sample(input);
         self.update_sample(input, sample_rate);
         sample
+    }
+
+    /// SplitMix64の上位53bitを周期単位へ換算。乱数生成はNote On時の整数演算だけで完了する。
+    /// 参照元: https://prng.di.unimi.it/splitmix64.c （通知はTHIRD_PARTY_NOTICES.txt）。
+    fn random_phase(&mut self) -> f64 {
+        self.state.random = self.state.random.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut bits = self.state.random;
+        bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        bits ^= bits >> 31;
+        (bits >> 11) as f64 * (1.0 / (1_u64 << 53) as f64)
     }
 
     /// 現在の状態を読み取るだけで、位相を進めずにサンプルを生成する。
@@ -303,9 +339,77 @@ mod tests {
     use super::*;
     use crate::envelope::DEFAULT_ENVELOPE;
 
+    #[test]
+    fn phase_modes_apply_only_at_note_on_and_cover_all_unison_phases() {
+        let mut oscillator = Oscillator::new();
+        oscillator.state.random = 42;
+        oscillator.state.phases = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875];
+        let mut input = test_input();
+        input.frequency_hz = 0.0; // 境界処理後の位相を進めずに観測する。
+        input.unison_voices = 7;
+        input.detune_cents = 25.0;
+        input.envelope.attack_ms = 0.0;
+        input.envelope.decay_ms = 0.0;
+        let held = oscillator.state.phases;
+        oscillator.generate_sample(&input, 48_000.0);
+        assert_eq!(oscillator.state.phases, held);
+        input.phase_mode = PhaseMode::Zero;
+        oscillator.generate_sample(&input, 48_000.0);
+        assert_eq!(oscillator.state.phases, held);
+        input.note_generation += 1;
+        assert_eq!(oscillator.generate_sample(&input, 48_000.0), 0.0);
+        assert_eq!(oscillator.state.phases, [0.0; 7]);
+        input.phase_mode = PhaseMode::Random;
+        input.note_generation += 1;
+        let sample = oscillator.generate_sample(&input, 48_000.0);
+        let phases = oscillator.state.phases;
+        for (i, &phase) in phases.iter().enumerate() {
+            assert!((0.0..1.0).contains(&phase));
+            assert!(!phases[..i].contains(&phase));
+        }
+        let expected =
+            phases.into_iter().map(sine_sample).sum::<f64>() * 0.5 * std::f64::consts::SQRT_2
+                / 7.0_f64.sqrt();
+        assert!((sample - expected).abs() < 1e-15);
+        let random = oscillator.state.random;
+        oscillator.generate_sample(&input, 48_000.0);
+        assert_eq!(oscillator.state.random, random);
+        assert_eq!(oscillator.state.phases, phases);
+        input.note_generation += 1;
+        oscillator.generate_sample(&input, 48_000.0);
+        assert_ne!(oscillator.state.phases, phases);
+        // Note Offと処理停止では、新しいランダム位相を引かない。
+        input.gate = false;
+        input.reset_generation += 1;
+        let phases = oscillator.state.phases;
+        let random = oscillator.state.random;
+        assert_eq!(oscillator.generate_sample(&input, 48_000.0), 0.0);
+        assert_eq!(oscillator.state.phases, phases);
+        assert_eq!(oscillator.state.random, random);
+    }
+
+    #[test]
+    fn random_phase_sequence_is_reproducible_from_its_state() {
+        let mut oscillator = Oscillator::new();
+        oscillator.state.random = 0;
+        // SplitMix64の既知の先頭値。再開時も同じStateから同じ列を生成する。
+        assert_eq!(
+            oscillator.random_phase(),
+            (0xe220_a839_7b1d_cdaf_u64 >> 11) as f64 / (1_u64 << 53) as f64
+        );
+        let state = oscillator.state;
+        let expected: [f64; 7] = std::array::from_fn(|_| oscillator.random_phase());
+        oscillator.state = state;
+        assert_eq!(
+            std::array::from_fn::<_, 7, _>(|_| oscillator.random_phase()),
+            expected
+        );
+    }
+
     fn test_input() -> OscillatorInput {
         OscillatorInput {
             waveform: Waveform::Sine,
+            phase_mode: PhaseMode::Keep,
             unison_voices: 1,
             detune_cents: 0.0,
             frequency_hz: 1.0,

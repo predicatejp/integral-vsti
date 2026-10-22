@@ -232,7 +232,7 @@ public:
     uint32 PLUGIN_API release() override { assert(refs > 1); return --refs; }
     tresult PLUGIN_API beginEdit(ParamID id) override {
         assert(std::this_thread::get_id() == uiThread);
-        assert(id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -473,6 +473,27 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(std::abs(controller->normalizedParamToPlain(filterIds[2], handler.value) - 2.3456) < 1e-12);
             handler.sequence.clear(); pump();
         }
+        // 最終行のPhaseリストからRandomを選択し、状態へ保存する。
+        assert(controller->setParamNormalized(phaseId, 0.0) == kResultOk);
+        pump(); parent.click(180, 435); pump();
+        const auto phaseBackground = parent.pixel(20, 130);
+        int phaseRun = 0, phaseBest = 0, phaseTop = 0;
+        for (int y = 300; y < 435; ++y) {
+            phaseRun = parent.pixel(115, y) != phaseBackground ? phaseRun + 1 : 0;
+            if (phaseRun > phaseBest) { phaseBest = phaseRun; phaseTop = y - phaseRun + 1; }
+        }
+        assert(phaseBest > 60);
+        parent.click(180, phaseTop + 64);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "Random phase selection");
+        assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+        assert(handler.editedId == phaseId && handler.value == 1.0);
+        point.id = phaseId; point.values = {{0, handler.value}};
+        assert(processor->process(data) == kResultOk);
+        StateStream phaseState; assert(component->getState(&phaseState) == kResultOk);
+        double phaseMode = -1;
+        std::memcpy(&phaseMode, phaseState.bytes.data() + 100, 8);
+        assert(phaseMode == 2.0);
+        handler.sequence.clear(); pump();
         parent.screenshot();
         assert(view->removed() == kResultOk);
         pump(); assert(handler.sequence.empty());
