@@ -693,14 +693,14 @@ void checkFilter(IComponent* component, IAudioProcessor* processor, IEditControl
     for (int i = 0; i < 3; ++i) {
         ParameterInfo info;
         assert(controller->getParameterInfo(9 + i, info) == kResultOk && info.id == filterIds[i]);
-        assert(info.stepCount == (i == 0 ? 6 : (i == 1 ? 1200 : 0)));
+        assert(info.stepCount == (i == 0 ? 6 : 0));
         const double initial = controller->normalizedParamToPlain(info.id, info.defaultNormalizedValue);
-        assert(std::abs(initial - (i == 0 ? 1.0 : (i == 1 ? 1200.0 : 1 / std::sqrt(2.0)))) < 1e-12);
+        assert(std::abs(initial - (i == 0 ? 1.0 : (i == 1 ? 4800.0 : 1.0))) < 1e-12);
     }
     for (int tick = 0; tick <= 1200; ++tick) {
         const double cents = -2400.0 + 10 * tick;
         const double normalized = controller->plainParamToNormalized(filterIds[1], cents);
-        assert(controller->normalizedParamToPlain(filterIds[1], normalized) == cents);
+        assert(std::abs(controller->normalizedParamToPlain(filterIds[1], normalized) - cents) < 2e-12);
     }
     const std::array<std::u16string, 7> names {u"None", u"LowPass1", u"LowPass2", u"HighPass1", u"HighPass2", u"BandPass1", u"BandPass2"};
     configureEnvelope(processor, true);
@@ -768,7 +768,7 @@ T* query(FUnknown* object, const TUID iid) {
 
 void checkStateReload(IPluginFactory* factory, const TUID cid) {
     // 全設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
-    const std::array<double, 12> plain {3, 25, 15, 250, 0.45, 350, 7, 25, 32, 6, 2400, 2.5};
+    const std::array<double, 12> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125};
     std::array<double, 12> expected {};
     StateStream saved;
     for (bool restore : {false, true}) {

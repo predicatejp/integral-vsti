@@ -79,7 +79,8 @@ pub fn index(id: u32) -> Option<usize> {
 pub fn is_time(index: usize) -> bool {
     matches!(index, 1 | 2 | 3 | 5)
 }
-pub fn is_discrete(index: usize) -> bool {
+/// 変更点まで直前の値を保持するパラメーター。Cutoffは連続値だが補間しない。
+pub fn holds_between_points(index: usize) -> bool {
     matches!(index, 0 | 6 | 8 | 9 | 10)
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950。
@@ -110,7 +111,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         7 => return normalized * 100.0,
         8 => return (normalized * 32.0).floor().min(31.0) + 1.0,
         9 => return (normalized * 7.0).floor().min(6.0),
-        10 => return (normalized * 1201.0).floor().min(1200.0) * 10.0 - 2400.0,
+        10 => return normalized * 12000.0 - 2400.0,
         11 => return 0.5 + normalized * 9.5,
         _ => {}
     }
@@ -134,7 +135,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         7 => return plain / 100.0,
         8 => return (plain.clamp(1.0, 32.0).round() - 1.0) / 31.0,
         9 => return plain.clamp(0.0, 6.0).round() / 6.0,
-        10 => return ((plain.clamp(-2400.0, 9600.0) + 2400.0) / 10.0).round() / 1200.0,
+        10 => return (plain + 2400.0) / 12000.0,
         11 => return (plain - 0.5) / 9.5,
         _ => {}
     }
@@ -155,15 +156,20 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         7 => (0.0..=100.0).contains(&plain),
         8 => (1.0..=32.0).contains(&plain) && plain.fract() == 0.0,
         9 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
-        10 => (-2400.0..=9600.0).contains(&plain) && plain % 10.0 == 0.0,
+        10 => (-2400.0..=9600.0).contains(&plain),
         11 => (0.5..=10.0).contains(&plain),
         _ => (0.0..=5000.0).contains(&plain),
     }
 }
+/// 直接入力の実単位を検証し、スライダーの刻みに丸めずVST3正規化値へ換算する。
+pub fn parse_numeric(index: usize, text: &str) -> Option<f64> {
+    let plain = text.trim().parse::<f64>().ok()?;
+    valid_plain(index, plain).then(|| to_normalized(index, plain))
+}
 pub fn canonical(index: usize, value: f64) -> f64 {
     if index == 0 {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(index, 6 | 8 | 9 | 10) {
+    } else if matches!(index, 6 | 8 | 9) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -182,8 +188,8 @@ pub fn defaults() -> [f64; 12] {
         0.0,
         1.0,
         1.0,    // LowPass1
-        1200.0, // ノートから+1 oct
-        std::f64::consts::FRAC_1_SQRT_2,
+        4800.0, // ノートから+4 oct
+        1.0,
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -318,7 +324,7 @@ impl<'a> ParameterPoints<'a> {
             self.previous = (at, value);
             self.advance();
         }
-        if !is_discrete(self.parameter)
+        if !holds_between_points(self.parameter)
             && let Some((at, value)) = self.next
         {
             let fraction = f64::from(offset - self.previous.0) / f64::from(at - self.previous.0);
@@ -541,17 +547,62 @@ mod tests {
     };
 
     #[test]
+    fn numeric_entry_preserves_values_between_slider_ticks() {
+        for (index, text, plain) in [
+            (1, "12.345", 12.345),
+            (2, "0.125", 0.125),
+            (3, "123.456", 123.456),
+            (4, "0.4567", 0.4567),
+            (5, "0.0625", 0.0625),
+            (6, "7", 7.0),
+            (7, "25.125", 25.125),
+            (8, "32", 32.0),
+            (10, "-1234.125", -1234.125),
+            (11, "1.2345", 1.2345),
+        ] {
+            let normalized = parse_numeric(index, text).unwrap();
+            let parameters = SharedParameters::new();
+            parameters.set(index, normalized);
+            assert!((to_plain(index, parameters.get(index)) - plain).abs() < 2e-12);
+        }
+        for (index, min, max) in [
+            (1, 0.0, 5000.0),
+            (2, 0.0, 5000.0),
+            (3, 0.0, 5000.0),
+            (4, 0.0, 1.0),
+            (5, 0.0, 5000.0),
+            (6, 1.0, 7.0),
+            (7, 0.0, 100.0),
+            (8, 1.0, 32.0),
+            (10, -2400.0, 9600.0),
+            (11, 0.5, 10.0),
+        ] {
+            for value in [min, max] {
+                assert!(parse_numeric(index, &value.to_string()).is_some());
+            }
+            for value in [min - 1.0, max + 1.0] {
+                assert!(parse_numeric(index, &value.to_string()).is_none());
+            }
+            for text in ["", "-", "NaN", "inf", "abc"] {
+                assert!(parse_numeric(index, text).is_none());
+            }
+        }
+        assert!(parse_numeric(6, "2.5").is_none());
+        assert!(parse_numeric(8, "2.5").is_none());
+    }
+
+    #[test]
     fn filter_controls_cover_all_steps_and_defaults() {
         let values = defaults();
         assert_eq!(to_plain(9, values[9]), 1.0);
-        assert_eq!(to_plain(10, values[10]), 1200.0);
-        assert!((to_plain(11, values[11]) - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-15);
+        assert_eq!(to_plain(10, values[10]), 4800.0);
+        assert_eq!(to_plain(11, values[11]), 1.0);
         for (index, max) in [(9, 6), (10, 1200), (11, 950)] {
             for tick in 0..=max {
                 let plain = slider_to_plain(index, tick);
                 let normalized = to_normalized(index, plain);
                 assert!(valid_plain(index, plain));
-                assert!((to_plain(index, normalized) - plain).abs() < 1e-12);
+                assert!((to_plain(index, normalized) - plain).abs() < 2e-12);
                 assert_eq!((normalized * f64::from(max)).round() as u32, tick);
             }
         }
@@ -572,11 +623,11 @@ mod tests {
                 let mut values = defaults();
                 values[0] = normalized(waveform);
                 values[6] = to_normalized(6, 7.0);
-                values[7] = to_normalized(7, 37.0);
+                values[7] = to_normalized(7, 37.125);
                 values[8] = to_normalized(8, 32.0);
                 values[9] = to_normalized(9, 6.0);
-                values[10] = to_normalized(10, -1200.0);
-                values[11] = to_normalized(11, 5.0);
+                values[10] = to_normalized(10, -1200.125);
+                values[11] = to_normalized(11, 5.125);
                 assert_eq!(write_state(stream.cast(), values), OK);
                 (*stream).position = 0;
                 let restored = read_state(stream.cast()).unwrap();
@@ -632,7 +683,7 @@ mod tests {
                     (9, 1.5),
                     (10, -2410.0),
                     (10, 9601.0),
-                    (10, 1001.0),
+                    (10, f64::NAN),
                     (11, 0.49),
                     (11, 10.1),
                     (11, f64::NAN),

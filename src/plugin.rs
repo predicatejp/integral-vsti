@@ -436,7 +436,6 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
                 6 => 6,
                 8 => 31,
                 9 => 6,
-                10 => 1200,
                 _ => 0,
             },
             default_normalized_value: parameters::defaults()[i],
@@ -457,7 +456,7 @@ unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *m
         WAVEFORM_NAMES[parameters::to_plain(i, value) as usize].to_owned()
     } else if i == 9 {
         FILTER_NAMES[parameters::to_plain(i, value) as usize].to_owned()
-    } else if matches!(i, 6 | 8 | 10) {
+    } else if matches!(i, 6 | 8) {
         format!("{:.0}", parameters::to_plain(i, value))
     } else {
         format!("{:.3}", parameters::to_plain(i, value))
