@@ -10,7 +10,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 14;
+pub const COUNT: usize = 20;
 pub const PHASE_MODES: [PhaseMode; 3] = [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random];
 pub const PHASE_NAMES: [&str; 3] = ["Keep", "Zero", "Random"];
 
@@ -60,6 +60,12 @@ pub const IDS: [u32; COUNT] = [
     0x46524553, // FRES
     0x50484153, // PHAS
     0x4d564f4c, // MVOL
+    0x43415454, // CATT
+    0x43484c44, // CHLD
+    0x43444543, // CDEC
+    0x43535553, // CSUS
+    0x4352454c, // CREL
+    0x43414d54, // CAMT
 ];
 pub const NAMES: [&str; COUNT] = [
     "Waveform",
@@ -76,6 +82,12 @@ pub const NAMES: [&str; COUNT] = [
     "Resonance",
     "Phase",
     "Volume",
+    "Cutoff Attack",
+    "Cutoff Hold",
+    "Cutoff Decay",
+    "Cutoff Sustain",
+    "Cutoff Release",
+    "Cutoff Amount",
 ];
 /// VST3正規化値と時間を換算する連続軸のスケール。UIの整数tick上限とは区別する。
 pub fn time_scale() -> f64 {
@@ -85,13 +97,13 @@ pub fn index(id: u32) -> Option<usize> {
     IDS.iter().position(|&candidate| candidate == id)
 }
 pub fn is_time(index: usize) -> bool {
-    matches!(index, 1 | 2 | 3 | 5)
+    matches!(index, 1 | 2 | 3 | 5 | 14 | 15 | 16 | 18)
 }
 /// 変更点まで直前の値を保持するパラメーター。Cutoffは連続値だが補間しない。
 pub fn holds_between_points(index: usize) -> bool {
     matches!(index, 0 | 6 | 8 | 9 | 10 | 12)
 }
-/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=600。
+/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=600、cutoff amount 0..=960。
 pub fn slider_to_plain(index: usize, tick: u32) -> f64 {
     if is_time(index) {
         if tick == 0 {
@@ -106,6 +118,7 @@ pub fn slider_to_plain(index: usize, tick: u32) -> f64 {
             10 => f64::from(tick) * 10.0 - 2400.0,
             11 => 0.5 + f64::from(tick) / 100.0,
             13 => f64::from(tick) / 10.0 - 48.0,
+            19 => f64::from(tick) * 10.0 - 4800.0,
             _ => f64::from(tick) / 100.0,
         }
     }
@@ -115,7 +128,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         return from_normalized(normalized).map_or(0.0, |w| f64::from(waveform_index(w)));
     }
     match index {
-        4 => return normalized,
+        4 | 17 => return normalized,
         6 => return (normalized * 7.0).floor().min(6.0) + 1.0,
         7 => return normalized * 100.0,
         8 => return (normalized * 32.0).floor().min(31.0) + 1.0,
@@ -124,6 +137,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         11 => return 0.5 + normalized * 9.5,
         12 => return (normalized * 3.0).floor().min(2.0),
         13 => return normalized * 60.0 - 48.0,
+        19 => return normalized * 9600.0 - 4800.0,
         _ => {}
     }
     if normalized == 1.0 {
@@ -141,7 +155,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         return plain.clamp(0.0, 3.0).round() / 3.0;
     }
     match index {
-        4 => return plain,
+        4 | 17 => return plain,
         6 => return (plain.clamp(1.0, 7.0).round() - 1.0) / 6.0,
         7 => return plain / 100.0,
         8 => return (plain.clamp(1.0, 32.0).round() - 1.0) / 31.0,
@@ -150,6 +164,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         11 => return (plain - 0.5) / 9.5,
         12 => return plain.clamp(0.0, 2.0).round() / 2.0,
         13 => return (plain + 48.0) / 60.0,
+        19 => return (plain + 4800.0) / 9600.0,
         _ => {}
     }
     if plain == 5000.0 {
@@ -164,7 +179,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
 pub fn valid_plain(index: usize, plain: f64) -> bool {
     match index {
         0 => (0.0..=3.0).contains(&plain),
-        4 => (0.0..=1.0).contains(&plain),
+        4 | 17 => (0.0..=1.0).contains(&plain),
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
         7 => (0.0..=100.0).contains(&plain),
         8 => (1.0..=32.0).contains(&plain) && plain.fract() == 0.0,
@@ -173,6 +188,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         11 => (0.5..=10.0).contains(&plain),
         12 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
         13 => (-48.0..=12.0).contains(&plain),
+        19 => (-4800.0..=4800.0).contains(&plain),
         _ => (0.0..=5000.0).contains(&plain),
     }
 }
@@ -207,16 +223,22 @@ pub fn defaults() -> [f64; COUNT] {
         1.0,
         0.0, // Phase: Keep
         0.0, // Volume: 0 dB
+        p.attack_ms,
+        p.hold_ms,
+        p.decay_ms,
+        p.sustain,
+        p.release_ms,
+        0.0, // Cutoff Amount: 0 cent
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
-pub fn envelope(values: &[f64; COUNT]) -> EnvelopeParameters {
+pub fn envelope(values: &[f64; COUNT], first: usize) -> EnvelopeParameters {
     EnvelopeParameters {
-        attack_ms: to_plain(1, values[1]),
-        hold_ms: to_plain(2, values[2]),
-        decay_ms: to_plain(3, values[3]),
-        sustain: values[4],
-        release_ms: to_plain(5, values[5]),
+        attack_ms: to_plain(first, values[first]),
+        hold_ms: to_plain(first + 1, values[first + 1]),
+        decay_ms: to_plain(first + 2, values[first + 2]),
+        sustain: values[first + 3],
+        release_ms: to_plain(first + 4, values[first + 4]),
     }
 }
 
@@ -286,7 +308,7 @@ pub struct ParameterPoints<'a> {
     next: Option<(i32, f64)>,
     /// 補間の始点。前ブロックの最終値をoffset=-1として扱う。
     previous: (i32, f64),
-    /// 波形・ユニゾン数・ポリフォニー数・フィルタタイプ・カットオフは離散値。他のパラメーターは正規化空間で線形補間する。
+    /// holds_between_pointsの指定値は変更点まで保持し、それ以外は正規化空間で線形補間する。
     parameter: usize,
     /// 有効な変更点があるキューだけをDSPから共有値へ書き戻す。
     /// 他パラメーターの状態復元を、無関係なオートメーションで上書きしない。
@@ -382,7 +404,8 @@ impl<'a> ParameterPoints<'a> {
 // v6: v5にPhaseの実単位f64を追加（108バイト）。v1〜v5はPhase=Keepを補う。
 // v1〜v4はフィルタNoneとして旧音色を維持する。空状態は新規設定へ戻す。
 // v7: v6にVolumeのdB値f64を追加（116バイト）。v1〜v6は0 dBを補う。
-const STATE_HEADER: [u8; 8] = *b"SVST\x07\0\0\0";
+// v8: v7にカットオフAHDSRとAmountの実単位f64を追加（164バイト）。旧形式のAmountは0。
+const STATE_HEADER: [u8; 8] = *b"SVST\x08\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -391,7 +414,7 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
     }
     // SAFETY: IBStreamの関数表を借用し、固定長領域の範囲だけを読み取る。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 116];
+    let mut bytes = [0u8; 164];
     let mut position = 0;
     let mut length = 12;
     while position < length {
@@ -424,6 +447,7 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
                 5 => length = 100,
                 6 => length = 108,
                 7 => length = 116,
+                8 => length = 164,
                 _ => return Err(FALSE),
             }
         }
@@ -462,7 +486,7 @@ pub unsafe fn write_state(stream: This, values: [f64; COUNT]) -> TResult {
     }
     // SAFETY: IBStreamは固定長バッファを呼び出し中だけ読む。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 116];
+    let mut bytes = [0u8; 164];
     bytes[..8].copy_from_slice(&STATE_HEADER);
     bytes[8..12].copy_from_slice(&(to_plain(0, values[0]) as u32).to_le_bytes());
     for (i, &value) in values.iter().enumerate().skip(1) {
@@ -498,7 +522,7 @@ mod tests {
         /// このテストだけで使うIBStream関数表。
         vtable: &'static StreamVTable,
         /// 形式の最大長だけを用意したテスト用領域。
-        bytes: [u8; 116],
+        bytes: [u8; 164],
         /// 初期化済みデータの長さ。
         length: usize,
         /// 次の読み書き位置。
@@ -581,6 +605,12 @@ mod tests {
             (10, "-1234.125", -1234.125),
             (11, "1.2345", 1.2345),
             (13, "-12.345", -12.345),
+            (14, "12.345", 12.345),
+            (15, "0.125", 0.125),
+            (16, "123.456", 123.456),
+            (17, "0.4567", 0.4567),
+            (18, "0.0625", 0.0625),
+            (19, "-1234.125", -1234.125),
         ] {
             let normalized = parse_numeric(index, text).unwrap();
             let parameters = SharedParameters::new();
@@ -599,6 +629,12 @@ mod tests {
             (10, -2400.0, 9600.0),
             (11, 0.5, 10.0),
             (13, -48.0, 12.0),
+            (14, 0.0, 5000.0),
+            (15, 0.0, 5000.0),
+            (16, 0.0, 5000.0),
+            (17, 0.0, 1.0),
+            (18, 0.0, 5000.0),
+            (19, -4800.0, 4800.0),
         ] {
             for value in [min, max] {
                 assert!(parse_numeric(index, &value.to_string()).is_some());
@@ -615,13 +651,17 @@ mod tests {
     }
 
     #[test]
-    fn filter_and_volume_controls_cover_all_steps_and_defaults() {
+    fn controls_cover_all_steps_and_defaults() {
         let values = defaults();
         assert_eq!(to_plain(9, values[9]), 1.0);
         assert_eq!(to_plain(10, values[10]), 4800.0);
         assert_eq!(to_plain(11, values[11]), 1.0);
         assert_eq!(to_plain(13, values[13]), 0.0);
-        for (index, max) in [(9, 6), (10, 1200), (11, 950), (13, 600)] {
+        assert_eq!(to_plain(19, values[19]), 0.0);
+        for i in 0..5 {
+            assert_eq!(values[14 + i], values[1 + i]);
+        }
+        for (index, max) in [(9, 6), (10, 1200), (11, 950), (13, 600), (19, 960)] {
             for tick in 0..=max {
                 let plain = slider_to_plain(index, tick);
                 let normalized = to_normalized(index, plain);
@@ -637,7 +677,7 @@ mod tests {
         for waveform in WAVEFORMS {
             let mut stream = Stream {
                 vtable: &STREAM_TABLE,
-                bytes: [0; 116],
+                bytes: [0; 164],
                 length: 0,
                 position: 0,
             };
@@ -654,13 +694,19 @@ mod tests {
                 values[11] = to_normalized(11, 5.125);
                 values[12] = to_normalized(12, 2.0);
                 values[13] = to_normalized(13, -12.345);
+                for (i, plain) in [25.0, 15.0, 250.0, 0.4567, 350.25, -1234.125]
+                    .into_iter()
+                    .enumerate()
+                {
+                    values[14 + i] = to_normalized(14 + i, plain);
+                }
                 assert_eq!(write_state(stream.cast(), values), OK);
                 (*stream).position = 0;
                 let restored = read_state(stream.cast()).unwrap();
                 for (actual, expected) in restored.into_iter().zip(values) {
                     assert!((actual - expected).abs() < 1e-12);
                 }
-                for length in 1..116 {
+                for length in 1..164 {
                     (*stream).length = length;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
@@ -709,6 +755,14 @@ mod tests {
                 assert_eq!(to_plain(13, legacy[13]), 0.0);
                 (*stream).bytes[4] = 7;
                 (*stream).length = 116;
+                (*stream).position = 0;
+                let legacy = read_state(stream.cast()).unwrap();
+                for i in 0..14 {
+                    assert!((legacy[i] - values[i]).abs() < 1e-12);
+                }
+                assert_eq!(&legacy[14..], &defaults()[14..]);
+                (*stream).bytes[4] = 8;
+                (*stream).length = 164;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -737,6 +791,15 @@ mod tests {
                     (13, 12.1),
                     (13, f64::NAN),
                     (13, f64::INFINITY),
+                    (14, -1.0),
+                    (15, 5000.1),
+                    (16, f64::NAN),
+                    (17, -0.1),
+                    (17, 1.1),
+                    (18, f64::INFINITY),
+                    (19, -4800.1),
+                    (19, 4800.1),
+                    (19, f64::NAN),
                 ] {
                     let offset = 12 + (index - 1) * 8;
                     let original: [u8; 8] =
@@ -810,7 +873,7 @@ mod tests {
 
     #[test]
     fn time_axes_have_zero_endpoint_and_one_decade_per_hundred_ticks() {
-        for i in [1, 2, 3, 5] {
+        for i in [1, 2, 3, 5, 14, 15, 16, 18] {
             for (tick, ms) in [
                 (0.0, 0.0),
                 (1.0, 1.0),

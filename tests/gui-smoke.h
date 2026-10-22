@@ -233,7 +233,7 @@ public:
     uint32 PLUGIN_API release() override { assert(refs > 1); return --refs; }
     tresult PLUGIN_API beginEdit(ParamID id) override {
         assert(std::this_thread::get_id() == uiThread);
-        assert(id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -309,7 +309,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         const auto background = parent.pixel(20, 130);
         int border = 0;
         for (int y = 100; y < 190; ++y) {
-            if (parent.pixel(119, y) != background) ++border;
+            if (parent.pixel(192, y) != background) ++border;
         }
         return border > 70;
     };
@@ -323,19 +323,19 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         pump();
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
-        parent.click(180, 80); // ドロップダウンを開くだけでは編集を通知しない。
+        parent.click(253, 80); // ドロップダウンを開くだけでは編集を通知しない。
         waitFor(menuVisible, "open Waveform list");
         assert(handler.sequence.empty());
-        parent.click(180, 185);
+        parent.click(253, 185);
         waitFor([&] { return handler.sequence.size() >= 3; }, "Sawtooth selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.editedId == waveformId && handler.value == 1.0 && controller->getParamNormalized(waveformId) == 1.0);
         handler.sequence.clear();
         waitFor([&] { return !menuVisible(); }, "close Waveform list");
-        parent.click(180, 80);
+        parent.click(253, 80);
         waitFor(menuVisible, "reopen Waveform list");
         assert(handler.sequence.empty());
-        parent.click(180, 110);
+        parent.click(253, 110);
         waitFor([&] { return handler.sequence.size() >= 3; }, "Sine selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.editedId == waveformId && handler.value == 0.0);
@@ -353,24 +353,24 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         pump(); assert(handler.sequence.empty());
         // スライダーは左端0、右端最大を選べる。ホストからの復元値を丸めて再通知しない。
         for (size_t i = 0; i < envelopeIds.size(); ++i) {
-            for (int x : {504, 115}) {
+            for (int x : {577, 188}) {
                 const int y = 113 + static_cast<int>(i) * 29;
                 parent.pointer(x, y, true); pump(); parent.pointer(x, y, false);
                 waitFor([&] { return handler.sequence.size() >= 3; }, "envelope slider edit");
                 assert(handler.sequence == (std::vector<int>{0, 1, 2}));
                 assert(handler.editedId == envelopeIds[i]);
-                assert(handler.value == (x == 504 ? 1.0 : 0.0));
+                assert(handler.value == (x == 577 ? 1.0 : 0.0));
                 handler.sequence.clear(); pump();
             }
             if (i != 3) {
                 // 0ms端点の追加後も、対数軸の10msと1000msをマウスで選べる。
-                for (int x : {224, 428}) {
+                for (int x : {297, 501}) {
                     parent.pointer(x, 113 + static_cast<int>(i) * 29, true);
                     pump(); parent.pointer(x, 113 + static_cast<int>(i) * 29, false);
                     waitFor([&] { return handler.sequence.size() >= 3; }, "exact envelope time");
                     assert(handler.sequence == (std::vector<int>{0, 1, 2}));
                     assert(handler.editedId == envelopeIds[i]);
-                    const double expected = x == 224 ? 10.0 : 1000.0;
+                    const double expected = x == 297 ? 10.0 : 1000.0;
                     assert(std::abs(controller->normalizedParamToPlain(handler.editedId, handler.value)
                                     - expected) < 1e-9);
                     handler.sequence.clear(); pump();
@@ -383,7 +383,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             // 全整数tickをマウスで選択し、実単位への換算とホストへの反映を確認。
             // 390pxの操作欄・18pxフォントでのハンドル移動範囲を整数ピクセルへ丸める。
             for (int tick = 0; tick <= 371; ++tick) {
-                const int x = static_cast<int>(std::lround(121.175 + 377.5875 * tick / 371.0));
+                const int x = static_cast<int>(std::lround(194.20625 + 377.5875 * tick / 371.0));
                 const double ms = tick == 0 ? 0.0 : std::min(5000.0, std::pow(10.0, (tick - 1) / 100.0));
                 const double expected = controller->plainParamToNormalized(envelopeIds[0], ms);
                 parent.pointer(x, 113, true);
@@ -400,11 +400,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         // 追加3行は整数で操作し、ホスト値の表示更新では編集通知しない。
         for (int row = 0; row < 3; ++row) {
             const ParamID id = row == 0 ? unisonId : (row == 1 ? detuneId : polyphonyId);
-            for (int x : {504, 115}) {
+            for (int x : {577, 188}) {
                 parent.pointer(x, 258 + row * 29, true); pump();
                 parent.pointer(x, 258 + row * 29, false);
                 waitFor([&] { return handler.sequence.size() >= 3; }, "unison/detune/polyphony slider edit");
-                assert(handler.editedId == id && handler.value == (x == 504 ? 1.0 : 0.0));
+                assert(handler.editedId == id && handler.value == (x == 577 ? 1.0 : 0.0));
                 assert(handler.sequence == (std::vector<int>{0, 1, 2}));
                 handler.sequence.clear(); pump();
             }
@@ -414,11 +414,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         // フィルタの新規行も整数UIから規定の編集通知を送る。
         for (int row = 0; row < 2; ++row) {
             const ParamID id = filterIds[row + 1];
-            for (int x : {504, 115}) {
+            for (int x : {577, 188}) {
                 parent.pointer(x, 374 + row * 29, true); pump();
                 parent.pointer(x, 374 + row * 29, false);
                 waitFor([&] { return handler.sequence.size() >= 3; }, "filter slider edit");
-                assert(handler.editedId == id && handler.value == (x == 504 ? 1.0 : 0.0));
+                assert(handler.editedId == id && handler.value == (x == 577 ? 1.0 : 0.0));
                 assert(handler.sequence == (std::vector<int>{0, 1, 2}));
                 handler.sequence.clear(); pump();
             }
@@ -426,27 +426,27 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             pump(); assert(handler.sequence.empty());
         }
         assert(controller->setParamNormalized(filterIds[0], 1.0 / 6.0) == kResultOk);
-        pump(); parent.click(180, 345); pump();
+        pump(); parent.click(253, 345); pump();
         // 左枠の連続部分から、下側へ開いたリストの先頭項目の位置を得る。
         const auto background = parent.pixel(20, 130);
         int run = 0, best = 0, top = 0;
         for (int y = 360; y < 600; ++y) {
-            run = parent.pixel(115, y) != background ? run + 1 : 0;
+            run = parent.pixel(188, y) != background ? run + 1 : 0;
             if (run > best) { best = run; top = y - run + 1; }
         }
         assert(best > 100);
-        parent.click(180, top + 14);
+        parent.click(253, top + 14);
         waitFor([&] { return handler.sequence.size() >= 3; }, "filter type selection");
         assert(handler.editedId == filterIds[0] && handler.value == 0.0);
         handler.sequence.clear(); pump();
         if (cycle == 0) {
             // 各数値欄で、スライダーの刻みの間にある値もホストへそのまま渡す。
-            const std::array<const char*, 12> text {"", "12.345", "0.125", "123.456", "0.4567",
-                "0.0625", "3", "25.125", "19", "", "-1234.125", "1.2345"};
-            for (int i = 1; i < 12; ++i) {
-                if (i == 9) continue;
+            const std::array<const char*, 20> text {"", "12.345", "0.125", "123.456", "0.4567",
+                "0.0625", "3", "25.125", "19", "", "-1234.125", "1.2345", "", "", "12.345", "0.125", "123.456", "0.4567", "0.0625", "-1234.125"};
+            for (int i = 1; i < 20; ++i) {
+                if (i == 9 || i == 12 || i == 13) continue;
                 ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
-                parent.click(570, 84 + 29 * i); pump();
+                parent.click(643, 84 + 29 * i); pump();
                 parent.replaceText(text[i]);
                 waitFor([&] { return handler.sequence.size() >= 3; }, ("numeric entry " + std::to_string(i)).c_str());
                 assert(handler.sequence == (std::vector<int>{0, 1, 2}));
@@ -463,13 +463,13 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             }
             // 範囲外は元の値へ戻し、Escも編集を取り消す。
             for (bool cancel : {false, true}) {
-                parent.click(570, 403); pump();
+                parent.click(643, 403); pump();
                 parent.replaceText(cancel ? "3.25" : "0.1", cancel ? 27 : 13); pump();
                 assert(handler.sequence.empty());
                 assert(std::abs(controller->normalizedParamToPlain(filterIds[2],
                     controller->getParamNormalized(filterIds[2])) - 1.2345) < 1e-12);
             }
-            parent.click(570, 403); pump(); parent.replaceText("2.3456", 0); pump();
+            parent.click(643, 403); pump(); parent.replaceText("2.3456", 0); pump();
             assert(handler.sequence.empty());
             parent.click(30, 40);
             waitFor([&] { return handler.sequence.size() >= 3; }, "numeric entry focus loss");
@@ -478,15 +478,15 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         // PhaseリストからRandomを選択し、状態へ保存する。
         assert(controller->setParamNormalized(phaseId, 0.0) == kResultOk);
-        pump(); parent.click(180, 435); pump();
+        pump(); parent.click(253, 435); pump();
         const auto phaseBackground = parent.pixel(20, 130);
         int phaseRun = 0, phaseBest = 0, phaseTop = 0;
         for (int y = 450; y < 600; ++y) {
-            phaseRun = parent.pixel(115, y) != phaseBackground ? phaseRun + 1 : 0;
+            phaseRun = parent.pixel(188, y) != phaseBackground ? phaseRun + 1 : 0;
             if (phaseRun > phaseBest) { phaseBest = phaseRun; phaseTop = y - phaseRun + 1; }
         }
         assert(phaseBest > 60);
-        parent.click(180, phaseTop + 64);
+        parent.click(253, phaseTop + 64);
         waitFor([&] { return handler.sequence.size() >= 3; }, "Random phase selection");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         assert(handler.editedId == phaseId && handler.value == 1.0);
@@ -498,14 +498,14 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(phaseMode == 2.0);
         handler.sequence.clear(); pump();
         // Volumeの整数スライダー両端と直接入力を検証し、実単位で保存する。
-        for (int x : {504, 115}) {
+        for (int x : {577, 188}) {
             parent.pointer(x, 464, true); pump(); parent.pointer(x, 464, false);
             waitFor([&] { return handler.sequence.size() >= 3; }, "volume slider edit");
             assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-            assert(handler.editedId == volumeId && handler.value == (x == 504 ? 1.0 : 0.0));
+            assert(handler.editedId == volumeId && handler.value == (x == 577 ? 1.0 : 0.0));
             handler.sequence.clear(); pump();
         }
-        parent.click(570, 464); pump(); parent.replaceText("-12.345");
+        parent.click(643, 464); pump(); parent.replaceText("-12.345");
         waitFor([&] { return handler.sequence.size() >= 3; }, "volume numeric entry");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}) && handler.editedId == volumeId);
         point.id = volumeId; point.values = {{0, handler.value}};

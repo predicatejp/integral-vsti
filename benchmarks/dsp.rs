@@ -136,7 +136,7 @@ fn main() {
         ("release", 1050.0, Some(1000.0)),
     ] {
         measure(&format!("envelope/{stage}"), "sample", selection, |_| {
-            envelope::amplitude(
+            envelope::value(
                 black_box(&envelope),
                 black_box(time),
                 black_box(off),

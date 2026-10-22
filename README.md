@@ -15,8 +15,8 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
-| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volumeを公開。eguiでも操作可能 |
-| 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・VolumeをVST3のIBStreamで保存・復元 |
+| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
+| 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープをVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
 ProcessorとControllerは、同一インスタンスから取得できます。
@@ -33,7 +33,7 @@ macOS・Windows ARM64・32ビット環境は未対応です。
 - Note Offは、両イベントにnoteIdがあればIDで照合します。どちらかが `-1` の場合はチャンネルと音高で照合します。
   同じID、またはIDがない同チャンネル・同音高が複数枠にあれば、全一致をreleaseします。上書き済みの旧IDへのNote Offは新しいノートを消しません。
 - `OscillatorInput` は発振器回路の定常入力で、波形・位相モード・ユニゾン数・Detune・目標周波数・目標実効値・ゲート・エンベロープ設定・ノート/停止の世代番号を持ちます。
-  `OscillatorState` はボイスごとの位相、現在の実効振幅、attack開始振幅、経過サンプル数、ノートオフ位置を保持します。イベント処理は入力だけを書き換えます。
+  `OscillatorState` はユニゾンの位相と音量用`Envelope`を保持します。現在値・attack開始値・経過サンプル数・ノートオフ位置は`EnvelopeState`が保持し、イベント処理は入力だけを書き換えます。
 - 各サンプルで「現在の入力と状態からサンプル生成 → 入力を用いて状態更新」を繰り返します。
   エンベロープの計算はサンプル数をミリ秒へ変換して行い、位相と時間の更新はサンプル生成後です。
   初期位相は0。Note On時の位相はPhaseの選択に従います。音程変更・ブロック境界では位相を保持します。
@@ -106,10 +106,36 @@ Voiceはノートの音程とtuningを含む周波数に `2^(cent/1200)` を乗�
 - 設定変更やVoiceの再使用でも有効な段の履歴を保持します。未使用の2段目とNone時の両段は消去します。Noneでは入力値を検証せずそのまま返します。
 - Note Off後のフィルタ残響も処理します。処理停止・Voice数の減少による停止ではフィルタの履歴も消去します。音量補正・クリッピングは追加しません。
 
-カットオフ・レゾナンスのエンベロープは未実装です。今後Voice側で計算した毎サンプルのHzとQを渡せる構成です。
+Voiceはカットオフ用エンベロープを毎サンプル計算し、変調後のHzをフィルタへ渡します。
 
 台形積分したSVFの連立方程式をRustで実装しています。数式の参考は
 [Andrew SimperによるSVFの解説](https://www.cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf)です。
+
+## カットオフエンベロープ
+
+各Voiceは、音量用と独立したカットオフ用AHDSRを持ちます。
+両者は同じ`Envelope`コンポーネントを使い、`EnvelopeState`で時間と現在値を管理します。
+エンベロープが扱う値は単位のない0〜1の正規化量で、適用先が実単位へ換算します。
+
+| パラメーター | 範囲 | 初期値 | ParamID |
+| --- | --- | --- | --- |
+| Cutoff Attack | 0〜5000 ms | 10 ms | `0x43415454` |
+| Cutoff Hold | 0〜5000 ms | 0 ms | `0x43484c44` |
+| Cutoff Decay | 0〜5000 ms | 100 ms | `0x43444543` |
+| Cutoff Sustain | 0〜1 | 0.7 | `0x43535553` |
+| Cutoff Release | 0〜5000 ms | 100 ms | `0x4352454c` |
+| Cutoff Amount | −4800〜＋4800 cent | 0 cent | `0x43414d54` |
+
+`変調後のcent = Cutoff + Cutoff Amount × エンベロープ値` とし、
+`カットオフHz = ノート周波数 × 2^(変調後のcent / 1200)` をフィルタへ渡します。
+Amountはattackの目標値1に対応する変化量で、負なら下方向へ変化します。
+sustainではAmount×Sustainの変化量を保ち、releaseで基本のCutoffへ戻ります。
+再ノートオンでは現在のエンベロープ値を開始点として、attack時間全体を使って1へ移行します。
+音量のreleaseが先に終わっても、カットオフ用のreleaseはフィルタの残響に適用されます。
+
+時間スライダーは音量用と同じ対数軸、Sustainは線形です。
+Amountは10 cent刻みの整数スライダーで、各数値欄から直接入力もできます。
+6パラメーターは連続値として公開し、VST3の変更点間を正規化値で線形補間します。
 
 ## マスターボリューム
 
@@ -166,7 +192,7 @@ GUIではUnisonを1ボイス刻み、Detuneを1 cent刻みの整数スライダ�
 
 `src/envelope.rs` の `amplitude` は、`EnvelopeParameters`、ノートオンからの経過ミリ秒、
 ノートオフ時刻（同じ時刻基準、未到達は `None`）、開始振幅、目標ピーク振幅を受け取ります。
-計算モジュールは状態を持たず、`OscillatorState` が現在振幅・開始振幅・経過サンプル数を保持します。
+音量用`Envelope`は`EnvelopeState`に現在値・開始値・経過サンプル数を保持し、カットオフ用と同じAHDSRを使います。
 
 | パラメーター | 範囲 | 初期値 | ParamID |
 | --- | --- | --- | --- |
@@ -219,8 +245,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v7は116バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volumeを各f64。little endian）です。
-旧v6（108バイト）以前はVolume=0 dBを補います。旧v5（100バイト）以前はPhase=Keepを補います。旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
+保存形式v8は164バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amountを各f64。little endian）です。
+旧v7（116バイト）以前はカットオフ用AHDSRの初期値とAmount=0を補います。旧v6（108バイト）以前はVolume=0 dBを補います。旧v5（100バイト）以前はPhase=Keepを補います。旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
 復元値は次の音声処理ブロックから適用し、Controllerは `setComponentState` で同期します。
 位相や発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
@@ -229,12 +255,12 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 
 ホストのプラグイン画面に、ライトテーマのパラメーターリストを表示します。
 左からパラメーター名、操作欄、現在値を配置し、縦方向に並べます。
-Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeはスライダーです。
+Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeとカットオフ用AHDSR・Amountはスライダーです。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
 サイズは1024×768物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
 各スライダー右の数値欄をクリックして直接入力できます。Enterまたは別の欄へのフォーカス移動で確定し、Escで取り消します。
-時間はms、DetuneとCutoffはcent、ResonanceはQ、VolumeはdBで入力します。UnisonとPolyphonyは範囲内の整数、その他は範囲内の小数値も受け付けます。
+時間はms、Detune・Cutoff・Cutoff Amountはcent、ResonanceはQ、VolumeはdBで入力します。UnisonとPolyphonyは範囲内の整数、その他は範囲内の小数値も受け付けます。
 直接入力した値はスライダーの刻みに丸めず、音源へ反映して保存します。範囲外や不正な文字列は確定時に元の表示へ戻します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
@@ -322,7 +348,7 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 `C:\Program Files\Common Files\VST3` に配置します。システム共通フォルダへの配置には管理者権限が必要です。
 
 ホストで再スキャンし、音源一覧の **Sample VSTi** を読み込みます。
-ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonance・Volumeの11スライダーとFilter・Phaseのドロップダウンを操作できます。
+ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonance・Volume・カットオフ用AHDSR・Amountの17スライダーとFilter・Phaseのドロップダウンを操作できます。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
 ## 検証

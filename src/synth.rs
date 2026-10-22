@@ -51,7 +51,9 @@ impl Synthesizer {
         if values[13] != self.state.parameters[13] {
             self.state.master_gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
             // 全体の音量だけが変わる場合は、各Voiceへの設定配送を省く。
-            if values[..13] == self.state.parameters[..13] {
+            if values[..13] == self.state.parameters[..13]
+                && values[14..] == self.state.parameters[14..]
+            {
                 self.state.parameters = values;
                 return true;
             }
@@ -66,7 +68,8 @@ impl Synthesizer {
         self.state.polyphony = count;
         self.state.next_oscillator_id %= count;
         let waveform = parameters::from_normalized(values[0]).expect("validated values");
-        let envelope = parameters::envelope(&values);
+        let envelope = parameters::envelope(&values, 1);
+        let cutoff_envelope = parameters::envelope(&values, 14);
         let unison_voices = parameters::to_plain(6, values[6]) as u32;
         let detune_cents = parameters::to_plain(7, values[7]);
         for voice in &mut self.state.voices {
@@ -77,6 +80,7 @@ impl Synthesizer {
                 detune_cents,
                 parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize],
             );
+            voice.set_cutoff_envelope(cutoff_envelope, parameters::to_plain(19, values[19]));
             voice.set_filter(
                 parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
                 parameters::to_plain(10, values[10]),
@@ -164,6 +168,9 @@ mod tests {
             values[9] = parameters::to_normalized(9, f64::from(filter_type));
             values[10] = parameters::to_normalized(10, -1200.0);
             values[11] = parameters::to_normalized(11, 3.0);
+            values[14] = parameters::to_normalized(14, 0.5);
+            values[16] = parameters::to_normalized(16, 1.0);
+            values[19] = parameters::to_normalized(19, 1200.0);
             synth.set_parameters(values);
             let mut references: [Synthesizer; 2] = std::array::from_fn(|_| {
                 let mut single = Synthesizer::new();

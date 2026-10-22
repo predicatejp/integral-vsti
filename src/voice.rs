@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::envelope::{DEFAULT_ENVELOPE, EnvelopeParameters};
+use crate::envelope::{DEFAULT_ENVELOPE, Envelope, EnvelopeParameters};
 use crate::filter::{Filter, FilterParameters, FilterType};
 use crate::oscillator::{Oscillator, OscillatorInput, PhaseMode, Waveform};
 use crate::parameters;
@@ -35,6 +35,14 @@ pub struct VoiceState {
     cutoff_ratio: f64,
     /// 各段へ渡す現在のQ。積分器の履歴とは独立した入力。
     resonance_q: f64,
+    /// 音量から独立したカットオフ用AHDSRの設定。
+    cutoff_envelope_parameters: EnvelopeParameters,
+    /// このVoiceのカットオフ用正規化エンベロープと時間履歴。
+    cutoff_envelope: Envelope,
+    /// エンベロープ値1に対応するカットオフ変化量（−4800〜4800 cent）。
+    cutoff_amount_cents: f64,
+    /// 直近の変調量centと周波数倍率。同じ値では指数計算を省く。
+    cutoff_modulation: (f64, f64),
 }
 
 /// Voiceの処理を担当し、専用のStateを所有するコンポーネント。
@@ -66,6 +74,10 @@ impl Voice {
                 filter_type: parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
                 cutoff_ratio: 2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0),
                 resonance_q: parameters::to_plain(11, values[11]),
+                cutoff_envelope_parameters: DEFAULT_ENVELOPE,
+                cutoff_envelope: Envelope::new(),
+                cutoff_amount_cents: 0.0,
+                cutoff_modulation: (0.0, 1.0),
             },
         }
     }
@@ -125,6 +137,11 @@ impl Voice {
         self.state.resonance_q = resonance_q;
     }
 
+    pub fn set_cutoff_envelope(&mut self, parameters: EnvelopeParameters, amount_cents: f64) {
+        self.state.cutoff_envelope_parameters = parameters;
+        self.state.cutoff_amount_cents = amount_cents;
+    }
+
     pub fn set_parameters(
         &mut self,
         waveform: Waveform,
@@ -142,26 +159,111 @@ impl Voice {
 
     /// Voice内の処理パイプライン。生成した信号をSynthesizerが加算する。
     pub fn generate_sample(&mut self, sample_rate: f64) -> f64 {
+        if !sample_rate.is_finite() || sample_rate <= 0.0 {
+            return 0.0;
+        }
+        let input = &self.state.oscillator_input;
+        let level = self.state.cutoff_envelope.generate_sample(
+            &self.state.cutoff_envelope_parameters,
+            sample_rate,
+            input.gate,
+            input.note_generation,
+            input.reset_generation,
+            1.0,
+        );
+        let cents = level * self.state.cutoff_amount_cents;
+        if cents != self.state.cutoff_modulation.0 {
+            self.state.cutoff_modulation = (cents, 2.0_f64.powf(cents / 1200.0));
+        }
         let sample = self
             .state
             .oscillator
             .generate_sample(&self.state.oscillator_input, sample_rate);
-        self.state.filter.process_sample(
+        let output = self.state.filter.process_sample(
             sample,
             self.state.filter_type,
             &FilterParameters {
-                cutoff_hz: (self.state.oscillator_input.frequency_hz * self.state.cutoff_ratio)
+                cutoff_hz: (self.state.oscillator_input.frequency_hz
+                    * self.state.cutoff_ratio
+                    * self.state.cutoff_modulation.1)
                     .min(f64::MAX),
                 resonance_q: self.state.resonance_q,
             },
             sample_rate,
-        )
+        );
+        self.state.cutoff_envelope.update_sample(
+            &self.state.cutoff_envelope_parameters,
+            sample_rate,
+            1.0,
+        );
+        output
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cutoff_envelope_modulates_cents_and_retriggers_from_its_current_value() {
+        let shape = EnvelopeParameters {
+            attack_ms: 4.0,
+            hold_ms: 2.0,
+            decay_ms: 4.0,
+            sustain: 0.25,
+            release_ms: 4.0,
+        };
+        let levels = [
+            0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 0.8125, 0.625, 0.46875, 0.3125, 0.484375, 0.65625,
+            0.828125, 1.0, 1.0, 1.0, 0.8125, 0.625, 0.4375, 0.328125, 0.21875, 0.109375, 0.0,
+        ];
+        for kind in parameters::FILTER_TYPES {
+            for amount in [-4800.0, 0.0, 4800.0] {
+                let mut voice = Voice::new();
+                voice.state.oscillator_input.envelope = EnvelopeParameters {
+                    attack_ms: 0.0,
+                    hold_ms: 0.0,
+                    decay_ms: 0.0,
+                    sustain: 1.0,
+                    release_ms: 0.0,
+                };
+                voice.set_filter(kind, -1200.0, 1.0);
+                voice.set_cutoff_envelope(shape, amount);
+                let mut oscillator = Oscillator::new();
+                let mut filter = Filter::new();
+                for (n, level) in levels.into_iter().enumerate() {
+                    let note = Note {
+                        id: 1,
+                        channel: 0,
+                        pitch: 57,
+                    };
+                    if n == 0 || n == 10 {
+                        assert!(voice.note_on(note, 0.0, if n == 0 { 1.0 } else { 0.5 }));
+                    }
+                    if n == 8 || n == 19 {
+                        voice.note_off(note);
+                    }
+                    let input = voice.state.oscillator_input;
+                    let expected = filter.process_sample(
+                        oscillator.generate_sample(&input, 1000.0),
+                        kind,
+                        &FilterParameters {
+                            cutoff_hz: 220.0 * 2.0_f64.powf((-1200.0 + amount * level) / 1200.0),
+                            resonance_q: 1.0,
+                        },
+                        1000.0,
+                    );
+                    assert!(
+                        (voice.generate_sample(1000.0) - expected).abs() < 1e-12,
+                        "sample={n}, amount={amount}, type={kind:?}"
+                    );
+                }
+                voice.stop();
+                assert_eq!(voice.generate_sample(1000.0), 0.0);
+                assert_eq!(voice.state.cutoff_modulation.0, 0.0);
+            }
+        }
+    }
 
     #[test]
     fn cutoff_tracks_note_tuning_and_filters_after_unison() {

@@ -1,20 +1,20 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 線形の音量エンベロープ。時刻は呼び出し側からミリ秒単位で与える。
+//! 単位に依存せず、0〜1の正規化値を操作する線形AHDSR。
 
-/// エンベロープの時間と音量をまとめたパラメーター。
+/// エンベロープの時間と正規化値をまとめたパラメーター。
 #[derive(Clone, Copy, Debug)]
 pub struct EnvelopeParameters {
-    /// 開始音量からピーク音量へ移行する時間（0..=5000 ms）。
+    /// 開始値からピーク値へ移行する時間（0..=5000 ms）。
     pub attack_ms: f64,
-    /// 最大音量1を維持する時間（0..=5000 ms）。
+    /// 最大値1を維持する時間（0..=5000 ms）。
     pub hold_ms: f64,
-    /// 最大音量1からsustainへ下がる時間（0..=5000 ms）。
+    /// 最大値1からsustainへ下がる時間（0..=5000 ms）。
     pub decay_ms: f64,
-    /// 減衰後に維持する音量（0..=1）。最大音量に対する倍率。
+    /// 減衰後に維持する値（0..=1）。最大値に対する倍率。
     pub sustain: f64,
-    /// 音量が0へ下がる時間（0..=5000 ms）。
+    /// 値が0へ下がる時間（0..=5000 ms）。
     pub release_ms: f64,
 }
 
@@ -38,23 +38,23 @@ impl EnvelopeParameters {
     }
 }
 
-/// ノートオンからelapsed_ms経過した時点の音量（0..=1）を返す。
-/// start_amplitudeはノートオン時の音量、peak_amplitudeは新しいピーク音量。
-/// attackは開始音量に関わらずattack_ms全体を使う。sustainはピークに対する倍率。
+/// ノートオンからelapsed_ms経過した時点の値（0..=1）を返す。
+/// start_valueはノートオン時の値、peak_valueは新しいピーク値。
+/// attackは開始値に関わらずattack_ms全体を使う。sustainはピークに対する倍率。
 /// note_off_msもノートオンからの経過時間。Noneならsustainを維持する。
 /// 指定されたノートオフ時刻より前は通常の立ち上がり・減衰を計算し、
-/// その時刻以降はノートオフ時の音量からrelease_msかけて0へ線形に下げる。
+/// その時刻以降はノートオフ時の値からrelease_msかけて0へ線形に下げる。
 /// パラメーター不正、負の時刻、NaN、無限大では0を返す。
 /// 内部状態を持たず、毎回渡されたパラメーターから計算する。
-pub fn amplitude(
+pub fn value(
     parameters: &EnvelopeParameters,
     elapsed_ms: f64,
     note_off_ms: Option<f64>,
-    start_amplitude: f64,
-    peak_amplitude: f64,
+    start_value: f64,
+    peak_value: f64,
 ) -> f64 {
-    if !(0.0..=1.0).contains(&start_amplitude)
-        || !(0.0..=1.0).contains(&peak_amplitude)
+    if !(0.0..=1.0).contains(&start_value)
+        || !(0.0..=1.0).contains(&peak_value)
         || !parameters.is_valid()
         || !elapsed_ms.is_finite()
         || elapsed_ms < 0.0
@@ -67,14 +67,14 @@ pub fn amplitude(
             return 0.0;
         }
         let remaining = (1.0 - (elapsed_ms - off) / parameters.release_ms).max(0.0);
-        held_amplitude(parameters, off, start_amplitude, peak_amplitude) * remaining
+        held_value(parameters, off, start_value, peak_value) * remaining
     } else {
-        held_amplitude(parameters, elapsed_ms, start_amplitude, peak_amplitude)
+        held_value(parameters, elapsed_ms, start_value, peak_value)
     }
 }
 
 /// ノートオフ前のattack → hold → decay → sustainを計算する。
-fn held_amplitude(parameters: &EnvelopeParameters, elapsed_ms: f64, start: f64, peak: f64) -> f64 {
+fn held_value(parameters: &EnvelopeParameters, elapsed_ms: f64, start: f64, peak: f64) -> f64 {
     if elapsed_ms < parameters.attack_ms {
         return start + (peak - start) * (elapsed_ms / parameters.attack_ms);
     }
@@ -89,6 +89,120 @@ fn held_amplitude(parameters: &EnvelopeParameters, elapsed_ms: f64, start: f64, 
     peak * parameters.sustain
 }
 
+/// エンベロープの独立した時間・再トリガー履歴。データだけを保持する。
+#[derive(Clone, Copy)]
+struct EnvelopeState {
+    /// 次サンプル時点の正規化値。再ノートオンの開始値に使う。
+    current_value: f64,
+    /// 直近のノートオン時の値。attack中は固定する。
+    start_value: f64,
+    /// 直近のノートオンから次サンプルまでのサンプル数。
+    elapsed_samples: u64,
+    /// ノートオフ位置。ノートオンからのサンプル数で保持する。
+    note_off_sample: Option<u64>,
+    /// releaseが完了するまでtrue。値0のattack中も進行する。
+    active: bool,
+    /// 処理済みのノートオン世代。
+    note_generation: u64,
+    /// 処理済みの即時停止世代。
+    reset_generation: u64,
+}
+
+/// 音量・カットオフで共用するAHDSR。時間管理も各インスタンスで独立する。
+#[derive(Clone, Copy)]
+pub struct Envelope {
+    /// このエンベロープ専用の内部状態。
+    state: EnvelopeState,
+}
+
+impl Envelope {
+    pub fn new() -> Self {
+        Self {
+            state: EnvelopeState {
+                current_value: 0.0,
+                start_value: 0.0,
+                elapsed_samples: 0,
+                note_off_sample: None,
+                active: false,
+                note_generation: 0,
+                reset_generation: 0,
+            },
+        }
+    }
+
+    /// ノート境界を反映し、現在サンプルの正規化値を生成する。
+    /// peakは0〜1。生成後は同じ設定でupdate_sampleを呼ぶ。
+    pub fn generate_sample(
+        &mut self,
+        parameters: &EnvelopeParameters,
+        sample_rate: f64,
+        gate: bool,
+        note_generation: u64,
+        reset_generation: u64,
+        peak: f64,
+    ) -> f64 {
+        if !parameters.is_valid()
+            || !(0.0..=1.0).contains(&peak)
+            || !sample_rate.is_finite()
+            || sample_rate <= 0.0
+        {
+            return 0.0;
+        }
+        let reset = reset_generation != self.state.reset_generation;
+        if reset {
+            self.state.active = false;
+            self.state.current_value = 0.0;
+        }
+        if note_generation != self.state.note_generation && (gate || !reset) {
+            self.state.start_value = self.state.current_value;
+            self.state.elapsed_samples = 0;
+            self.state.note_off_sample = None;
+            self.state.active = true;
+        }
+        self.state.note_generation = note_generation;
+        self.state.reset_generation = reset_generation;
+        if !gate && self.state.active && self.state.note_off_sample.is_none() {
+            self.state.note_off_sample = Some(self.state.elapsed_samples);
+        }
+        self.refresh_value(parameters, sample_rate, peak);
+        self.state.current_value
+    }
+
+    /// 次サンプルへ進める。生成時と同じ有効な設定・サンプルレートを渡す。
+    pub fn update_sample(&mut self, parameters: &EnvelopeParameters, sample_rate: f64, peak: f64) {
+        if self.state.active {
+            self.state.elapsed_samples = self.state.elapsed_samples.saturating_add(1);
+            self.refresh_value(parameters, sample_rate, peak);
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.state.active
+    }
+
+    fn refresh_value(&mut self, parameters: &EnvelopeParameters, sample_rate: f64, peak: f64) {
+        if self.state.note_off_sample.is_some_and(|off| {
+            (self.state.elapsed_samples - off) as f64
+                >= (parameters.release_ms * sample_rate / 1000.0).ceil()
+        }) {
+            self.state.active = false;
+        }
+        self.state.current_value = if self.state.active {
+            value(
+                parameters,
+                self.state.elapsed_samples as f64 / sample_rate * 1000.0,
+                self.state
+                    .note_off_sample
+                    .map(|off| off as f64 / sample_rate * 1000.0),
+                self.state.start_value,
+                peak,
+            )
+        } else {
+            0.0
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,13 +215,8 @@ mod tests {
         release_ms: 100.0,
     };
 
-    fn assert_amplitude(
-        parameters: &EnvelopeParameters,
-        time: f64,
-        off: Option<f64>,
-        expected: f64,
-    ) {
-        let actual = amplitude(parameters, time, off, 0.0, 1.0);
+    fn assert_value(parameters: &EnvelopeParameters, time: f64, off: Option<f64>, expected: f64) {
+        let actual = value(parameters, time, off, 0.0, 1.0);
         assert!(
             (actual - expected).abs() < 1e-12,
             "time={time}, off={off:?}: {actual} != {expected}"
@@ -128,8 +237,8 @@ mod tests {
             (350.0, 0.4),
             (10000.0, 0.4),
         ] {
-            assert_amplitude(&PARAMETERS, time, None, expected);
-            assert_amplitude(&PARAMETERS, time, Some(20000.0), expected);
+            assert_value(&PARAMETERS, time, None, expected);
+            assert_value(&PARAMETERS, time, Some(20000.0), expected);
         }
     }
 
@@ -152,7 +261,7 @@ mod tests {
                 (100.0, 0.0),
                 (10000.0, 0.0),
             ] {
-                assert_amplitude(&PARAMETERS, off + delta, Some(off), level * factor);
+                assert_value(&PARAMETERS, off + delta, Some(off), level * factor);
             }
         }
     }
@@ -170,13 +279,13 @@ mod tests {
                         release_ms: duration,
                     };
                     assert!(p.is_valid());
-                    assert_amplitude(&p, duration / 2.0, None, 0.5);
-                    assert_amplitude(&p, duration + hold_ms, None, 1.0);
-                    assert_amplitude(&p, duration * 1.5 + hold_ms, None, (1.0 + sustain) / 2.0);
+                    assert_value(&p, duration / 2.0, None, 0.5);
+                    assert_value(&p, duration + hold_ms, None, 1.0);
+                    assert_value(&p, duration * 1.5 + hold_ms, None, (1.0 + sustain) / 2.0);
                     let off = duration * 2.0 + hold_ms;
-                    assert_amplitude(&p, off, None, sustain);
-                    assert_amplitude(&p, off + duration / 2.0, Some(off), sustain / 2.0);
-                    assert_amplitude(&p, off + duration, Some(off), 0.0);
+                    assert_value(&p, off, None, sustain);
+                    assert_value(&p, off + duration / 2.0, Some(off), sustain / 2.0);
+                    assert_value(&p, off + duration, Some(off), 0.0);
                 }
             }
         }
@@ -185,15 +294,13 @@ mod tests {
     #[test]
     fn retrigger_uses_full_attack_time_and_zero_stages_finish_immediately() {
         for (start, peak) in [(0.0, 1.0), (0.4, 1.0), (1.0, 1.0), (0.8, 0.2), (0.5, 0.0)] {
-            assert_eq!(amplitude(&PARAMETERS, 0.0, None, start, peak), start);
+            assert_eq!(value(&PARAMETERS, 0.0, None, start, peak), start);
             assert!(
-                (amplitude(&PARAMETERS, 50.0, None, start, peak) - (start + peak) / 2.0).abs()
-                    < 1e-12
+                (value(&PARAMETERS, 50.0, None, start, peak) - (start + peak) / 2.0).abs() < 1e-12
             );
-            assert_eq!(amplitude(&PARAMETERS, 100.0, None, start, peak), peak);
+            assert_eq!(value(&PARAMETERS, 100.0, None, start, peak), peak);
             assert!(
-                (amplitude(&PARAMETERS, 100.0, Some(50.0), start, peak) - (start + peak) / 4.0)
-                    .abs()
+                (value(&PARAMETERS, 100.0, Some(50.0), start, peak) - (start + peak) / 4.0).abs()
                     < 1e-12
             );
         }
@@ -202,41 +309,41 @@ mod tests {
             ..PARAMETERS
         };
         assert!(p.is_valid());
-        assert_eq!(amplitude(&p, 0.0, None, 0.2, 1.0), 1.0);
+        assert_eq!(value(&p, 0.0, None, 0.2, 1.0), 1.0);
         p.hold_ms = 0.0;
         p.decay_ms = 0.0;
-        assert_eq!(amplitude(&p, 0.0, None, 0.2, 1.0), p.sustain);
+        assert_eq!(value(&p, 0.0, None, 0.2, 1.0), p.sustain);
         p.release_ms = 0.0;
-        assert_eq!(amplitude(&p, 50.0, Some(50.0), 0.2, 1.0), 0.0);
+        assert_eq!(value(&p, 50.0, Some(50.0), 0.2, 1.0), 0.0);
         for invalid in [-1.0, 1.1, f64::NAN, f64::INFINITY] {
-            assert_eq!(amplitude(&p, 0.0, None, invalid, 1.0), 0.0);
-            assert_eq!(amplitude(&p, 0.0, None, 0.0, invalid), 0.0);
+            assert_eq!(value(&p, 0.0, None, invalid, 1.0), 0.0);
+            assert_eq!(value(&p, 0.0, None, 0.0, invalid), 0.0);
         }
     }
 
     #[test]
-    fn invalid_parameters_and_times_are_silent() {
-        for value in [-1.0, 5000.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+    fn invalid_parameters_and_times_return_zero() {
+        for invalid in [-1.0, 5000.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             for p in [
                 EnvelopeParameters {
-                    attack_ms: value,
+                    attack_ms: invalid,
                     ..PARAMETERS
                 },
                 EnvelopeParameters {
-                    hold_ms: value,
+                    hold_ms: invalid,
                     ..PARAMETERS
                 },
                 EnvelopeParameters {
-                    decay_ms: value,
+                    decay_ms: invalid,
                     ..PARAMETERS
                 },
                 EnvelopeParameters {
-                    release_ms: value,
+                    release_ms: invalid,
                     ..PARAMETERS
                 },
             ] {
                 assert!(!p.is_valid());
-                assert_eq!(amplitude(&p, 50.0, None, 0.0, 1.0), 0.0);
+                assert_eq!(value(&p, 50.0, None, 0.0, 1.0), 0.0);
             }
         }
         for sustain in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
@@ -245,16 +352,16 @@ mod tests {
                 ..PARAMETERS
             };
             assert!(!p.is_valid());
-            assert_eq!(amplitude(&p, 50.0, None, 0.0, 1.0), 0.0);
+            assert_eq!(value(&p, 50.0, None, 0.0, 1.0), 0.0);
         }
         for time in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert_eq!(amplitude(&PARAMETERS, time, None, 0.0, 1.0), 0.0);
-            assert_eq!(amplitude(&PARAMETERS, 50.0, Some(time), 0.0, 1.0), 0.0);
+            assert_eq!(value(&PARAMETERS, time, None, 0.0, 1.0), 0.0);
+            assert_eq!(value(&PARAMETERS, 50.0, Some(time), 0.0, 1.0), 0.0);
         }
         assert_eq!(
-            amplitude(&PARAMETERS, f64::MAX, None, 0.0, 1.0),
+            value(&PARAMETERS, f64::MAX, None, 0.0, 1.0),
             PARAMETERS.sustain
         );
-        assert_eq!(amplitude(&PARAMETERS, f64::MAX, Some(50.0), 0.0, 1.0), 0.0);
+        assert_eq!(value(&PARAMETERS, f64::MAX, Some(50.0), 0.0, 1.0), 0.0);
     }
 }

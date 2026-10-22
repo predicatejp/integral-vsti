@@ -3,7 +3,7 @@
 
 //! 発振器回路の定常入力と内部状態を分離した単一のオシレータ。
 
-use crate::envelope::{self, EnvelopeParameters};
+use crate::envelope::{Envelope, EnvelopeParameters};
 use std::{collections::hash_map::RandomState, hash::BuildHasher};
 
 #[path = "oscillator_tables.rs"]
@@ -149,16 +149,8 @@ pub struct OscillatorState {
     phases: [f64; 7],
     /// Note On時だけ進めるSplitMix64の内部状態。初期化時に発振器ごとの種を取得する。
     random: u64,
-    /// 次サンプル時点の実効振幅。再Note Onの開始音量として引き継ぐ。
-    current_amplitude: f64,
-    /// 直近のNote On時の実効振幅。次のNote Onまで固定する。
-    start_amplitude: f64,
-    /// 直近のNote Onから次サンプルまでのサンプル数。累積加算による時刻誤差を避ける。
-    elapsed_samples: u64,
-    /// ノートオンからノートオフまでのサンプル数。未到達はNone。
-    note_off_sample: Option<u64>,
-    /// releaseを含め発振器の時間と位相を進めている間はtrue。
-    active: bool,
+    /// 正規化値のAHDSR。入力の目標実効値をピークとして使用する。
+    envelope: Envelope,
     /// サンプル処理へ反映済みのNote On世代番号。
     note_generation: u64,
     /// サンプル処理へ反映済みの即時停止番号。
@@ -187,11 +179,7 @@ impl Oscillator {
             state: OscillatorState {
                 phases: [0.0; 7],
                 random: RandomState::new().hash_one(0_u64),
-                current_amplitude: 0.0,
-                start_amplitude: 0.0,
-                elapsed_samples: 0,
-                note_off_sample: None,
-                active: false,
+                envelope: Envelope::new(),
                 note_generation: 0,
                 reset_generation: 0,
                 unison_input: None,
@@ -212,10 +200,6 @@ impl Oscillator {
         // ノート境界と位相モードを反映して生成した後、次サンプルへ進める。
         // キャッシュを含むState全体のサンプルごとのコピーは行わない。
         let reset = input.reset_generation != self.state.reset_generation;
-        if reset {
-            self.state.active = false;
-            self.state.current_amplitude = 0.0;
-        }
         if input.note_generation != self.state.note_generation && (input.gate || !reset) {
             match input.phase_mode {
                 PhaseMode::Keep => {}
@@ -226,23 +210,23 @@ impl Oscillator {
                     }
                 }
             }
-            self.state.start_amplitude = self.state.current_amplitude;
-            self.state.elapsed_samples = 0;
-            self.state.note_off_sample = None;
-            self.state.active = true;
         }
         self.state.note_generation = input.note_generation;
         self.state.reset_generation = input.reset_generation;
-        if !input.gate && self.state.active && self.state.note_off_sample.is_none() {
-            self.state.note_off_sample = Some(self.state.elapsed_samples);
-        }
-        self.refresh_amplitude(input, sample_rate);
-        // 世代更新とrelease完了を反映してから判定する。振幅0のattack中は省略しない。
-        if !self.state.active {
+        let amplitude = self.state.envelope.generate_sample(
+            &input.envelope,
+            sample_rate,
+            input.gate,
+            input.note_generation,
+            input.reset_generation,
+            input.amplitude,
+        );
+        // 振幅0のattack中も位相を進め、release完了後は止める。
+        if !self.state.envelope.is_active() {
             return 0.0;
         }
         self.refresh_frequency(input, sample_rate);
-        let sample = self.generate_waveform_sample(input);
+        let sample = self.generate_waveform_sample(input, amplitude);
         self.update_sample(input, sample_rate);
         sample
     }
@@ -259,15 +243,14 @@ impl Oscillator {
     }
 
     /// 現在の状態を読み取るだけで、位相を進めずにサンプルを生成する。
-    fn generate_waveform_sample(&self, input: &OscillatorInput) -> f64 {
+    fn generate_waveform_sample(&self, input: &OscillatorInput, amplitude: f64) -> f64 {
         // Detune=0は保持した先頭位相から1ボイス相当で生成し、同相加算を避ける。
         let count = input.rendered_voices();
         let sum: f64 = self.state.phases[..count]
             .iter()
             .map(|&phase| input.waveform.unit_sample(phase))
             .sum();
-        self.state.current_amplitude * input.waveform.peak_per_rms() * sum
-            / self.state.unison_divisor
+        amplitude * input.waveform.peak_per_rms() * sum / self.state.unison_divisor
     }
 
     /// 定常入力が変わったサンプルでだけ周波数倍率・位相増分を再計算する。
@@ -298,39 +281,17 @@ impl Oscillator {
 
     /// サンプル生成後に、定常入力を用いて内部状態を1サンプル分進める。
     fn update_sample(&mut self, input: &OscillatorInput, sample_rate: f64) {
-        if self.state.active {
+        if self.state.envelope.is_active() {
             for (phase, increment) in self.state.phases[..input.rendered_voices()]
                 .iter_mut()
                 .zip(&self.state.phase_increments)
             {
                 *phase = (*phase + increment).fract();
             }
-            self.state.elapsed_samples = self.state.elapsed_samples.saturating_add(1);
-            self.refresh_amplitude(input, sample_rate);
+            self.state
+                .envelope
+                .update_sample(&input.envelope, sample_rate, input.amplitude);
         }
-    }
-
-    /// 現在時刻の実効振幅を求め、release完了後は位相・時間を止める。
-    fn refresh_amplitude(&mut self, input: &OscillatorInput, sample_rate: f64) {
-        if self.state.note_off_sample.is_some_and(|off| {
-            (self.state.elapsed_samples - off) as f64
-                >= (input.envelope.release_ms * sample_rate / 1000.0).ceil()
-        }) {
-            self.state.active = false;
-        }
-        self.state.current_amplitude = if self.state.active {
-            envelope::amplitude(
-                &input.envelope,
-                self.state.elapsed_samples as f64 / sample_rate * 1000.0,
-                self.state
-                    .note_off_sample
-                    .map(|off| off as f64 / sample_rate * 1000.0),
-                self.state.start_amplitude,
-                input.amplitude,
-            )
-        } else {
-            0.0
-        };
     }
 }
 
@@ -426,14 +387,13 @@ mod tests {
 
     // 波形自体のテストではattack/decayが終了した状態から始める。
     fn sustained() -> Oscillator {
-        Oscillator {
-            state: OscillatorState {
-                active: true,
-                elapsed_samples: 10000,
-                note_generation: 1,
-                ..Oscillator::new().state
-            },
-        }
+        let mut oscillator = Oscillator::new();
+        let input = OscillatorInput {
+            frequency_hz: 0.0,
+            ..test_input()
+        };
+        oscillator.generate_sample(&input, 1.0);
+        oscillator
     }
 
     #[test]
@@ -446,11 +406,11 @@ mod tests {
         for _ in 0..16 {
             assert_eq!(oscillator.generate_sample(&input, 1000.0), 0.0);
         }
-        assert_eq!(oscillator.state.elapsed_samples, 0);
+        assert!(!oscillator.state.envelope.is_active());
         input.gate = true;
         input.note_generation += 1;
         assert_eq!(oscillator.generate_sample(&input, 1000.0), 0.0);
-        assert_eq!(oscillator.state.elapsed_samples, 1);
+        assert!(oscillator.state.envelope.is_active());
         assert_eq!(oscillator.state.phases[0], 0.1);
         assert!(oscillator.generate_sample(&input, 1000.0) > 0.0);
         input.gate = false;
@@ -614,10 +574,10 @@ mod tests {
         input.waveform = Waveform::Sawtooth;
         assert_eq!(state.generate_sample(&input, 4.0), 0.0);
         input.gate = true;
-        // 波形/入力だけの検証は保持した位相のままsustainへ復帰させる。
-        state.state.active = true;
-        state.state.elapsed_samples = 10000;
-        state.state.note_off_sample = None;
+        // 波形/入力だけの検証は、位相を保持して即時attackで復帰させる。
+        input.note_generation += 1;
+        input.envelope.attack_ms = 0.0;
+        input.envelope.decay_ms = 0.0;
         assert!((state.generate_sample(&input, 4.0) - 0.433_012_701_892_219_3).abs() < 1e-14);
     }
 
@@ -643,10 +603,10 @@ mod tests {
             assert_eq!(state.generate_sample(&input, 8.0), 0.0);
         }
         input.gate = true;
-        // 波形/入力だけの検証は保持した位相のままsustainへ復帰させる。
-        state.state.active = true;
-        state.state.elapsed_samples = 10000;
-        state.state.note_off_sample = None;
+        // 波形/入力だけの検証は、位相を保持して即時attackで復帰させる。
+        input.note_generation += 1;
+        input.envelope.attack_ms = 0.0;
+        input.envelope.decay_ms = 0.0;
         assert!((state.generate_sample(&input, 8.0) + 0.25).abs() < 1e-14);
         // 振幅0はゲート閉とは異なり、状態更新を続ける。
         input.amplitude = 0.0;

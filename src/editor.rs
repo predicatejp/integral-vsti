@@ -217,7 +217,7 @@ impl WindowHandler for Editor {
                     ui.add_space(12.0);
                     egui::Grid::new("parameters")
                         .num_columns(3)
-                        .min_col_width(80.0)
+                        .min_col_width(160.0)
                         .spacing([16.0, 8.0])
                         .show(ui, |ui| {
                             ui.label("Waveform");
@@ -268,6 +268,8 @@ impl WindowHandler for Editor {
                                     6
                                 } else if i == 8 {
                                     31
+                                } else if i == 19 {
+                                    960
                                 } else if i == 10 {
                                     1200
                                 } else if i == 13 {
@@ -307,7 +309,7 @@ impl WindowHandler for Editor {
                                         "ms"
                                     } else if i == 13 {
                                         "dB"
-                                    } else if matches!(i, 7 | 10) {
+                                    } else if matches!(i, 7 | 10 | 19) {
                                         "cent"
                                     } else {
                                         ""
