@@ -311,11 +311,10 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         ProcessData data; data.inputParameterChanges = &changes;
         assert(processor->process(data) == kResultOk);
         StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes[8] == 0);
-        // ホストによる復元は通知を発生させない。
+        // Componentの復元だけで表示を同期し、開いているGUIから再通知しない。
         saved.bytes[8] = 2;
         assert(component->setState(&saved) == kResultOk);
-        saved.position = 0;
-        assert(controller->setComponentState(&saved) == kResultOk);
+        assert(controller->getParamNormalized(waveformId) == 2.0 / 3.0);
         pump(); assert(handler.sequence.empty());
         // スライダーは左端0、右端最大を選べる。ホストからの復元値を丸めて再通知しない。
         for (size_t i = 0; i < envelopeIds.size(); ++i) {
