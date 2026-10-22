@@ -17,11 +17,11 @@ use std::{
 
 struct EditorState {
     /// 確定前の入力文字列。数値の解析・VST3値への換算は確定時に行う。
-    text: [String; 12],
+    text: [String; parameters::COUNT],
     /// 前フレームで入力欄が編集中だったか。フォーカス移動時にも入力を保持する。
-    editing: [bool; 12],
+    editing: [bool; parameters::COUNT],
     /// 文字列を編集した欄だけを確定し、ホスト値の表示更新を再通知しない。
-    changed: [bool; 12],
+    changed: [bool; parameters::COUNT],
 }
 
 pub(super) struct Editor {
@@ -44,7 +44,7 @@ pub(super) struct Editor {
     /// Controllerと共有する表示値。
     parameters: Arc<SharedParameters>,
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
-    displayed: Cell<[f64; 12]>,
+    displayed: Cell<[f64; parameters::COUNT]>,
     /// ホストUIスレッドへの編集キュー。描画中にはホストを呼ばない。
     edits: SyncSender<(usize, f64)>,
     #[cfg(target_os = "windows")]
@@ -74,8 +74,8 @@ impl Editor {
         let editor = Self {
             state: RefCell::new(EditorState {
                 text: std::array::from_fn(|_| String::new()),
-                editing: [false; 12],
-                changed: [false; 12],
+                editing: [false; parameters::COUNT],
+                changed: [false; parameters::COUNT],
             }),
             window,
             gl,
@@ -85,7 +85,7 @@ impl Editor {
             pointer: Cell::new(egui::Pos2::ZERO),
             start: Instant::now(),
             parameters,
-            displayed: Cell::new([f64::NAN; 12]),
+            displayed: Cell::new([f64::NAN; parameters::COUNT]),
             edits,
             #[cfg(target_os = "windows")]
             view,
@@ -236,14 +236,21 @@ impl WindowHandler for Editor {
                             ui.spacing_mut().slider_width = 390.0;
                             for i in 1..NAMES.len() {
                                 ui.label(NAMES[i]);
-                                if i == 9 {
+                                if matches!(i, 9 | 12) {
+                                    let names: &[&str] = if i == 9 {
+                                        &FILTER_NAMES
+                                    } else {
+                                        &parameters::PHASE_NAMES
+                                    };
                                     let mut index = parameters::to_plain(i, selected[i]) as usize;
-                                    if egui::ComboBox::from_id_salt("filter")
-                                        .width(200.0)
-                                        .show_index(ui, &mut index, FILTER_NAMES.len(), |n| {
-                                            FILTER_NAMES[n]
-                                        })
-                                        .changed()
+                                    if egui::ComboBox::from_id_salt(if i == 9 {
+                                        "filter"
+                                    } else {
+                                        "phase"
+                                    })
+                                    .width(200.0)
+                                    .show_index(ui, &mut index, names.len(), |n| names[n])
+                                    .changed()
                                     {
                                         let _ = self.edits.try_send((
                                             i,

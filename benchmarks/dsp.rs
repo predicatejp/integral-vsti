@@ -62,6 +62,7 @@ fn measure(name: &str, unit: &str, selection: &str, mut operation: impl FnMut(us
 
 fn input(waveform: Waveform, unison: u32, detune: f64) -> OscillatorInput {
     OscillatorInput {
+        phase_mode: oscillator::PhaseMode::Keep,
         waveform,
         unison_voices: unison,
         detune_cents: detune,
@@ -242,7 +243,7 @@ fn main() {
     for unison in [1, 7] {
         for kind in [FilterType::None, FilterType::LowPass1, FilterType::LowPass2] {
             let mut voice = Voice::new();
-            voice.set_parameters(Waveform::Sawtooth, DEFAULT_ENVELOPE, unison, 30.0);
+            voice.set_parameters(Waveform::Sawtooth, DEFAULT_ENVELOPE, unison, 30.0, oscillator::PhaseMode::Keep);
             voice.set_filter(kind, 1200.0, p.resonance_q);
             voice.note_on(note(0), 0.0, 1.0);
             for _ in 0..rate as usize {

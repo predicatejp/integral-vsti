@@ -14,7 +14,7 @@ pub struct SynthesizerState {
     /// 全オシレータに共通のサンプルレート（Hz）。
     sample_rate: f64,
     /// 適用済みの正規化値。変更時だけ実単位へ換算する。
-    parameters: [f64; 12],
+    parameters: [f64; parameters::COUNT],
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
@@ -41,7 +41,7 @@ impl Synthesizer {
     }
 
     /// 設定は全枠の入力に反映し、発振器の内部状態はイベント処理から変更しない。
-    pub fn set_parameters(&mut self, values: [f64; 12]) -> bool {
+    pub fn set_parameters(&mut self, values: [f64; parameters::COUNT]) -> bool {
         if values == self.state.parameters {
             return false;
         }
@@ -59,7 +59,13 @@ impl Synthesizer {
         let unison_voices = parameters::to_plain(6, values[6]) as u32;
         let detune_cents = parameters::to_plain(7, values[7]);
         for voice in &mut self.state.voices {
-            voice.set_parameters(waveform, envelope, unison_voices, detune_cents);
+            voice.set_parameters(
+                waveform,
+                envelope,
+                unison_voices,
+                detune_cents,
+                parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize],
+            );
             voice.set_filter(
                 parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
                 parameters::to_plain(10, values[10]),

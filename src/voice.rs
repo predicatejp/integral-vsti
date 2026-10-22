@@ -3,7 +3,7 @@
 
 use crate::envelope::{DEFAULT_ENVELOPE, EnvelopeParameters};
 use crate::filter::{Filter, FilterParameters, FilterType};
-use crate::oscillator::{Oscillator, OscillatorInput, Waveform};
+use crate::oscillator::{Oscillator, OscillatorInput, PhaseMode, Waveform};
 use crate::parameters;
 
 /// 全波形共通のvelocityが1のときの基準実効値（RMS）。
@@ -50,6 +50,7 @@ impl Voice {
             state: VoiceState {
                 oscillator_input: OscillatorInput {
                     waveform: Waveform::Sine,
+                    phase_mode: PhaseMode::Keep,
                     unison_voices: 1,
                     detune_cents: 0.0,
                     frequency_hz: 440.0,
@@ -130,11 +131,13 @@ impl Voice {
         envelope: EnvelopeParameters,
         unison: u32,
         detune: f64,
+        phase_mode: PhaseMode,
     ) {
         self.state.oscillator_input.waveform = waveform;
         self.state.oscillator_input.envelope = envelope;
         self.state.oscillator_input.unison_voices = unison;
         self.state.oscillator_input.detune_cents = detune;
+        self.state.oscillator_input.phase_mode = phase_mode;
     }
 
     /// Voice内の処理パイプライン。生成した信号をSynthesizerが加算する。
@@ -176,6 +179,7 @@ mod tests {
                     },
                     3,
                     37.0,
+                    PhaseMode::Keep,
                 );
                 voice.set_filter(filter_type, cents, 2.0);
                 assert!(voice.note_on(
