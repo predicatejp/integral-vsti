@@ -1,19 +1,32 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 波形選択・音量エンベロープに必要なマウス入力とOpenGL描画だけを接続する。
+//! パラメーターのマウス・数値入力とOpenGL描画を接続する。
 
 use crate::parameters::{self, FILTER_NAMES, NAMES, SharedParameters, WAVEFORM_NAMES};
 use baseview::{
-    Event, EventStatus, HandlerError, MouseButton, MouseEvent, WindowContext, WindowHandler,
+    Event, EventStatus, HandlerError, MouseButton, MouseEvent, WindowContext, WindowEvent,
+    WindowHandler,
 };
+use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers, NamedKey};
 use std::{
     cell::{Cell, RefCell},
     sync::{Arc, mpsc::SyncSender},
     time::{Duration, Instant},
 };
 
+struct EditorState {
+    /// 確定前の入力文字列。数値の解析・VST3値への換算は確定時に行う。
+    text: [String; 12],
+    /// 前フレームで入力欄が編集中だったか。フォーカス移動時にも入力を保持する。
+    editing: [bool; 12],
+    /// 文字列を編集した欄だけを確定し、ホスト値の表示更新を再通知しない。
+    changed: [bool; 12],
+}
+
 pub(super) struct Editor {
+    /// 描画スレッド内の数値入力状態。
+    state: RefCell<EditorState>,
     /// 描画スレッド内だけで使う子ウィンドウの操作口。
     window: WindowContext,
     /// この子ウィンドウのOpenGLコンテキスト。
@@ -59,6 +72,11 @@ impl Editor {
             painter?
         };
         let editor = Self {
+            state: RefCell::new(EditorState {
+                text: std::array::from_fn(|_| String::new()),
+                editing: [false; 12],
+                changed: [false; 12],
+            }),
             window,
             gl,
             painter: RefCell::new(painter),
@@ -85,6 +103,94 @@ impl Editor {
         // タイマーの寿命と解除はbaseviewの子ウィンドウに従う。
         editor.window.create_timer(Duration::from_millis(16))?;
         Ok(editor)
+    }
+
+    fn numeric_input(&self, ui: &mut egui::Ui, index: usize, value: f64, slider_edited: bool) {
+        let mut state = self.state.borrow_mut();
+        if slider_edited || !state.editing[index] {
+            // 固定小数桁・右寄せで1の位を揃える。編集開始時には丸め前の値を渡す。
+            state.text[index] = if matches!(index, 6 | 8) {
+                format!("{value:.0}")
+            } else {
+                format!("{value:.3}")
+            };
+            state.changed[index] = false;
+        }
+        let cancel = state.editing[index] && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut state.text[index])
+                .id_salt(("number", index))
+                .font(egui::TextStyle::Monospace)
+                .align(egui::Align2::RIGHT_CENTER)
+                .margin(egui::vec2(4.0, 0.0))
+                .desired_width(125.0),
+        );
+        if response.gained_focus() {
+            state.text[index] = value.to_string();
+            let _ = self.window.focus();
+        }
+        state.changed[index] |= response.changed();
+        if response.lost_focus() && state.changed[index] && !cancel {
+            if let Some(normalized) = parameters::parse_numeric(index, &state.text[index]) {
+                let _ = self.edits.try_send((index, normalized));
+            }
+            state.changed[index] = false;
+        }
+        state.editing[index] = response.has_focus();
+        if cancel {
+            state.changed[index] = false;
+            state.editing[index] = false;
+            response.surrender_focus();
+        }
+    }
+
+    fn keyboard_input(&self, event: KeyboardEvent) -> EventStatus {
+        if !self.context.egui_wants_keyboard_input() || event.is_composing {
+            return EventStatus::Ignored;
+        }
+        let modifiers = egui::Modifiers {
+            alt: event.modifiers.contains(Modifiers::ALT),
+            ctrl: event.modifiers.contains(Modifiers::CONTROL),
+            shift: event.modifiers.contains(Modifiers::SHIFT),
+            command: event.modifiers.contains(Modifiers::CONTROL),
+            mac_cmd: false,
+        };
+        let key = match &event.key {
+            Key::Named(NamedKey::Enter) => Some(egui::Key::Enter),
+            Key::Named(NamedKey::Escape) => Some(egui::Key::Escape),
+            Key::Named(NamedKey::Tab) => Some(egui::Key::Tab),
+            Key::Named(NamedKey::Backspace) => Some(egui::Key::Backspace),
+            Key::Named(NamedKey::Delete) => Some(egui::Key::Delete),
+            Key::Named(NamedKey::ArrowLeft) => Some(egui::Key::ArrowLeft),
+            Key::Named(NamedKey::ArrowRight) => Some(egui::Key::ArrowRight),
+            Key::Named(NamedKey::ArrowUp) => Some(egui::Key::ArrowUp),
+            Key::Named(NamedKey::ArrowDown) => Some(egui::Key::ArrowDown),
+            Key::Named(NamedKey::Home) => Some(egui::Key::Home),
+            Key::Named(NamedKey::End) => Some(egui::Key::End),
+            Key::Character(text) if text.eq_ignore_ascii_case("a") => Some(egui::Key::A),
+            _ => None,
+        };
+        let mut input = self.input.borrow_mut();
+        input.events.push(egui::Event::ModifiersChanged(modifiers));
+        let pressed = event.state == KeyState::Down;
+        if let Some(key) = key {
+            input.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: event.repeat,
+                modifiers,
+            });
+        }
+        if pressed
+            && !modifiers.ctrl
+            && !modifiers.alt
+            && let Key::Character(text) = event.key
+        {
+            input.events.push(egui::Event::Text(text));
+        }
+        self.window.request_redraw();
+        EventStatus::Captured
     }
 }
 
@@ -186,17 +292,15 @@ impl WindowHandler for Editor {
                                 } else {
                                     parameters::to_plain(i, selected[i])
                                 };
-                                // 等幅・固定桁数で整数部を右寄せし、1の位と小数点を揃える。
-                                ui.monospace(if time {
-                                    format!("{value:7.2} ms")
-                                } else if matches!(i, 6 | 8) {
-                                    format!("{value:8.0}")
-                                } else if i == 10 {
-                                    format!("{value:+5.0} cent")
-                                } else if i == 7 {
-                                    format!("{value:5.1} cent")
-                                } else {
-                                    format!("{value:8.3}")
+                                ui.horizontal(|ui| {
+                                    self.numeric_input(ui, i, value, edited);
+                                    ui.label(if time {
+                                        "ms"
+                                    } else if matches!(i, 7 | 10) {
+                                        "cent"
+                                    } else {
+                                        ""
+                                    });
                                 });
                                 ui.end_row();
                             }
@@ -238,6 +342,12 @@ impl WindowHandler for Editor {
 
     fn on_event(&self, event: Event) -> EventStatus {
         let event = match event {
+            Event::Keyboard(event) => return self.keyboard_input(event),
+            Event::Window(WindowEvent::Focused | WindowEvent::Unfocused) => {
+                let focused = matches!(event, Event::Window(WindowEvent::Focused));
+                self.input.borrow_mut().focused = focused;
+                egui::Event::WindowFocused(focused)
+            }
             Event::Mouse(MouseEvent::CursorMoved { position, .. }) => {
                 let pos = egui::pos2(position.x as f32, position.y as f32);
                 self.pointer.set(pos);

@@ -10,6 +10,7 @@
 #ifndef _WIN32
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/keysym.h>
 #endif
 
 static_assert(sizeof(ViewRect) == 16);
@@ -139,6 +140,37 @@ struct NativeParent {
     }
 #endif
     void click(int x, int y) { pointer(x, y, true); pointer(x, y, false); }
+    // 実際の子ウィンドウへキー入力を送る。0は未確定、27はEsc、13はEnter。
+    void replaceText(const char* text, int finish = 13) {
+#ifdef _WIN32
+        HWND child = GetWindow(window, GW_CHILD); assert(child);
+        auto key = [&](UINT code) {
+            const LPARAM scan = static_cast<LPARAM>(MapVirtualKeyW(code, MAPVK_VK_TO_VSC)) << 16;
+            SendMessageW(child, WM_KEYDOWN, code, scan | 1);
+            SendMessageW(child, WM_KEYUP, code, scan | 0xc0000001);
+        };
+        key(VK_HOME);
+        for (int i = 0; i < 32; ++i) key(VK_DELETE);
+        for (const char* c = text; *c; ++c) SendMessageW(child, WM_CHAR, static_cast<WPARAM>(*c), 1);
+        if (finish) key(static_cast<UINT>(finish));
+#else
+        auto key = [&](KeySym symbol) {
+            const auto code = XKeysymToKeycode(display, symbol); assert(code);
+            for (int type : {KeyPress, KeyRelease}) {
+                XEvent event {};
+                event.xkey = {type, 0, True, display, child(), DefaultRootWindow(display), 0,
+                              CurrentTime, 0, 0, 0, 0, 0, code, True};
+                XSendEvent(display, event.xkey.window, False,
+                           type == KeyPress ? KeyPressMask : KeyReleaseMask, &event);
+            }
+        };
+        key(XK_Home);
+        for (int i = 0; i < 32; ++i) key(XK_Delete);
+        for (const char* c = text; *c; ++c) key(static_cast<KeySym>(*c));
+        if (finish) key(finish == 27 ? XK_Escape : XK_Return);
+        XFlush(display);
+#endif
+    }
 };
 
 class GuiFrame final : public IPlugFrame
@@ -223,7 +255,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 640 && rect.getHeight() == 480);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 720 && rect.getHeight() == 480);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -234,9 +266,9 @@ void checkViewContract(IEditController* controller) {
     assert(view->attached(nullptr, platform) == kInvalidArgument);
     void* result = nullptr;
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
-    rect.right = 720;
+    rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 640);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 720);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -284,7 +316,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(640, 480); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(720, 480); }, "first rendered frame");
         pump();
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
@@ -404,6 +436,43 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         waitFor([&] { return handler.sequence.size() >= 3; }, "filter type selection");
         assert(handler.editedId == filterIds[0] && handler.value == 0.0);
         handler.sequence.clear(); pump();
+        if (cycle == 0) {
+            // 各数値欄で、スライダーの刻みの間にある値もホストへそのまま渡す。
+            const std::array<const char*, 12> text {"", "12.345", "0.125", "123.456", "0.4567",
+                "0.0625", "3", "25.125", "19", "", "-1234.125", "1.2345"};
+            for (int i = 1; i < 12; ++i) {
+                if (i == 9) continue;
+                ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
+                parent.click(570, 84 + 29 * i); pump();
+                parent.replaceText(text[i]);
+                waitFor([&] { return handler.sequence.size() >= 3; }, ("numeric entry " + std::to_string(i)).c_str());
+                assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+                assert(handler.editedId == info.id);
+                const double plain = std::stod(text[i]);
+                assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 2e-10);
+                // 標準キューを通した後も、保存データに丸め前の実単位が残る。
+                point.id = info.id; point.values = {{0, handler.value}};
+                assert(processor->process(data) == kResultOk);
+                StateStream state; assert(component->getState(&state) == kResultOk);
+                double stored = 0; std::memcpy(&stored, state.bytes.data() + 12 + (i - 1) * 8, 8);
+                assert(std::abs(stored - plain) < 2e-10);
+                handler.sequence.clear();
+            }
+            // 範囲外は元の値へ戻し、Escも編集を取り消す。
+            for (bool cancel : {false, true}) {
+                parent.click(570, 403); pump();
+                parent.replaceText(cancel ? "3.25" : "0.1", cancel ? 27 : 13); pump();
+                assert(handler.sequence.empty());
+                assert(std::abs(controller->normalizedParamToPlain(filterIds[2],
+                    controller->getParamNormalized(filterIds[2])) - 1.2345) < 1e-12);
+            }
+            parent.click(570, 403); pump(); parent.replaceText("2.3456", 0); pump();
+            assert(handler.sequence.empty());
+            parent.click(30, 40);
+            waitFor([&] { return handler.sequence.size() >= 3; }, "numeric entry focus loss");
+            assert(std::abs(controller->normalizedParamToPlain(filterIds[2], handler.value) - 2.3456) < 1e-12);
+            handler.sequence.clear(); pump();
+        }
         parent.screenshot();
         assert(view->removed() == kResultOk);
         pump(); assert(handler.sequence.empty());

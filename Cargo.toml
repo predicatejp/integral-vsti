@@ -17,6 +17,7 @@ egui = { version = "=0.37.0", default-features = false, features = ["default_fon
 egui_glow = { version = "=0.37.0", default-features = false }
 baseview = { version = "=0.4.1", default-features = false, features = ["opengl"] }
 raw-window-handle = "=0.6.2"
+keyboard-types = "=0.8.3"
 
 [profile.dev]
 panic = "abort"

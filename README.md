@@ -75,13 +75,13 @@ Stateはデータ保持専用とし、所有コンポーネントのメソッド
 | パラメーター | 範囲 | 初期値 | ParamID |
 | --- | --- | --- | --- |
 | Filter | None / LowPass1 / LowPass2 / HighPass1 / HighPass2 / BandPass1 / BandPass2 | LowPass1 | `0x46545950` |
-| Cutoff | ノート周波数から−2400〜9600 cent（−2〜＋8 oct）、10 cent刻み | ＋1200 cent（＋1 oct） | `0x46435554` |
-| Resonance | Q=0.5〜10 | `1/√2` | `0x46524553` |
+| Cutoff | ノート周波数から−2400〜9600 cent（−2〜＋8 oct） | ＋4800 cent（＋4 oct） | `0x46435554` |
+| Resonance | Q=0.5〜10 | 1 | `0x46524553` |
 
 GUIではFilterをドロップダウン、CutoffとResonanceを整数スライダーで操作します。
 Cutoffは0〜1200 tickを10 cent刻みへ換算し、Resonanceは0〜950 tickをQ=0.5〜10（0.01刻み）へ換算します。
-画面上でCutoffの全tickをマウスで選べることは保証しません。VST3の値変換では全1201通りに対応します。
-Filterは`stepCount=6`のリスト、Cutoffは`stepCount=1200`の離散値として変更点で切り替えます。
+CutoffとResonanceは右の数値欄でも入力でき、範囲内の小数値を保持します。
+Filterは`stepCount=6`のリスト、Cutoffは`stepCount=0`の連続値として公開し、どちらも変更点で切り替えます。
 Resonanceは連続値で、ホストの変更点間を正規化値で線形補間します。
 
 Voiceはノートの音程とtuningを含む周波数に `2^(cent/1200)` を乗じ、具体的なHzをフィルタへ渡します。
@@ -212,18 +212,18 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 WaveformとFilterはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonanceはスライダーです。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは640×480物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。自由なサイズ変更と
-`IPlugViewContentScaleSupport` による表示倍率変更は未対応です。
-初版の操作はマウスのみです。VST3のキー・ホイール処理は未処理を返します。
+サイズは720×480物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
+各スライダー右の数値欄をクリックして直接入力できます。Enterまたは別の欄へのフォーカス移動で確定し、Escで取り消します。
+時間はms、DetuneとCutoffはcent、ResonanceはQで入力します。UnisonとPolyphonyは範囲内の整数、その他は範囲内の小数値も受け付けます。
+直接入力した値はスライダーの刻みに丸めず、音源へ反映して保存します。範囲外や不正な文字列は確定時に元の表示へ戻します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
 対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。
 ソフトウェアOpenGLでも動作検証していますが、ソフトウェアドライバーはバンドルへ同梱しません。
 描画環境を初期化できない場合は画面の取り付けに失敗し、ホストのパラメーター操作と音声処理は引き続き使用できます。
 
-接続処理は左マウスボタンと描画に限定し、クリップボード・URL起動・キーボード編集は実装しません。
 GUIの操作はUI専用の32件キューからホストのUIスレッドへ配送し、
-`IComponentHandler::beginEdit / performEdit / endEdit` を順に通知します。キュー満杯時は新しいクリックを破棄します。
+`IComponentHandler::beginEdit / performEdit / endEdit` を順に通知します。キュー満杯時は新しい編集を破棄します。
 DSPへの適用は従来どおりホストの変更キュー経由です。ホストからの値更新や状態復元は表示へ反映し、編集通知を送り返しません。
 Windowsはbaseviewの子ウィンドウのタイマー、LinuxはVST3のIRunLoopから編集を配送します。
 画面を閉じるとタイマーと描画資源を解放し、音声処理は継続します。
