@@ -15,6 +15,8 @@ pub struct SynthesizerState {
     sample_rate: f64,
     /// 適用済みの正規化値。変更時だけ実単位へ換算する。
     parameters: [f64; parameters::COUNT],
+    /// 全Voiceのフィルタ出力を加算した後に掛ける振幅倍率。Volume変更時だけ再計算する。
+    master_gain: f64,
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
@@ -32,6 +34,7 @@ impl Synthesizer {
                 polyphony: 1,
                 sample_rate: 44100.0,
                 parameters: parameters::defaults(),
+                master_gain: 1.0,
             },
         }
     }
@@ -44,6 +47,14 @@ impl Synthesizer {
     pub fn set_parameters(&mut self, values: [f64; parameters::COUNT]) -> bool {
         if values == self.state.parameters {
             return false;
+        }
+        if values[13] != self.state.parameters[13] {
+            self.state.master_gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
+            // 全体の音量だけが変わる場合は、各Voiceへの設定配送を省く。
+            if values[..13] == self.state.parameters[..13] {
+                self.state.parameters = values;
+                return true;
+            }
         }
         self.state.parameters = values;
         let count = parameters::to_plain(8, values[8]) as usize;
@@ -101,7 +112,8 @@ impl Synthesizer {
         self.state.voices[..self.state.polyphony]
             .iter_mut()
             .map(|voice| voice.generate_sample(self.state.sample_rate))
-            .sum()
+            .sum::<f64>()
+            * self.state.master_gain
     }
 }
 
@@ -140,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn filtered_voices_sum_independently_and_stop_without_tail() {
+    fn master_volume_scales_the_sum_of_filtered_voices_and_their_tails() {
         for filter_type in 0..7 {
             let mut synth = Synthesizer::new();
             let mut values = parameters::defaults();
@@ -161,6 +173,15 @@ mod tests {
                 single
             });
             for n in 0..96 {
+                let db = match n {
+                    0..16 => 0.0,
+                    16..32 => -48.0,
+                    32..48 => -12.3,
+                    48..72 => 12.0,
+                    _ => 0.0,
+                };
+                values[13] = parameters::to_normalized(13, db);
+                synth.set_parameters(values);
                 for (at, slot, id, pitch) in [(0, 0, 1, 57), (3, 1, 2, 81), (32, 0, 3, 69)] {
                     if n == at {
                         synth.note_on(note(id, 0, pitch), 0.0, 1.0);
@@ -180,7 +201,9 @@ mod tests {
                     .iter_mut()
                     .map(Synthesizer::generate_sample)
                     .sum();
-                assert!((synth.generate_sample() - expected).abs() < 1e-12);
+                assert!(
+                    (synth.generate_sample() - expected * 10.0_f64.powf(db / 20.0)).abs() < 1e-12
+                );
             }
             synth.stop();
             assert_eq!(synth.generate_sample(), 0.0);

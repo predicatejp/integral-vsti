@@ -24,13 +24,14 @@ struct NativeParent {
         cls.hInstance = GetModuleHandleW(nullptr);
         cls.lpszClassName = L"SampleVstiGuiTest";
         RegisterClassW(&cls);
-        window = CreateWindowExW(0, cls.lpszClassName, L"VST3 GUI test", WS_OVERLAPPEDWINDOW,
-                                 50, 50, 800, 600, nullptr, nullptr, cls.hInstance, nullptr);
+        // 1024×768の画面でも、検証するクライアント領域全体を画面内に置く。
+        window = CreateWindowExW(0, cls.lpszClassName, L"VST3 GUI test", WS_POPUP,
+                                 0, 0, 800, 600, nullptr, nullptr, cls.hInstance, nullptr);
         assert(window); ShowWindow(window, SW_SHOW);
     }
     ~NativeParent() { DestroyWindow(window); }
     void* handle() { return window; }
-    void resize(int32 width, int32 height) { SetWindowPos(window, nullptr, 0, 0, width + 32, height + 64, SWP_NOMOVE | SWP_NOZORDER); }
+    void resize(int32 width, int32 height) { SetWindowPos(window, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER); }
     static void pump() {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
@@ -232,7 +233,7 @@ public:
     uint32 PLUGIN_API release() override { assert(refs > 1); return --refs; }
     tresult PLUGIN_API beginEdit(ParamID id) override {
         assert(std::this_thread::get_id() == uiThread);
-        assert(id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -255,7 +256,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 720 && rect.getHeight() == 480);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1024 && rect.getHeight() == 768);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -268,7 +269,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 720);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1024);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -283,6 +284,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     GuiHandler handler(controller);
     assert(controller->setComponentHandler(&handler) == kResultOk && handler.refs == 2);
     auto* view = controller->createView("editor"); assert(view);
+    ViewRect size; assert(view->getSize(&size) == kResultOk);
+    parent.resize(size.getWidth(), size.getHeight());
     assert(view->setFrame(&frame) == kResultOk);
     auto pump = [&] {
         for (int i = 0; i < 50; ++i) {
@@ -316,7 +319,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(720, 480); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(1024, 768); }, "first rendered frame");
         pump();
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
@@ -424,10 +427,10 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         assert(controller->setParamNormalized(filterIds[0], 1.0 / 6.0) == kResultOk);
         pump(); parent.click(180, 345); pump();
-        // 下端のリストは上側へ開く。左枠の連続部分から先頭項目の位置を得る。
+        // 左枠の連続部分から、下側へ開いたリストの先頭項目の位置を得る。
         const auto background = parent.pixel(20, 130);
         int run = 0, best = 0, top = 0;
-        for (int y = 40; y < 335; ++y) {
+        for (int y = 360; y < 600; ++y) {
             run = parent.pixel(115, y) != background ? run + 1 : 0;
             if (run > best) { best = run; top = y - run + 1; }
         }
@@ -473,12 +476,12 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(std::abs(controller->normalizedParamToPlain(filterIds[2], handler.value) - 2.3456) < 1e-12);
             handler.sequence.clear(); pump();
         }
-        // 最終行のPhaseリストからRandomを選択し、状態へ保存する。
+        // PhaseリストからRandomを選択し、状態へ保存する。
         assert(controller->setParamNormalized(phaseId, 0.0) == kResultOk);
         pump(); parent.click(180, 435); pump();
         const auto phaseBackground = parent.pixel(20, 130);
         int phaseRun = 0, phaseBest = 0, phaseTop = 0;
-        for (int y = 300; y < 435; ++y) {
+        for (int y = 450; y < 600; ++y) {
             phaseRun = parent.pixel(115, y) != phaseBackground ? phaseRun + 1 : 0;
             if (phaseRun > phaseBest) { phaseBest = phaseRun; phaseTop = y - phaseRun + 1; }
         }
@@ -493,6 +496,23 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         double phaseMode = -1;
         std::memcpy(&phaseMode, phaseState.bytes.data() + 100, 8);
         assert(phaseMode == 2.0);
+        handler.sequence.clear(); pump();
+        // Volumeの整数スライダー両端と直接入力を検証し、実単位で保存する。
+        for (int x : {504, 115}) {
+            parent.pointer(x, 464, true); pump(); parent.pointer(x, 464, false);
+            waitFor([&] { return handler.sequence.size() >= 3; }, "volume slider edit");
+            assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+            assert(handler.editedId == volumeId && handler.value == (x == 504 ? 1.0 : 0.0));
+            handler.sequence.clear(); pump();
+        }
+        parent.click(570, 464); pump(); parent.replaceText("-12.345");
+        waitFor([&] { return handler.sequence.size() >= 3; }, "volume numeric entry");
+        assert(handler.sequence == (std::vector<int>{0, 1, 2}) && handler.editedId == volumeId);
+        point.id = volumeId; point.values = {{0, handler.value}};
+        assert(processor->process(data) == kResultOk);
+        StateStream volumeState; assert(component->getState(&volumeState) == kResultOk);
+        double volumeDb = 0; std::memcpy(&volumeDb, volumeState.bytes.data() + 108, 8);
+        assert(std::abs(volumeDb + 12.345) < 1e-12);
         handler.sequence.clear(); pump();
         parent.screenshot();
         assert(view->removed() == kResultOk);
