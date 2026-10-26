@@ -658,8 +658,9 @@ mod tests {
         assert_eq!(to_plain(11, values[11]), 1.0);
         assert_eq!(to_plain(13, values[13]), 0.0);
         assert_eq!(to_plain(19, values[19]), 0.0);
+        // 対数換算した正規化値は、演算の丸め誤差を許容して比較する。
         for i in 0..5 {
-            assert_eq!(values[14 + i], values[1 + i]);
+            assert!((values[14 + i] - values[1 + i]).abs() < 1e-12);
         }
         for (index, max) in [(9, 6), (10, 1200), (11, 950), (13, 600), (19, 960)] {
             for tick in 0..=max {
@@ -760,7 +761,9 @@ mod tests {
                 for i in 0..14 {
                     assert!((legacy[i] - values[i]).abs() < 1e-12);
                 }
-                assert_eq!(&legacy[14..], &defaults()[14..]);
+                for (actual, expected) in legacy[14..].iter().zip(&defaults()[14..]) {
+                    assert!((actual - expected).abs() < 1e-12);
+                }
                 (*stream).bytes[4] = 8;
                 (*stream).length = 164;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
