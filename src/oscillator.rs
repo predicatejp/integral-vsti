@@ -23,15 +23,12 @@ fn detune_ratio(cents: f64) -> f64 {
 /// 1/4周期1024区間と対称性による正弦波。入力位相は[0, 1)。実効値補正は行わない。
 fn sine_sample(phase: f64) -> f64 {
     let position = phase * 4.0;
-    let quadrant = position as usize;
-    let fraction = position - quadrant as f64;
-    let folded = if quadrant & 1 == 0 {
-        fraction
-    } else {
-        1.0 - fraction
-    };
+    let quadrant = position as u32;
+    let fraction = position - f64::from(quadrant);
+    // 偶数象限はfraction、奇数象限は1-fractionへ折り返す。
+    let folded = (f64::from(quadrant & 1) - fraction).abs();
     let value = interpolate(folded * 1024.0, &tables::SINE);
-    if quadrant & 2 == 0 { value } else { -value }
+    value * (1.0 - f64::from(quadrant & 2))
 }
 
 /// 対称な三角波・ノコギリ波の実効値をピーク振幅へ変換する倍率（√3）。
@@ -64,14 +61,9 @@ impl Waveform {
     fn unit_sample(self, phase: f64) -> f64 {
         match self {
             Self::Sine => sine_sample(phase),
-            Self::Triangle => 1.0 - 4.0 * ((phase + 0.25).fract() - 0.5).abs(),
-            Self::Square => {
-                if phase < 0.5 {
-                    1.0
-                } else {
-                    -1.0
-                }
-            }
+            Self::Triangle => 4.0 * ((phase - 0.25).abs() - 0.5).abs() - 1.0,
+            // phase=0.5の+0も負側へ含めるため、符号を反転する。
+            Self::Square => -1.0_f64.copysign(phase - 0.5),
             Self::Sawtooth => 2.0 * phase - 1.0,
         }
     }
@@ -116,18 +108,14 @@ pub struct OscillatorInput {
 
 impl OscillatorInput {
     fn rendered_voices(&self) -> usize {
-        if self.detune_cents == 0.0 {
-            1
-        } else {
-            self.unison_voices as usize
-        }
+        1 + (self.unison_voices as usize - 1) * usize::from(self.detune_cents != 0.0)
     }
 
     fn frequency_ratio(&self, k: usize) -> f64 {
-        if self.unison_voices == 1 || self.detune_cents == 0.0 {
-            return 1.0;
-        }
-        let cents = self.detune_cents * (2.0 * k as f64 / f64::from(self.unison_voices - 1) - 1.0);
+        let intervals = self.unison_voices - 1;
+        // N=1では分母を1、中心からの差を0として、同じ式で倍率1を得る。
+        let cents = self.detune_cents
+            * (2.0 * k as f64 / f64::from(intervals.max(1)) - f64::from(intervals.min(1)));
         detune_ratio(cents)
     }
 
@@ -279,19 +267,18 @@ impl Oscillator {
         }
     }
 
-    /// サンプル生成後に、定常入力を用いて内部状態を1サンプル分進める。
+    /// 発音中のサンプル生成後に、定常入力を用いて内部状態を1サンプル分進める。
     fn update_sample(&mut self, input: &OscillatorInput, sample_rate: f64) {
-        if self.state.envelope.is_active() {
-            for (phase, increment) in self.state.phases[..input.rendered_voices()]
-                .iter_mut()
-                .zip(&self.state.phase_increments)
-            {
-                *phase = (*phase + increment).fract();
-            }
-            self.state
-                .envelope
-                .update_sample(&input.envelope, sample_rate, input.amplitude);
+        // generate_sampleが発音中であることを確認してから呼ぶ。
+        for (phase, increment) in self.state.phases[..input.rendered_voices()]
+            .iter_mut()
+            .zip(&self.state.phase_increments)
+        {
+            *phase = (*phase + increment).fract();
         }
+        self.state
+            .envelope
+            .update_sample(&input.envelope, sample_rate, input.amplitude);
     }
 }
 
@@ -550,6 +537,28 @@ mod tests {
                         "{waveform:?}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn triangle_and_square_match_piecewise_values_at_phase_boundaries() {
+        for edge in [0.0_f64, 0.25, 0.5, 0.75, 1.0] {
+            for phase in [edge.next_down(), edge, edge.next_up()] {
+                if !(0.0..1.0).contains(&phase) {
+                    continue;
+                }
+                // 折り返しの式から独立した、区間ごとの直線で照合する。
+                let triangle = if phase < 0.25 {
+                    4.0 * phase
+                } else if phase < 0.75 {
+                    2.0 - 4.0 * phase
+                } else {
+                    4.0 * phase - 4.0
+                };
+                assert!((Waveform::Triangle.unit_sample(phase) - triangle).abs() <= f64::EPSILON);
+                let square = if phase < 0.5 { 1.0 } else { -1.0 };
+                assert_eq!(Waveform::Square.unit_sample(phase), square);
             }
         }
     }
