@@ -1,10 +1,15 @@
 name: Pull request policy
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'マージ先を検査するPR番号'
+        required: true
+        type: string
 
-permissions: {}
+permissions:
+  pull-requests: read
 
 jobs:
   target:
@@ -14,8 +19,11 @@ jobs:
     steps:
       - name: Require main as the merge target
         env:
-          PR_BASE: ${{ github.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
+          PR_BASE=$(gh pr view "$PR_NUMBER" --json baseRefName --jq .baseRefName)
           if [ "$PR_BASE" != main ]; then
             echo '::error::Pull requests must target main.'
             exit 1

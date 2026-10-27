@@ -327,7 +327,7 @@ Windowsではバイナリの位置が `Contents/x86_64-win/SampleVsti.vst3` に�
 `cargo build --release` の最適化指定だけでは正式リリース版になりません。
 正式版は `SAMPLE_VSTI_RELEASE_VERSION=0.1.0` を明示してビルドします。
 値がCargo.tomlと異なる場合、またはGitの作業ツリーに変更がある場合は失敗します。
-CIでは `v0.1.0` のようなタグのpush時に正式版を生成し、タグとCargo.tomlの一致を検証します。
+CIでは `v0.1.0` のようなタグを指定して手動起動すると正式版を生成し、タグとCargo.tomlの一致を検証します。
 
 `Contents/Resources/build-info.json` にバージョン、完全なコミットID、変更の有無、ターゲットを記録します。
 ローカルの未コミット変更は `dirty: true` で識別し、CIでは変更のないチェックアウトだけを配布します。
@@ -421,7 +421,7 @@ GUI追加後の実際のDAWでの表示・操作、および実GPUでの描画�
 
 ## PRのテスト用ZIP
 
-PRの作成・更新ごとに、Linux版とWindows版をビルドし、ABI検証と公式Validatorに成功した
+PRの先頭ブランチを指定してRust CIを手動起動すると、Linux版とWindows版をビルドし、ABI検証と公式Validatorに成功した
 バンドルをGitHub ActionsのArtifactsへ保存します。PRのChecksから実行結果を開き、
 サマリーのダウンロードリンクまたはArtifactsからZIPを取得してください。保持期間は14日です。
 
@@ -446,13 +446,24 @@ git push -u origin HEAD
 gh pr create --base main
 ```
 
-PRのマージ先は`PR target`で検査し、宛先を変更した場合も再検査します。
+PRのマージ先は`Pull request policy`を手動起動して`PR target`で検査します。宛先を変更した場合も手動で再検査します。
 `main`へ統合する前に、`PR target`と`CI result`の成功、および最新の`main`を取り込んでいることを確認します。
 マージ方法はsquashとし、マージ後は作業ブランチを削除します。
 
 ## Rust CI
 
-GitHub Actionsの `.github/workflows/rust.yml` で、mainへのpush・リリースタグのpush・プルリクエスト・手動実行・毎週月曜03:23 UTCに以下を検証します。
+GitHub ActionsのCIは、`workflow_dispatch`による明示的な手動起動だけで実行します。
+Actions画面の「Run workflow」で対象ブランチを選択するか、次のコマンドを実行してください。
+PRでは先頭ブランチとPR番号を指定します。番号はバンドルの成果物名にも使われます。
+
+```sh
+gh workflow run rust.yml --ref feat/change-name -f pr_number=123
+gh workflow run pull-request-policy.yml --ref feat/change-name -f pr_number=123
+# 正式版はタグを指定して起動する。
+gh workflow run rust.yml --ref v0.1.0
+```
+
+`.github/workflows/rust.yml`では以下を検証します。
 Linux x86_64とWindows x86_64のランナーを使用します。
 
 | ジョブ | 内容 |
