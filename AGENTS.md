@@ -108,7 +108,9 @@ VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体の
 | 依存関係監査 | `cargo +stable deny --locked check` |
 | カバレッジ | READMEのLCOV生成手順を参照 |
 
-CIはmainへのpush・リリースタグ・プルリクエスト・手動・週次で実行する。変更時は該当ジョブをローカルでも検証し、
+CIは`workflow_dispatch`による明示的な手動起動だけで実行する。push・タグ・PR・定期実行による自動起動を追加しないこと。
+PRの検証は対象の先頭ブランチを選び、`pr_number`へPR番号を指定する。正式版はリリースタグを選んで手動起動する。
+変更時は該当ジョブをローカルでも検証し、
 GitHub上での実行結果とローカルでの確認を区別して報告すること。
 CI用ツールの固定バージョンは `scripts/ci-versions.sh` で更新し、MSRVは `Cargo.toml` の `rust-version` と一致させること。
 開発版は `dev-<完全なコミットID>`、正式版はCargo.tomlのSemantic Versioningとする。
