@@ -35,7 +35,7 @@ pub struct FilterParameters {
 
 impl FilterParameters {
     pub fn is_valid(&self) -> bool {
-        self.cutoff_hz.is_finite() && (0.5..=10.0).contains(&self.resonance_q)
+        self.cutoff_hz.is_finite() & (0.5..=10.0).contains(&self.resonance_q)
     }
 }
 
@@ -128,9 +128,7 @@ impl Svf {
     // 呼び出し側で検証済みの入力・係数を使い、この段の積分器だけを更新する。
     #[inline]
     fn process_prepared_sample(&mut self, sample: f64, coefficients: SvfCoefficients) -> SvfOutput {
-        if sample == 0.0 && self.state.integrators == [0.0; 2] {
-            return SvfOutput::default();
-        }
+        // 呼び出し元で全体の無入力・無履歴を判定済み。段ごとの重複判定はしない。
         let g = coefficients.g;
         let [s1, s2] = self.state.integrators;
         // HP = input - damping * BP - LPと2つの台形積分器を連立して解く。
@@ -138,11 +136,8 @@ impl Svf {
         let band = s1 + g * high;
         let low = s2 + g * band;
         let next = [2.0 * band - s1, 2.0 * low - s2];
-        if [low, band, high]
-            .iter()
-            .chain(next.iter())
-            .any(|v| !v.is_finite())
-        {
+        // 出力の非有限値もnextへ伝播するため、2つの積分器でまとめて検出する。
+        if !(next[0].is_finite() & next[1].is_finite()) {
             self.state.integrators = [0.0; 2];
             return SvfOutput::default();
         }
@@ -152,7 +147,7 @@ impl Svf {
 }
 
 fn valid_input(sample: f64, parameters: &FilterParameters, sample_rate: f64) -> bool {
-    sample.is_finite() && parameters.is_valid() && sample_rate.is_finite() && sample_rate > 0.0
+    sample.is_finite() & parameters.is_valid() & sample_rate.is_finite() & (sample_rate > 0.0)
 }
 
 /// SVFの外側で出力を選択し、必要な段数だけ直列接続するコンポーネント。
@@ -198,12 +193,14 @@ impl Filter {
         if !valid_input(sample, parameters, sample_rate) {
             return 0.0;
         }
-        let count = match filter_type {
-            FilterType::LowPass2 | FilterType::HighPass2 | FilterType::BandPass2 => 2,
-            _ => 1,
-        };
-        if count == 1 {
-            self.state.stages[1].state.integrators = [0.0; 2];
+        // None以外は応答ごとに1段・2段の順で並ぶ。
+        let kind = filter_type as usize - 1;
+        let count = 1 + (kind & 1);
+        let output_index = kind / 2;
+        // 1段なら0、2段なら全bitが1のマスクで、第2段の履歴を消去／保持する。
+        let keep_second = 0_u64.wrapping_sub((count - 1) as u64);
+        for value in &mut self.state.stages[1].state.integrators {
+            *value = f64::from_bits(value.to_bits() & keep_second);
         }
         if sample == 0.0
             && self.state.stages[..count]
@@ -217,12 +214,7 @@ impl Filter {
         let mut sample = sample;
         for stage in &mut self.state.stages[..count] {
             let output = stage.process_prepared_sample(sample, coefficients);
-            sample = match filter_type {
-                FilterType::LowPass1 | FilterType::LowPass2 => output.low,
-                FilterType::HighPass1 | FilterType::HighPass2 => output.high,
-                FilterType::BandPass1 | FilterType::BandPass2 => output.band,
-                FilterType::None => unreachable!(),
-            };
+            sample = [output.low, output.high, output.band][output_index];
         }
         sample
     }

@@ -159,7 +159,7 @@ impl Voice {
 
     /// Voice内の処理パイプライン。生成した信号をSynthesizerが加算する。
     pub fn generate_sample(&mut self, sample_rate: f64) -> f64 {
-        if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        if !(sample_rate.is_finite() & (sample_rate > 0.0)) {
             return 0.0;
         }
         let input = &self.state.oscillator_input;

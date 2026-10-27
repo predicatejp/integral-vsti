@@ -121,11 +121,11 @@ impl OscillatorInput {
 
     pub fn is_valid(&self) -> bool {
         self.frequency_hz.is_finite()
-            && self.frequency_hz >= 0.0
-            && (0.0..=1.0).contains(&self.amplitude)
-            && (1..=7).contains(&self.unison_voices)
-            && (0.0..=100.0).contains(&self.detune_cents)
-            && self.envelope.is_valid()
+            & (self.frequency_hz >= 0.0)
+            & (0.0..=1.0).contains(&self.amplitude)
+            & (1..=7).contains(&self.unison_voices)
+            & (0.0..=100.0).contains(&self.detune_cents)
+            & self.envelope.is_valid()
     }
 }
 
@@ -182,7 +182,7 @@ impl Oscillator {
     /// 現在の入力・状態でサンプルを生成し、その後で次のサンプルに向けて状態を更新する。
     /// sample_rateは処理環境のサンプルレート（Hz）。不正な入力・レートでは無音を返し、状態を保持する。
     pub fn generate_sample(&mut self, input: &OscillatorInput, sample_rate: f64) -> f64 {
-        if !input.is_valid() || !sample_rate.is_finite() || sample_rate <= 0.0 {
+        if !(input.is_valid() & sample_rate.is_finite() & (sample_rate > 0.0)) {
             return 0.0;
         }
         // ノート境界と位相モードを反映して生成した後、次サンプルへ進める。

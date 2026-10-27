@@ -310,6 +310,8 @@ pub struct ParameterPoints<'a> {
     previous: (i32, f64),
     /// holds_between_pointsの指定値は変更点まで保持し、それ以外は正規化空間で線形補間する。
     parameter: usize,
+    /// キュー作成時に確定する補間モード。サンプルごとのParamID分類を省く。
+    interpolates: bool,
     /// 有効な変更点があるキューだけをDSPから共有値へ書き戻す。
     /// 他パラメーターの状態復元を、無関係なオートメーションで上書きしない。
     pub automated: bool,
@@ -328,6 +330,7 @@ impl<'a> ParameterPoints<'a> {
             next: None,
             previous: (-1, previous_value),
             parameter,
+            interpolates: !holds_between_points(parameter),
             automated: false,
         };
         if !data.input_parameter_changes.is_null() {
@@ -363,7 +366,7 @@ impl<'a> ParameterPoints<'a> {
             self.previous = (at, value);
             self.advance();
         }
-        if !holds_between_points(self.parameter)
+        if self.interpolates
             && let Some((at, value)) = self.next
         {
             let fraction = f64::from(offset - self.previous.0) / f64::from(at - self.previous.0);

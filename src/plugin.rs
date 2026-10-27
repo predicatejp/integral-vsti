@@ -858,29 +858,54 @@ unsafe fn generate_samples(
     range: std::ops::Range<i32>,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT],
 ) -> bool {
-    let mut nonzero = false;
-    for offset in range.clone() {
-        apply_parameters(plugin, synth, changes, offset);
-        let sample = synth.generate_sample();
-        if let Some(channels) = channels {
-            // 同じ領域を指す左右チャンネルも許す。排他的sliceは作らず、同一サンプルを順に書く。
-            if data.symbolic_sample_size == SAMPLE32 {
+    // バッファの有無と精度は区間ごとに選び、サンプルループ内では分岐しない。
+    let nonzero = match channels {
+        Some(channels) if data.symbolic_sample_size == SAMPLE32 => {
+            generate_output_samples(plugin, synth, changes, range.clone(), |offset, sample| {
                 let sample = sample as f32;
-                nonzero |= sample != 0.0;
                 for channel in channels {
-                    unsafe { channel.cast::<f32>().add(offset as usize).write(sample) };
+                    // SAFETY: 呼び出し元で検証済み。左右が同じ領域でも順に書き込む。
+                    unsafe { channel.cast::<f32>().add(offset).write(sample) };
                 }
-            } else {
-                nonzero |= sample != 0.0;
-                for channel in channels {
-                    unsafe { channel.cast::<f64>().add(offset as usize).write(sample) };
-                }
-            }
+                sample != 0.0
+            })
         }
-    }
+        Some(channels) => {
+            generate_output_samples(plugin, synth, changes, range.clone(), |offset, sample| {
+                for channel in channels {
+                    // SAFETY: 呼び出し元で検証済み。排他的sliceは作らない。
+                    unsafe { channel.cast::<f64>().add(offset).write(sample) };
+                }
+                sample != 0.0
+            })
+        }
+        None => generate_output_samples(plugin, synth, changes, range.clone(), |_, _| false),
+    };
     // ノートと同位置のパラメーターを先に適用。0サンプルフラッシュもここを通る。
     if range.end < data.num_samples || data.num_samples == 0 {
         apply_parameters(plugin, synth, changes, range.end);
+    }
+    nonzero
+}
+
+/// 変更キューのない区間では、20本のカーソル走査と設定比較をサンプルごとに行わない。
+fn generate_output_samples(
+    plugin: &Plugin,
+    synth: &mut Synthesizer,
+    changes: &mut [ParameterPoints<'_>; parameters::COUNT],
+    range: std::ops::Range<i32>,
+    mut write: impl FnMut(usize, f64) -> bool,
+) -> bool {
+    let mut nonzero = false;
+    if changes.iter().any(|change| change.automated) {
+        for offset in range {
+            apply_parameters(plugin, synth, changes, offset);
+            nonzero |= write(offset as usize, synth.generate_sample());
+        }
+    } else {
+        for offset in range {
+            nonzero |= write(offset as usize, synth.generate_sample());
+        }
     }
     nonzero
 }
