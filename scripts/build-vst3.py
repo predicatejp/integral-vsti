@@ -2,8 +2,9 @@
 # Copyright (C) 2026 Yusuke Oda
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Build a native bundle and ZIP using Cargo's exact build metadata."""
+"""Build a VST3 bundle and ZIP using Cargo's exact build metadata."""
 
+import argparse
 import importlib.util
 import json
 import os
@@ -17,24 +18,30 @@ import zipfile
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def build():
+def build(target=None):
     if platform.machine().lower() not in ("x86_64", "amd64"):
         raise RuntimeError("Only x86_64 hosts are supported")
-    if sys.platform == "win32":
-        target, platform_name, binary_name = (
-            "x86_64-pc-windows-msvc", "windows-x86_64", "SampleVsti.vst3"
-        )
-        architecture = "x86_64-win"
-    elif sys.platform == "linux":
-        target, platform_name, binary_name = (
-            "x86_64-unknown-linux-gnu", "linux-x86_64", "SampleVsti.so"
-        )
-        architecture = "x86_64-linux"
-    else:
+    native_target = {
+        "win32": "x86_64-pc-windows-msvc",
+        "linux": "x86_64-unknown-linux-gnu",
+    }.get(sys.platform)
+    if native_target is None:
         raise RuntimeError("Only Linux and Windows hosts are supported")
+    target = target or native_target
+    cargo = ["cargo"]
+    if target != native_target:
+        if sys.platform != "linux" or target != "x86_64-pc-windows-msvc":
+            raise RuntimeError("Cross builds support Linux to Windows MSVC only")
+        cargo.append("xwin")
+    if target == "x86_64-pc-windows-msvc":
+        platform_name, binary_name = "windows-x86_64", "SampleVsti.vst3"
+        architecture = "x86_64-win"
+    else:
+        platform_name, binary_name = "linux-x86_64", "SampleVsti.so"
+        architecture = "x86_64-linux"
 
     result = subprocess.run(
-        ["cargo", "build", "--release", "--locked", "--target", target,
+        cargo + ["build", "--release", "--locked", "--target", target,
          "--target-dir", str(ROOT / "target"), "--message-format=json-render-diagnostics"],
         cwd=ROOT, text=True, encoding="utf-8", stdout=subprocess.PIPE, check=True,
     )
@@ -96,4 +103,7 @@ def build():
 
 
 if __name__ == "__main__":
-    build()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", choices=("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"),
+                        help="Build target (default: native host)")
+    build(parser.parse_args().target)

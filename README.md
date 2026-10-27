@@ -295,6 +295,23 @@ rustup target add x86_64-pc-windows-msvc
 python scripts/build-vst3.py
 ```
 
+LinuxからWindows版を生成する場合:
+
+LLVMの`clang-cl`と`lld-link`をPATHへ追加し、[cargo-xwin](https://github.com/rust-cross/cargo-xwin)を導入します。
+確認した構成はcargo-xwin 0.23.1、LLVM 19.1.7、Windows SDK 10.0.26100、MSVC CRT 14.44.35220です。
+cargo-xwinはMIT、LLVMはApache-2.0 WITH LLVM-exceptionで提供されています。
+SDK・CRTはcargo-xwinがMicrosoftの配布元から取得・キャッシュし、[Microsoftのライセンス](https://go.microsoft.com/fwlink/?LinkId=2086102)が適用されます。
+
+```sh
+cargo install --locked cargo-xwin --version 0.23.1
+rustup target add x86_64-pc-windows-msvc
+python3 scripts/build-vst3.py --target x86_64-pc-windows-msvc
+```
+
+LinuxからWindowsターゲットを指定した場合、スクリプトは`cargo xwin build`でビルドし、
+通常のWindowsビルドと同じ配置・バージョン情報・ライセンス通知を持つZIPを生成します。
+`--target`を省略すると実行環境向けにビルドします。
+
 生成物（Linux）:
 
 ```text
