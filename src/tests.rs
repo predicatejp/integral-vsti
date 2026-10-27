@@ -153,6 +153,8 @@ static EVENT_TABLE: EventListVTable = EventListVTable {
 struct TestPoint {
     /// 借用する1点のIParamValueQueue関数表。
     vtable: &'static ParamValueQueueVTable,
+    /// 変更対象のパラメーター。
+    id: u32,
     /// ブロック内の適用位置。
     offset: i32,
     /// ホストから送る正規化値。
@@ -167,8 +169,9 @@ struct TestChanges {
     queue: This,
 }
 
-unsafe extern "system" fn point_id(_: This) -> u32 {
-    parameters::WAVEFORM_ID
+unsafe extern "system" fn point_id(this: This) -> u32 {
+    // SAFETY: 呼び出し中有効なテストのキュー。
+    unsafe { (*this.cast::<TestPoint>()).id }
 }
 unsafe extern "system" fn point_get(
     this: This,
@@ -262,6 +265,16 @@ fn check_host_events(activate_events: bool) {
         silence_flags: 0,
         channel_buffers: channels.as_mut_ptr(),
     };
+    let mut bypass = TestPoint {
+        vtable: &POINT_TABLE,
+        id: parameters::IDS[9],
+        offset: 0,
+        value: 0.0,
+    };
+    let mut bypass_changes = TestChanges {
+        vtable: &CHANGES_TABLE,
+        queue: ptr::from_mut(&mut bypass).cast(),
+    };
     let mut data = ProcessData {
         process_mode: 0,
         symbolic_sample_size: SAMPLE64,
@@ -270,7 +283,7 @@ fn check_host_events(activate_events: bool) {
         num_outputs: 1,
         inputs: ptr::null_mut(),
         outputs: &mut bus,
-        input_parameter_changes: ptr::null_mut(),
+        input_parameter_changes: ptr::from_mut(&mut bypass_changes).cast(),
         output_parameter_changes: ptr::null_mut(),
         input_events: events_ptr.cast(),
         output_events: ptr::null_mut(),
@@ -297,14 +310,16 @@ fn check_host_events(activate_events: bool) {
             sample_rate: 1760.0,
         };
         assert_eq!((pt.setup_processing)(processor, &setup), OK);
-        assert_eq!((pt.get_tail_samples)(processor), 8800);
+        assert_eq!((pt.get_tail_samples)(processor), u32::MAX);
         assert_eq!((ct.activate_bus)(component, AUDIO, OUTPUT, 0, 1), OK);
         if activate_events {
             assert_eq!((ct.activate_bus)(component, EVENT, INPUT, 0, 1), OK);
         }
         assert_eq!((ct.set_active)(component, 1), OK);
         assert_eq!((pt.set_processing)(processor, 1), OK);
+        let before_mode = crate::float_mode::read();
         assert_eq!((pt.process)(processor, &mut data), OK);
+        assert_eq!(crate::float_mode::read(), before_mode);
         assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0, 0.0, 9.0, 9.0]);
         assert_eq!((*data.outputs).silence_flags, STEREO);
         // ブロック先頭で音程を変更しても、前ブロック末尾の位相1/4を継承する。
@@ -376,6 +391,7 @@ fn check_host_events(activate_events: bool) {
         // 借用キュー経由で矩形波へ変更し、Miriでも入れ子の生ポインターを検査する。
         let mut point = TestPoint {
             vtable: &POINT_TABLE,
+            id: parameters::WAVEFORM_ID,
             offset: 0,
             value: 2.0 / 3.0,
         };
@@ -507,6 +523,17 @@ fn gui_gesture_keeps_handler_alive_during_reentrant_replacement() {
             1.0
         );
         assert_eq!(plugin::edit_parameter(controller, 0, 0.0), FALSE);
+        assert_eq!((ct.set_component_handler)(controller, handler.cast()), OK);
+        (*handler).sequence.set(0);
+        // 配送前の再描画で同じ値が複数回キューへ入っても、編集通知は重複させない。
+        assert_eq!(plugin::edit_parameter(controller, 0, 1.0), OK);
+        assert_eq!(plugin::edit_parameter(controller, 0, 1.0), OK);
+        assert_eq!((*handler).sequence.get(), 0);
+        assert_eq!((*handler).refs.get(), 2);
+        // 異なる値へ戻す編集は通知する。
+        assert_eq!(plugin::edit_parameter(controller, 0, 0.0), OK);
+        assert_eq!((*handler).sequence.get(), 123);
+        assert_eq!((*handler).refs.get(), 1);
         assert_eq!((ct.unknown.release)(controller), 0);
         assert_eq!((ft.unknown.release)(factory), 0);
     }
@@ -543,11 +570,11 @@ fn editor_owns_controller_and_has_fixed_size() {
             bottom: 0,
         };
         assert_eq!((vt.get_size)(view, &mut rect), OK);
-        assert_eq!((rect.right, rect.bottom), (640, 480));
-        rect.right = 720;
+        assert_eq!((rect.right, rect.bottom), (1024, 768));
+        rect.right = 800;
         assert_eq!((vt.on_size)(view, &rect), FALSE);
         assert_eq!((vt.check_size_constraint)(view, &mut rect), OK);
-        assert_eq!((rect.right, rect.bottom), (640, 480));
+        assert_eq!((rect.right, rect.bottom), (1024, 768));
         assert_eq!((vt.on_size)(view, &rect), OK);
         assert_eq!((vt.removed)(view), OK);
         assert_eq!((vt.unknown.release)(view), 0);

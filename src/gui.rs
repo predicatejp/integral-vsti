@@ -17,8 +17,8 @@ use std::{
     },
 };
 
-const WIDTH: i32 = 640;
-const HEIGHT: i32 = 480;
+const WIDTH: i32 = 1024;
+const HEIGHT: i32 = 768;
 const RECT: ViewRect = ViewRect {
     left: 0,
     top: 0,
@@ -29,7 +29,7 @@ const RECT: ViewRect = ViewRect {
 #[cfg(target_os = "windows")]
 thread_local! {
     // Windowsのbuilderは呼び出し元UIスレッドで実行される。RcをSend境界に渡さない。
-    static VIEWS: RefCell<std::collections::HashMap<usize, std::rc::Weak<ViewState>>> = RefCell::new(std::collections::HashMap::new());
+    static VIEWS: RefCell<std::collections::HashMap<usize, std::rc::Weak<EditorView>>> = RefCell::new(std::collections::HashMap::new());
 }
 #[cfg(target_os = "windows")]
 const PLATFORM: &[u8] = b"HWND";
@@ -52,9 +52,9 @@ struct View {
     /// すべての公開口で共有する参照数。
     refs: AtomicU32,
     /// UIスレッド限定の画面状態。再入の間もRcで生存させる。
-    state: Rc<ViewState>,
+    state: Rc<EditorView>,
 }
-pub(super) struct ViewState {
+struct ViewState {
     /// Controllerの所有参照。画面が存在する間インスタンスを保持する。
     controller: HostRef,
     #[cfg(target_os = "linux")]
@@ -67,7 +67,7 @@ pub(super) struct ViewState {
     #[cfg(target_os = "linux")]
     /// UIスレッドで編集を配送するタイマー。取り外し時に必ず解除する。
     ticker: RefCell<Option<Ticker>>,
-    /// Controllerと共有する6個の正規化値。
+    /// Controllerと共有する20個の正規化値。
     parameters: Arc<SharedParameters>,
     /// 描画側からの操作の送り口。音声スレッドでは使用しない。
     sender: SyncSender<(usize, f64)>,
@@ -77,25 +77,31 @@ pub(super) struct ViewState {
     polling: Cell<bool>,
 }
 
-impl ViewState {
+/// UIスレッドで画面状態の更新と編集配送を担当する。
+pub(super) struct EditorView {
+    /// 所有資源と配送状況。処理はEditorViewのメソッドに置く。
+    state: ViewState,
+}
+
+impl EditorView {
     pub(super) fn poll(&self) {
-        if self.polling.replace(true) {
+        if self.state.polling.replace(true) {
             return;
         }
-        let window = self.window.borrow().clone();
+        let window = self.state.window.borrow().clone();
         if let Some(_window) = window {
             for _ in 0..32 {
-                let edit = self.receiver.borrow().try_recv();
+                let edit = self.state.receiver.borrow().try_recv();
                 let Ok((index, value)) = edit else {
                     break;
                 };
                 // SAFETY: 両OSのタイマーはホストUIスレッドでのみ配送する。controllerが所有参照を保持する。
                 unsafe {
-                    crate::plugin::edit_parameter(self.controller.as_ptr(), index, value);
+                    crate::plugin::edit_parameter(self.state.controller.as_ptr(), index, value);
                 }
             }
         }
-        self.polling.set(false);
+        self.state.polling.set(false);
     }
     fn close(&self) {
         #[cfg(target_os = "windows")]
@@ -107,15 +113,16 @@ impl ViewState {
         // 外部への呼び出し中にRefCellを借用し続けない。
         #[cfg(target_os = "linux")]
         {
-            let ticker = self.ticker.borrow_mut().take();
+            let ticker = self.state.ticker.borrow_mut().take();
             drop(ticker);
         }
-        let window = self.window.borrow_mut().take();
+        let window = self.state.window.borrow_mut().take();
         drop(window);
-        while self.receiver.borrow().try_recv().is_ok() {}
+        while self.state.receiver.borrow().try_recv().is_ok() {}
     }
 }
-impl Drop for ViewState {
+
+impl Drop for EditorView {
     fn drop(&mut self) {
         self.close();
     }
@@ -161,18 +168,20 @@ pub unsafe fn create(controller: This, parameters: Arc<SharedParameters>) -> Thi
         return ptr::null_mut();
     };
     let (sender, receiver) = mpsc::sync_channel(32);
-    let state = Rc::new(ViewState {
-        controller,
-        #[cfg(target_os = "linux")]
-        timer_interface: Cell::new(ptr::null_mut()),
-        frame: RefCell::new(None),
-        window: RefCell::new(None),
-        #[cfg(target_os = "linux")]
-        ticker: RefCell::new(None),
-        parameters,
-        sender,
-        receiver: RefCell::new(receiver),
-        polling: Cell::new(false),
+    let state = Rc::new(EditorView {
+        state: ViewState {
+            controller,
+            #[cfg(target_os = "linux")]
+            timer_interface: Cell::new(ptr::null_mut()),
+            frame: RefCell::new(None),
+            window: RefCell::new(None),
+            #[cfg(target_os = "linux")]
+            ticker: RefCell::new(None),
+            parameters,
+            sender,
+            receiver: RefCell::new(receiver),
+            polling: Cell::new(false),
+        },
     });
     let owner = Box::into_raw(Box::new(View {
         view: Interface {
@@ -196,6 +205,7 @@ pub unsafe fn create(controller: This, parameters: Arc<SharedParameters>) -> Thi
             (*owner).timer.owner = owner;
             let state = &(*owner).state;
             state
+                .state
                 .timer_interface
                 .set(ptr::addr_of_mut!((*owner).timer).cast());
         }
@@ -204,7 +214,7 @@ pub unsafe fn create(controller: This, parameters: Arc<SharedParameters>) -> Thi
 }
 
 // SAFETY契約: このモジュールが公開した生存中のInterface。UI操作はホストがUIスレッドへ直列化する。
-unsafe fn state(this: This) -> Rc<ViewState> {
+unsafe fn state(this: This) -> Rc<EditorView> {
     unsafe { Rc::clone(&(*(*this.cast::<Interface>()).owner).state) }
 }
 unsafe extern "system" fn query(this: This, iid: *const Tuid, out: *mut This) -> TResult {
@@ -257,7 +267,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
         return INVALID_ARGUMENT;
     }
     let state = unsafe { state(this) };
-    if state.window.borrow().is_some() {
+    if state.state.window.borrow().is_some() {
         return FALSE;
     }
     #[cfg(target_os = "windows")]
@@ -282,7 +292,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
         let Ok(ticker) = Ticker::new(&state) else {
             return FALSE;
         };
-        *state.ticker.borrow_mut() = Some(ticker);
+        *state.state.ticker.borrow_mut() = Some(ticker);
     }
     #[cfg(target_os = "windows")]
     let key = {
@@ -299,8 +309,8 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
         .with_resizable(false)
         .with_parent(Some(&parent))
         .with_gl_config(Some(baseview::gl::GlConfig::default()));
-    let parameters = Arc::clone(&state.parameters);
-    let edits = state.sender.clone();
+    let parameters = Arc::clone(&state.state.parameters);
+    let edits = state.state.sender.clone();
     match baseview::Window::create(settings, move |window| {
         #[cfg(target_os = "windows")]
         let view = VIEWS
@@ -316,7 +326,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
     }) {
         Ok(window) => {
             let window = Rc::new(window);
-            *state.window.borrow_mut() = Some(Rc::clone(&window));
+            *state.state.window.borrow_mut() = Some(Rc::clone(&window));
             if window.show().is_err() {
                 state.close();
                 return FALSE;
@@ -373,12 +383,12 @@ unsafe extern "system" fn on_size(_: This, rect: *const ViewRect) -> TResult {
 unsafe extern "system" fn set_frame(this: This, frame: This) -> TResult {
     let state = unsafe { state(this) };
     // 埋め込み中の接続変更は受理しない。removed後は交換・解除できる。
-    if state.window.borrow().is_some() {
+    if state.state.window.borrow().is_some() {
         return FALSE;
     }
     // SAFETY: nullか有効なIPlugFrame。交換前に新しい参照を確保する。
     let new = unsafe { HostRef::retain(frame) };
-    let old = state.frame.replace(new);
+    let old = state.state.frame.replace(new);
     drop(old);
     OK
 }
@@ -392,10 +402,10 @@ struct Ticker {
 }
 #[cfg(target_os = "linux")]
 impl Ticker {
-    fn new(state: &Rc<ViewState>) -> Result<Self, ()> {
-        let frame = state.frame.borrow().clone().ok_or(())?;
+    fn new(state: &Rc<EditorView>) -> Result<Self, ()> {
+        let frame = state.state.frame.borrow().clone().ok_or(())?;
         let run_loop = frame.query(&RUN_LOOP_IID).ok_or(())?;
-        let handler = state.timer_interface.get();
+        let handler = state.state.timer_interface.get();
         let p = run_loop.as_ptr();
         // SAFETY: 有効なIRunLoopと、取り外しまで有効なITimerHandler。
         if unsafe { ((&**p.cast::<*const RunLoopVTable>()).register_timer)(p, handler, 16) } != OK {

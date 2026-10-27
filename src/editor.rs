@@ -1,19 +1,32 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 波形選択・音量エンベロープに必要なマウス入力とOpenGL描画だけを接続する。
+//! パラメーターのマウス・数値入力とOpenGL描画を接続する。
 
-use crate::parameters::{self, NAMES, SharedParameters, WAVEFORM_NAMES};
+use crate::parameters::{self, FILTER_NAMES, NAMES, SharedParameters, WAVEFORM_NAMES};
 use baseview::{
-    Event, EventStatus, HandlerError, MouseButton, MouseEvent, WindowContext, WindowHandler,
+    Event, EventStatus, HandlerError, MouseButton, MouseEvent, WindowContext, WindowEvent,
+    WindowHandler,
 };
+use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers, NamedKey};
 use std::{
     cell::{Cell, RefCell},
     sync::{Arc, mpsc::SyncSender},
     time::{Duration, Instant},
 };
 
+struct EditorState {
+    /// 確定前の入力文字列。数値の解析・VST3値への換算は確定時に行う。
+    text: [String; parameters::COUNT],
+    /// 前フレームで入力欄が編集中だったか。フォーカス移動時にも入力を保持する。
+    editing: [bool; parameters::COUNT],
+    /// 文字列を編集した欄だけを確定し、ホスト値の表示更新を再通知しない。
+    changed: [bool; parameters::COUNT],
+}
+
 pub(super) struct Editor {
+    /// 描画スレッド内の数値入力状態。
+    state: RefCell<EditorState>,
     /// 描画スレッド内だけで使う子ウィンドウの操作口。
     window: WindowContext,
     /// この子ウィンドウのOpenGLコンテキスト。
@@ -31,12 +44,12 @@ pub(super) struct Editor {
     /// Controllerと共有する表示値。
     parameters: Arc<SharedParameters>,
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
-    displayed: Cell<[f64; 9]>,
+    displayed: Cell<[f64; parameters::COUNT]>,
     /// ホストUIスレッドへの編集キュー。描画中にはホストを呼ばない。
     edits: SyncSender<(usize, f64)>,
     #[cfg(target_os = "windows")]
     /// Windowsでは同じUIスレッドのウィンドウタイマーから編集を配送する。
-    view: std::rc::Weak<super::gui::ViewState>,
+    view: std::rc::Weak<super::gui::EditorView>,
 }
 
 impl Editor {
@@ -44,7 +57,7 @@ impl Editor {
         window: WindowContext,
         parameters: Arc<SharedParameters>,
         edits: SyncSender<(usize, f64)>,
-        #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::ViewState>,
+        #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::EditorView>,
     ) -> Result<Self, HandlerError> {
         let gl = window
             .gl_context()
@@ -59,6 +72,11 @@ impl Editor {
             painter?
         };
         let editor = Self {
+            state: RefCell::new(EditorState {
+                text: std::array::from_fn(|_| String::new()),
+                editing: [false; parameters::COUNT],
+                changed: [false; parameters::COUNT],
+            }),
             window,
             gl,
             painter: RefCell::new(painter),
@@ -67,7 +85,7 @@ impl Editor {
             pointer: Cell::new(egui::Pos2::ZERO),
             start: Instant::now(),
             parameters,
-            displayed: Cell::new([f64::NAN; 9]),
+            displayed: Cell::new([f64::NAN; parameters::COUNT]),
             edits,
             #[cfg(target_os = "windows")]
             view,
@@ -85,6 +103,94 @@ impl Editor {
         // タイマーの寿命と解除はbaseviewの子ウィンドウに従う。
         editor.window.create_timer(Duration::from_millis(16))?;
         Ok(editor)
+    }
+
+    fn numeric_input(&self, ui: &mut egui::Ui, index: usize, value: f64, slider_edited: bool) {
+        let mut state = self.state.borrow_mut();
+        if slider_edited || !state.editing[index] {
+            // 固定小数桁・右寄せで1の位を揃える。編集開始時には丸め前の値を渡す。
+            state.text[index] = if matches!(index, 6 | 8) {
+                format!("{value:.0}")
+            } else {
+                format!("{value:.3}")
+            };
+            state.changed[index] = false;
+        }
+        let cancel = state.editing[index] && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut state.text[index])
+                .id_salt(("number", index))
+                .font(egui::TextStyle::Monospace)
+                .align(egui::Align2::RIGHT_CENTER)
+                .margin(egui::vec2(4.0, 0.0))
+                .desired_width(125.0),
+        );
+        if response.gained_focus() {
+            state.text[index] = value.to_string();
+            let _ = self.window.focus();
+        }
+        state.changed[index] |= response.changed();
+        if response.lost_focus() && state.changed[index] && !cancel {
+            if let Some(normalized) = parameters::parse_numeric(index, &state.text[index]) {
+                let _ = self.edits.try_send((index, normalized));
+            }
+            state.changed[index] = false;
+        }
+        state.editing[index] = response.has_focus();
+        if cancel {
+            state.changed[index] = false;
+            state.editing[index] = false;
+            response.surrender_focus();
+        }
+    }
+
+    fn keyboard_input(&self, event: KeyboardEvent) -> EventStatus {
+        if !self.context.egui_wants_keyboard_input() || event.is_composing {
+            return EventStatus::Ignored;
+        }
+        let modifiers = egui::Modifiers {
+            alt: event.modifiers.contains(Modifiers::ALT),
+            ctrl: event.modifiers.contains(Modifiers::CONTROL),
+            shift: event.modifiers.contains(Modifiers::SHIFT),
+            command: event.modifiers.contains(Modifiers::CONTROL),
+            mac_cmd: false,
+        };
+        let key = match &event.key {
+            Key::Named(NamedKey::Enter) => Some(egui::Key::Enter),
+            Key::Named(NamedKey::Escape) => Some(egui::Key::Escape),
+            Key::Named(NamedKey::Tab) => Some(egui::Key::Tab),
+            Key::Named(NamedKey::Backspace) => Some(egui::Key::Backspace),
+            Key::Named(NamedKey::Delete) => Some(egui::Key::Delete),
+            Key::Named(NamedKey::ArrowLeft) => Some(egui::Key::ArrowLeft),
+            Key::Named(NamedKey::ArrowRight) => Some(egui::Key::ArrowRight),
+            Key::Named(NamedKey::ArrowUp) => Some(egui::Key::ArrowUp),
+            Key::Named(NamedKey::ArrowDown) => Some(egui::Key::ArrowDown),
+            Key::Named(NamedKey::Home) => Some(egui::Key::Home),
+            Key::Named(NamedKey::End) => Some(egui::Key::End),
+            Key::Character(text) if text.eq_ignore_ascii_case("a") => Some(egui::Key::A),
+            _ => None,
+        };
+        let mut input = self.input.borrow_mut();
+        input.events.push(egui::Event::ModifiersChanged(modifiers));
+        let pressed = event.state == KeyState::Down;
+        if let Some(key) = key {
+            input.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: event.repeat,
+                modifiers,
+            });
+        }
+        if pressed
+            && !modifiers.ctrl
+            && !modifiers.alt
+            && let Key::Character(text) = event.key
+        {
+            input.events.push(egui::Event::Text(text));
+        }
+        self.window.request_redraw();
+        EventStatus::Captured
     }
 }
 
@@ -111,7 +217,7 @@ impl WindowHandler for Editor {
                     ui.add_space(12.0);
                     egui::Grid::new("parameters")
                         .num_columns(3)
-                        .min_col_width(80.0)
+                        .min_col_width(160.0)
                         .spacing([16.0, 8.0])
                         .show(ui, |ui| {
                             ui.label("Waveform");
@@ -130,6 +236,31 @@ impl WindowHandler for Editor {
                             ui.spacing_mut().slider_width = 390.0;
                             for i in 1..NAMES.len() {
                                 ui.label(NAMES[i]);
+                                if matches!(i, 9 | 12) {
+                                    let names: &[&str] = if i == 9 {
+                                        &FILTER_NAMES
+                                    } else {
+                                        &parameters::PHASE_NAMES
+                                    };
+                                    let mut index = parameters::to_plain(i, selected[i]) as usize;
+                                    if egui::ComboBox::from_id_salt(if i == 9 {
+                                        "filter"
+                                    } else {
+                                        "phase"
+                                    })
+                                    .width(200.0)
+                                    .show_index(ui, &mut index, names.len(), |n| names[n])
+                                    .changed()
+                                    {
+                                        let _ = self.edits.try_send((
+                                            i,
+                                            parameters::to_normalized(i, index as f64),
+                                        ));
+                                    }
+                                    ui.label("");
+                                    ui.end_row();
+                                    continue;
+                                }
                                 let time = parameters::is_time(i);
                                 let max: u32 = if time {
                                     371
@@ -137,6 +268,14 @@ impl WindowHandler for Editor {
                                     6
                                 } else if i == 8 {
                                     31
+                                } else if i == 19 {
+                                    960
+                                } else if i == 10 {
+                                    1200
+                                } else if i == 13 {
+                                    600
+                                } else if i == 11 {
+                                    950
                                 } else {
                                     100
                                 };
@@ -164,15 +303,17 @@ impl WindowHandler for Editor {
                                 } else {
                                     parameters::to_plain(i, selected[i])
                                 };
-                                // 等幅・固定桁数で整数部を右寄せし、1の位と小数点を揃える。
-                                ui.monospace(if time {
-                                    format!("{value:7.2} ms")
-                                } else if matches!(i, 6 | 8) {
-                                    format!("{value:8.0}")
-                                } else if i == 7 {
-                                    format!("{value:5.1} cent")
-                                } else {
-                                    format!("{value:8.3}")
+                                ui.horizontal(|ui| {
+                                    self.numeric_input(ui, i, value, edited);
+                                    ui.label(if time {
+                                        "ms"
+                                    } else if i == 13 {
+                                        "dB"
+                                    } else if matches!(i, 7 | 10 | 19) {
+                                        "cent"
+                                    } else {
+                                        ""
+                                    });
                                 });
                                 ui.end_row();
                             }
@@ -214,6 +355,12 @@ impl WindowHandler for Editor {
 
     fn on_event(&self, event: Event) -> EventStatus {
         let event = match event {
+            Event::Keyboard(event) => return self.keyboard_input(event),
+            Event::Window(WindowEvent::Focused | WindowEvent::Unfocused) => {
+                let focused = matches!(event, Event::Window(WindowEvent::Focused));
+                self.input.borrow_mut().focused = focused;
+                egui::Event::WindowFocused(focused)
+            }
             Event::Mouse(MouseEvent::CursorMoved { position, .. }) => {
                 let pos = egui::pos2(position.x as f32, position.y as f32);
                 self.pointer.set(pos);
