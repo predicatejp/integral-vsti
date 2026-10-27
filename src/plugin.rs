@@ -3,7 +3,9 @@
 
 use crate::abi::*;
 use crate::host::HostRef;
-use crate::parameters::{self, IDS, NAMES, ParameterPoints, SharedParameters, WAVEFORM_NAMES};
+use crate::parameters::{
+    self, FILTER_NAMES, IDS, NAMES, ParameterPoints, SharedParameters, WAVEFORM_NAMES,
+};
 use crate::synth::Synthesizer;
 use crate::voice::Note;
 use std::cell::{RefCell, UnsafeCell};
@@ -44,9 +46,9 @@ struct Plugin {
     /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
     /// initialize時は互換性のためtrueとし、その後はactivateBusの明示的な指定に従う。
     event_active: AtomicBool,
-    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す9パラメーター。保存時にもatomicで読む。
+    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す20パラメーター。保存時にもatomicで読む。
     processor_parameters: SharedParameters,
-    /// Controllerが表示する9パラメーター。ホストのsetParamNormalized/setComponentStateで更新する。
+    /// Controllerが表示する20パラメーター。ホストの値通知とComponentの状態復元で更新する。
     controller_parameters: Arc<SharedParameters>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
@@ -58,8 +60,6 @@ struct Plugin {
     max_samples: AtomicI32,
     /// 設定済みのサンプル形式（SAMPLE32またはSAMPLE64）。正の長さの処理には一致を要求する。
     sample_size: AtomicI32,
-    /// 設定済みレートでの最大release長（5秒）。オートメーション中も保守的な上限を返す。照会APIからDSPの可変状態を借用せずに読む。
-    tail_samples: AtomicU32,
 }
 
 const UNKNOWN: UnknownVTable = UnknownVTable {
@@ -158,7 +158,6 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         synth: UnsafeCell::new(Synthesizer::new()),
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
-        tail_samples: AtomicU32::new(220500),
     });
     let owner = Box::into_raw(plugin);
     // SAFETY: 公開前のBoxを生ポインター経由で初期化する。以後ownerと各Interfaceの
@@ -384,7 +383,12 @@ unsafe extern "system" fn set_processor_state(this: This, stream: This) -> TResu
     // SAFETY: ホストのストリームを検証し、成功時だけatomicへ反映する。
     match unsafe { parameters::read_state(stream) } {
         Ok(values) => {
-            unsafe { instance(this) }.processor_parameters.store(values);
+            // SAFETY: thisは生存中のComponentインターフェース。
+            let plugin = unsafe { instance(this) };
+            plugin.processor_parameters.store(values);
+            // ComponentとControllerは同一インスタンス。追加のsetComponentState呼び出しに
+            // 依存せず表示も復元する。atomicの更新だけで、ホストへの編集通知は送らない。
+            plugin.controller_parameters.store(values);
             OK
         }
         Err(status) => status,
@@ -422,7 +426,9 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
             short_title: utf16(NAMES[i]),
             units: utf16(if parameters::is_time(i) {
                 "ms"
-            } else if i == 7 {
+            } else if i == 13 {
+                "dB"
+            } else if matches!(i, 7 | 10 | 19) {
                 "cent"
             } else {
                 ""
@@ -431,11 +437,17 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
                 0 => 3,
                 6 => 6,
                 8 => 31,
+                9 => 6,
+                12 => 2,
                 _ => 0,
             },
             default_normalized_value: parameters::defaults()[i],
             unit_id: 0,
-            flags: if i == 0 { 1 | (1 << 3) } else { 1 },
+            flags: if matches!(i, 0 | 9 | 12) {
+                1 | (1 << 3)
+            } else {
+                1
+            },
         });
     }
     OK
@@ -449,6 +461,10 @@ unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *m
     }
     let text = if i == 0 {
         WAVEFORM_NAMES[parameters::to_plain(i, value) as usize].to_owned()
+    } else if i == 9 {
+        FILTER_NAMES[parameters::to_plain(i, value) as usize].to_owned()
+    } else if i == 12 {
+        parameters::PHASE_NAMES[parameters::to_plain(i, value) as usize].to_owned()
     } else if matches!(i, 6 | 8) {
         format!("{:.0}", parameters::to_plain(i, value))
     } else {
@@ -485,8 +501,15 @@ unsafe extern "system" fn parameter_value(
     let Ok(text) = String::from_utf16(&buffer) else {
         return INVALID_ARGUMENT;
     };
-    let plain = if i == 0 {
-        WAVEFORM_NAMES
+    let plain = if matches!(i, 0 | 9 | 12) {
+        let names: &[&str] = if i == 0 {
+            &WAVEFORM_NAMES
+        } else if i == 9 {
+            &FILTER_NAMES
+        } else {
+            &parameters::PHASE_NAMES
+        };
+        names
             .iter()
             .position(|&name| name == text)
             .map(|v| v as f64)
@@ -561,6 +584,10 @@ pub unsafe fn edit_parameter(this: This, index: usize, value: f64) -> TResult {
     let Some(handler) = plugin.component_handler.borrow().clone() else {
         return FALSE;
     };
+    // 編集配送前に再描画されると同じ値が複数回キューへ入るため、適用済みなら通知しない。
+    if plugin.controller_parameters.get(index) == value {
+        return OK;
+    }
     let p = handler.as_ptr();
     // SAFETY: ローカル参照が再入時のhandler置換から保護する。
     let table = unsafe { &**p.cast::<*const ComponentHandlerVTable>() };
@@ -647,13 +674,6 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
     }
     // SAFETY: setupProcessingは非アクティブ状態で呼ばれ、processと競合しない。
     unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) };
-    plugin.tail_samples.store(
-        (setup.sample_rate * 5.0)
-            .ceil()
-            // u32で有限長を表せないレートではVST3のkInfiniteTailを返す。
-            .min(f64::from(u32::MAX)) as u32,
-        Ordering::Relaxed,
-    );
     plugin
         .max_samples
         .store(setup.max_samples_per_block, Ordering::Relaxed);
@@ -663,11 +683,9 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
     OK
 }
 
-unsafe extern "system" fn get_tail_samples(this: This) -> u32 {
-    // SAFETY: thisは生存中のInterface。照会ではatomicだけにアクセスする。
-    unsafe { instance(this) }
-        .tail_samples
-        .load(Ordering::Relaxed)
+unsafe extern "system" fn get_tail_samples(_: This) -> u32 {
+    // フィルタのIIR残響をホストに途中で打ち切らせない。kInfiniteTailを保守的に返す。
+    u32::MAX
 }
 
 unsafe extern "system" fn set_processing(this: This, state: u8) -> TResult {
@@ -741,14 +759,17 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         None
     };
 
+    // process内のイベント・パラメーター読出しを含む音声処理に限定する。
+    // 戻り時にはホストのMXCSRを復元し、ブロック外へFTZ/DAZを持ち越さない。
+    let _float_mode = crate::float_mode::FloatMode::flush_subnormals();
     // SAFETY: 同一インスタンスのprocess（ゼロサンプルも含む）およびDSPを更新する
     // ライフサイクル呼び出しをホストが直列化する。ホストからの再入processは許されない。
     // synthの参照・ホストのイベントやバッファのポインターを呼び出し後へ保持しない。
     let synth = unsafe { &mut *plugin.synth.get() };
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
-    // SAFETY: 9本のカーソルはこのprocess中だけホストのキューを借用する。
-    let mut changes: [ParameterPoints<'_>; 9] =
+    // SAFETY: 20本のカーソルはこのprocess中だけホストのキューを借用する。
+    let mut changes: [ParameterPoints<'_>; parameters::COUNT] =
         std::array::from_fn(|i| unsafe { ParameterPoints::new(data, i, values[i]) });
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
@@ -777,7 +798,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
             }
             // SAFETY: channelsは検証済みで、区間は0..num_samples内。
             nonzero |= unsafe {
-                render(
+                generate_samples(
                     plugin,
                     synth,
                     data,
@@ -810,7 +831,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     }
     // SAFETY: 最後のイベントからブロック末尾まで。バッファがなくても位相を進める。
     nonzero |= unsafe {
-        render(
+        generate_samples(
             plugin,
             synth,
             data,
@@ -829,18 +850,18 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
 // SAFETY契約: channelsの各要素はnum_samples個の書き込み領域。rangeは範囲内。
 // changesはこのprocessから借用し、
 // これまでの区間と順に処理する。同時刻の変更をすべて適用してからノートを処理する。
-unsafe fn render(
+unsafe fn generate_samples(
     plugin: &Plugin,
     synth: &mut Synthesizer,
     data: &ProcessData,
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
-    changes: &mut [ParameterPoints<'_>; 9],
+    changes: &mut [ParameterPoints<'_>; parameters::COUNT],
 ) -> bool {
     let mut nonzero = false;
     for offset in range.clone() {
         apply_parameters(plugin, synth, changes, offset);
-        let sample = synth.next_sample();
+        let sample = synth.generate_sample();
         if let Some(channels) = channels {
             // 同じ領域を指す左右チャンネルも許す。排他的sliceは作らず、同一サンプルを順に書く。
             if data.symbolic_sample_size == SAMPLE32 {
@@ -867,7 +888,7 @@ unsafe fn render(
 fn apply_parameters(
     plugin: &Plugin,
     synth: &mut Synthesizer,
-    changes: &mut [ParameterPoints<'_>; 9],
+    changes: &mut [ParameterPoints<'_>; parameters::COUNT],
     offset: i32,
 ) {
     let values = std::array::from_fn(|i| changes[i].value_at(offset));

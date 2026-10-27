@@ -15,9 +15,9 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
-| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphonyを公開。eguiでも操作可能 |
-| 状態保存 | 波形・エンベロープ・ユニゾン・PolyphonyをVST3のIBStreamで保存・復元 |
-| レイテンシー・テール | レイテンシー0。テールは設定可能な最大releaseの5秒分を保守的に返す |
+| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
+| 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープをVST3のIBStreamで保存・復元 |
+| レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
 ProcessorとControllerは、同一インスタンスから取得できます。
 左右に同じ合成波形を出力します。CC、ピッチベンド、
@@ -32,14 +32,14 @@ macOS・Windows ARM64・32ビット環境は未対応です。
   `BASE_RMS_AMPLITUDE × velocity` とします。velocityが0のNote Onもノートを更新し、attack時間をかけて目標振幅0へ移行します。
 - Note Offは、両イベントにnoteIdがあればIDで照合します。どちらかが `-1` の場合はチャンネルと音高で照合します。
   同じID、またはIDがない同チャンネル・同音高が複数枠にあれば、全一致をreleaseします。上書き済みの旧IDへのNote Offは新しいノートを消しません。
-- `OscillatorInput` は発振器回路の定常入力で、波形・ユニゾン数・Detune・目標周波数・目標実効値・ゲート・エンベロープ設定・ノート/停止の世代番号を持ちます。
-  `OscillatorState` はボイスごとの位相、現在の実効振幅、attack開始振幅、経過サンプル数、ノートオフ位置を保持します。イベント処理は入力だけを書き換えます。
+- `OscillatorInput` は発振器回路の定常入力で、波形・位相モード・ユニゾン数・Detune・目標周波数・目標実効値・ゲート・エンベロープ設定・ノート/停止の世代番号を持ちます。
+  `OscillatorState` はユニゾンの位相と音量用`Envelope`を保持します。現在値・attack開始値・経過サンプル数・ノートオフ位置は`EnvelopeState`が保持し、イベント処理は入力だけを書き換えます。
 - 各サンプルで「現在の入力と状態からサンプル生成 → 入力を用いて状態更新」を繰り返します。
   エンベロープの計算はサンプル数をミリ秒へ変換して行い、位相と時間の更新はサンプル生成後です。
-  初期位相は0。ノートの追加・音程変更・ブロック境界で位相をリセットしません。
+  初期位相は0。Note On時の位相はPhaseの選択に従います。音程変更・ブロック境界では位相を保持します。
 - Note Offではreleaseへ移行し、終了後に位相を止めます。release=0msなら即時に消音します。
   再Note Onではreleaseを挟まず、その時点の実効振幅から新しい目標へattack時間全体を使って移行します。
-  位相は引き継ぎます。周波数・波形の即時変更や0ms設定ではクリックが発生し得ます。
+  位相はPhaseの選択に従います。周波数・波形の即時変更や0ms設定ではクリックが発生し得ます。
 - `sampleOffset` の位置でイベントを反映します。同位置ではリスト順です。取得失敗、未対応の種類・バス、
   不正な値、範囲外または処理済み位置より前のイベントは無視します。
 - イベントがないブロックでも発音を継続します。処理中は出力バッファがなくてもイベントを処理し、
@@ -50,6 +50,18 @@ macOS・Windows ARM64・32ビット環境は未対応です。
   音声出力バスはホストによる有効化を必要とします。
 - 処理停止・無効化では消音しますが位相は保持します。処理停止中の0サンプルフラッシュではノートを受け付けません。
   ホストのトランスポート再生状態は参照しないため、停止中でもホストが処理とノートを送れば演奏できます。
+
+PhaseはNote On時の位相を選ぶ3択パラメーターです（ParamID `0x50484153`、初期値Keep）。
+
+| 選択 | Note On時の動作 |
+| --- | --- |
+| Keep（維持） | 割り当て先オシレータの直前の位相を引き継ぐ |
+| Zero（ゼロ） | 割り当て先オシレータの全ユニゾン位相を0にする |
+| Random（ランダム） | 全ユニゾン位相をそれぞれ独立に0以上1周期未満へ設定する |
+
+選択の変更は次のNote Onから適用し、同じサンプル位置ではパラメーターを先に反映します。
+疑似乱数にはSplitMix64を使用し、各オシレータの作成時に初期シードを取得します。
+同じ乱数状態とノート入力からは同じ位相列を生成し、新しく作成したインスタンスでは異なる位相列になります。
 
 内部では `OscillatorInput.waveform` の `Waveform` で波形を指定します。既定は `Sine` です。
 波形を変更しても位相を引き継ぎ、次のNote Onでも選択した波形を維持します。
@@ -65,32 +77,73 @@ macOS・Windows ARM64・32ビット環境は未対応です。
 周波数・サンプルレート・測定区間によって誤差が生じます。帯域制限・アンチエイリアシングは未実装で、
 特に高音域では折り返し成分が発生します。
 
-## フィルタコンポーネント（音源へ未接続）
+## Voiceごとのフィルタ
 
-`src/filter.rs` にTPT SVF単体を実装しています。現時点では単体テストだけに組み込み、
-プラグインの出力・公開パラメーター・GUI・保存形式は変更していません。
-`FilterParameters` は具体的な周波数（Hz）とQを持ち、`SvfState` が1段の積分器の履歴を保持します。
-`SvfState::process` は入力1サンプルと設定、サンプルレートを受け取り、同じ状態から
-`SvfOutput { low, band, high }` を生成して状態を更新します。
-外側の `FilterState` が `FilterType` に応じた出力選択・直列接続を行います。
+音源は `Synthesizer → Voice → Oscillator` の階層です。各コンポーネントは専用のStateを所有します。各Voiceは発振器1個分の定常入力を保持し、
+発振器の処理でユニゾンを生成します。各Voiceの最終段に独立したフィルタを適用し、その出力を加算します。
+Stateはデータ保持専用とし、所有コンポーネントのメソッドが処理とStateの更新を担当します。
+音声関数は1サンプルを`*_sample`、サンプル系列を`*_samples`で区別します。
 
-- タイプは `None`、`LowPass1`、`LowPass2`、`HighPass1`、`HighPass2`、`BandPass1`、`BandPass2`。
-  LPF・HPFは1段で12 dB/oct、2段で24 dB/oct。BPFの両側はそれぞれ6／12 dB/octです。
-- 周波数は有限のHzを範囲制限なしで受け取ります。BPFでは中心周波数です。SVF内部の係数計算時だけ20〜20,000 Hzへクランプし、さらにサンプルレートの0.49倍を上限とします。極端に低いレートではこの上限を20 Hzの下限より優先します。要求値自体は書き換えません。
-- Qは0.5〜10。内部フィルタは既定値を持たず、周波数・Q・タイプを呼び出し側から受け取ります。
-- 2段は同じ設定で直列接続します。BPFの中心利得は1段でQ、2段でQ²です。
-- 設定変更時も有効な段の履歴を保持し、未使用の2段目は消去します。`None` は入力・設定値を検証せず入力をそのまま返し、両段の履歴を消去します。`reset` でも全履歴を消去できます。
-- HzとQはサンプルごとに変更でき、整数化しません。将来のエンベロープは呼び出し側で計算し、そのサンプルの値を渡せます。コンポーネント内に補間・クロスフェード・音量補正はありません。
+| パラメーター | 範囲 | 初期値 | ParamID |
+| --- | --- | --- | --- |
+| Filter | None / LowPass1 / LowPass2 / HighPass1 / HighPass2 / BandPass1 / BandPass2 | LowPass1 | `0x46545950` |
+| Cutoff | ノート周波数から−2400〜9600 cent（−2〜＋8 oct） | ＋4800 cent（＋4 oct） | `0x46435554` |
+| Resonance | Q=0.5〜10 | 1 | `0x46524553` |
 
-音源は `Synthesizer → Voice → Oscillator` の階層です。各Voiceは現在Oscillatorを1個持ち、
-その内部でユニゾンを生成します。フィルタ接続は後続PRで行い、
-各Voiceの最終段に独立したフィルタを置いて、適用後の信号を加算します。
-その際の周波数指定は現在のノートから−2〜+8 oct（−2400〜9600 cent、10 cent単位）とし、
-呼び出し側で `ノート周波数 × 2^(cent/1200)` に換算して渡します。この範囲・換算とVST3／GUIへの公開は未実装です。
-既定値はUI／VST3設定側で定義し、カットオフの初期値は＋1 oct（＋1200 cent）、Qは `1/√2` とします。
+GUIではFilterをドロップダウン、CutoffとResonanceを整数スライダーで操作します。
+Cutoffは0〜1200 tickを10 cent刻みへ換算し、Resonanceは0〜950 tickをQ=0.5〜10（0.01刻み）へ換算します。
+CutoffとResonanceは右の数値欄でも入力でき、範囲内の小数値を保持します。
+Filterは`stepCount=6`のリスト、Cutoffは`stepCount=0`の連続値として公開し、どちらも変更点で切り替えます。
+Resonanceは連続値で、ホストの変更点間を正規化値で線形補間します。
+
+Voiceはノートの音程とtuningを含む周波数に `2^(cent/1200)` を乗じ、具体的なHzをフィルタへ渡します。
+カットオフはユニゾンのデチューン前のノート周波数に追従し、Note Off後も最後のノート周波数を使用します。
+
+- `FilterParameters`はそのサンプルのHzとQを持ち、既定値はUI／VST3設定側で定義します。
+- `SvfState`はTPT SVF1段の状態を保持し、`Svf::process_sample`が`low / band / high`を同時に返します。外側の`Filter::process_sample`が`FilterState`を更新しながら出力選択・直列接続を行います。
+- LPF・HPFは1段で12 dB/oct、2段で24 dB/oct。BPFの両側はそれぞれ6／12 dB/oct、中心利得はQ／Q²です。
+- 周波数は有限値を受け取り、内部の係数計算時だけ20〜20,000 Hzにクランプし、さらにサンプルレート×0.49を上限とします。極端に低いレートではこの上限を優先します。
+- 設定変更やVoiceの再使用でも有効な段の履歴を保持します。未使用の2段目とNone時の両段は消去します。Noneでは入力値を検証せずそのまま返します。
+- Note Off後のフィルタ残響も処理します。処理停止・Voice数の減少による停止ではフィルタの履歴も消去します。音量補正・クリッピングは追加しません。
+
+Voiceはカットオフ用エンベロープを毎サンプル計算し、変調後のHzをフィルタへ渡します。
 
 台形積分したSVFの連立方程式をRustで実装しています。数式の参考は
 [Andrew SimperによるSVFの解説](https://www.cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf)です。
+
+## カットオフエンベロープ
+
+各Voiceは、音量用と独立したカットオフ用AHDSRを持ちます。
+両者は同じ`Envelope`コンポーネントを使い、`EnvelopeState`で時間と現在値を管理します。
+エンベロープが扱う値は単位のない0〜1の正規化量で、適用先が実単位へ換算します。
+
+| パラメーター | 範囲 | 初期値 | ParamID |
+| --- | --- | --- | --- |
+| Cutoff Attack | 0〜5000 ms | 10 ms | `0x43415454` |
+| Cutoff Hold | 0〜5000 ms | 0 ms | `0x43484c44` |
+| Cutoff Decay | 0〜5000 ms | 100 ms | `0x43444543` |
+| Cutoff Sustain | 0〜1 | 0.7 | `0x43535553` |
+| Cutoff Release | 0〜5000 ms | 100 ms | `0x4352454c` |
+| Cutoff Amount | −4800〜＋4800 cent | 0 cent | `0x43414d54` |
+
+`変調後のcent = Cutoff + Cutoff Amount × エンベロープ値` とし、
+`カットオフHz = ノート周波数 × 2^(変調後のcent / 1200)` をフィルタへ渡します。
+Amountはattackの目標値1に対応する変化量で、負なら下方向へ変化します。
+sustainではAmount×Sustainの変化量を保ち、releaseで基本のCutoffへ戻ります。
+再ノートオンでは現在のエンベロープ値を開始点として、attack時間全体を使って1へ移行します。
+音量のreleaseが先に終わっても、カットオフ用のreleaseはフィルタの残響に適用されます。
+
+時間スライダーは音量用と同じ対数軸、Sustainは線形です。
+Amountは10 cent刻みの整数スライダーで、各数値欄から直接入力もできます。
+6パラメーターは連続値として公開し、VST3の変更点間を正規化値で線形補間します。
+
+## マスターボリューム
+
+Volumeは全Voiceのフィルタ出力を加算した後の音量です（ParamID `0x4d564f4c`）。
+範囲は−48〜＋12 dB、初期値は0 dBです。整数スライダーの0〜600 tickを
+`dB = tick / 10 − 48` で換算し、0.1 dB刻みで設定します。右の数値欄からも直接入力できます。
+出力へ掛ける振幅倍率は `10^(dB / 20)` で、値が変わったときだけ計算して保持します。
+VST3では連続値として公開し、オートメーションの変更点間はdB値で線形補間します。
 
 ## ポリフォニー
 
@@ -100,10 +153,10 @@ GUIでは1刻みの整数スライダーで設定します。変更点では補�
 `Synthesizer.next_oscillator_id` は初期値0です。有効なNote OnをそのIDへ割り当てた後、
 `(ID + 1) % Polyphony` へ進めます。空き枠の探索はせず、発音中・release中の枠もこの順に再使用します。
 Note Offと不正なNote OnではIDを進めません。処理停止でも次のIDは保持します。
-再使用時は既存の位相と現在振幅を引き継ぎ、新しいノートのattackを開始します。
+再使用時は現在振幅を引き継ぎ、新しいノートのattackを開始します。位相はPhaseの選択に従います。
 
 各枠に独立した入力・位相・エンベロープ状態・ノートの対応を持ち、各枠で既存のユニゾンを生成します。
-波形、AHDSR、Unison、Detuneの設定は全枠共通です。
+波形、AHDSR、Unison、Detune、フィルタ設定は全枠共通です。フィルタ状態と実際のカットオフ周波数はVoiceごとに独立しています。
 出力は使用する全枠の単純加算で、音数による音量補正やクリッピングは行いません。
 最大ベロシティ・エンベロープ最大時の各枠の基準実効値は0.5のままで、合成ピークは1を超える場合があります。
 
@@ -126,8 +179,8 @@ Detuneが正なら合成音を `1/√N` 倍にし、最大ベロシティ・エ�
 長時間平均の理想実効値を0.5に合わせます。うなりにより短時間の実効値は変動します。
 Detune=0では保持した先頭ボイスの位相だけで1ボイス相当の音を生成し、実効値0.5を保ちます。
 
-各ボイスの位相は0から開始し、ノート・音程・設定変更ではリセットしません。
-未使用ボイスの位相は停止して保持し、再使用時に引き継ぎます。
+各ボイスの初期位相は0で、Note On時にはPhaseの選択を全7位相へ適用します。
+音程・設定変更では位相を保持します。未使用ボイスの位相は停止し、ユニゾン数を増やすと保持した位置から再開します。
 設定の即時切り替えではクリックが発生する場合があります。ピーク制限は行いません。
 
 Unisonは `stepCount=6`、Detuneは `stepCount=0`、ともに `kCanAutomate` で公開します。
@@ -139,7 +192,7 @@ GUIではUnisonを1ボイス刻み、Detuneを1 cent刻みの整数スライダ�
 
 `src/envelope.rs` の `amplitude` は、`EnvelopeParameters`、ノートオンからの経過ミリ秒、
 ノートオフ時刻（同じ時刻基準、未到達は `None`）、開始振幅、目標ピーク振幅を受け取ります。
-計算モジュールは状態を持たず、`OscillatorState` が現在振幅・開始振幅・経過サンプル数を保持します。
+音量用`Envelope`は`EnvelopeState`に現在値・開始値・経過サンプル数を保持し、カットオフ用と同じAHDSRを使います。
 
 | パラメーター | 範囲 | 初期値 | ParamID |
 | --- | --- | --- | --- |
@@ -192,8 +245,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v4は76バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphonyを各f64。little endian）です。
-旧v3の68バイトにはPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
+保存形式v8は164バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amountを各f64。little endian）です。
+旧v7（116バイト）以前はカットオフ用AHDSRの初期値とAmount=0を補います。旧v6（108バイト）以前はVolume=0 dBを補います。旧v5（100バイト）以前はPhase=Keepを補います。旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
 復元値は次の音声処理ブロックから適用し、Controllerは `setComponentState` で同期します。
 位相や発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
@@ -202,21 +255,21 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 
 ホストのプラグイン画面に、ライトテーマのパラメーターリストを表示します。
 左からパラメーター名、操作欄、現在値を配置し、縦方向に並べます。
-Waveformはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphonyはスライダーです。
+Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeとカットオフ用AHDSR・Amountはスライダーです。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは640×480物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。自由なサイズ変更と
-`IPlugViewContentScaleSupport` による表示倍率変更は未対応です。
-初版の操作はマウスのみです。VST3のキー・ホイール処理は未処理を返します。
+サイズは1024×768物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
+各スライダー右の数値欄をクリックして直接入力できます。Enterまたは別の欄へのフォーカス移動で確定し、Escで取り消します。
+時間はms、Detune・Cutoff・Cutoff Amountはcent、ResonanceはQ、VolumeはdBで入力します。UnisonとPolyphonyは範囲内の整数、その他は範囲内の小数値も受け付けます。
+直接入力した値はスライダーの刻みに丸めず、音源へ反映して保存します。範囲外や不正な文字列は確定時に元の表示へ戻します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
 対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。
 ソフトウェアOpenGLでも動作検証していますが、ソフトウェアドライバーはバンドルへ同梱しません。
 描画環境を初期化できない場合は画面の取り付けに失敗し、ホストのパラメーター操作と音声処理は引き続き使用できます。
 
-接続処理は左マウスボタンと描画に限定し、クリップボード・URL起動・キーボード編集は実装しません。
 GUIの操作はUI専用の32件キューからホストのUIスレッドへ配送し、
-`IComponentHandler::beginEdit / performEdit / endEdit` を順に通知します。キュー満杯時は新しいクリックを破棄します。
+`IComponentHandler::beginEdit / performEdit / endEdit` を順に通知します。キュー満杯時は新しい編集を破棄します。
 DSPへの適用は従来どおりホストの変更キュー経由です。ホストからの値更新や状態復元は表示へ反映し、編集通知を送り返しません。
 Windowsはbaseviewの子ウィンドウのタイマー、LinuxはVST3のIRunLoopから編集を配送します。
 画面を閉じるとタイマーと描画資源を解放し、音声処理は継続します。
@@ -295,7 +348,7 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 `C:\Program Files\Common Files\VST3` に配置します。システム共通フォルダへの配置には管理者権限が必要です。
 
 ホストで再スキャンし、音源一覧の **Sample VSTi** を読み込みます。
-ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphonyの8スライダーを操作できます。
+ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonance・Volume・カットオフ用AHDSR・Amountの17スライダーとFilter・Phaseのドロップダウンを操作できます。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
 ## 検証
@@ -360,7 +413,7 @@ target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3
 ```
 
 Linuxでの確認済み環境: Linux x86_64、Rust 1.95.0 / 1.99.1、GCC 12.2、VST3 SDK 3.8.1
-（インターフェース定義も3.8.1）。Rustテスト17件、ABI検証、Validator 47件が成功しています。
+（インターフェース定義も3.8.1）。Rustテスト40件、ABI検証、Validator 47件が成功しています。
 参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
 イベントバス有効化通知への互換性対応後、サイン波はFL Studioで発音の動作報告があります。
 GUIの表示・クリック・復元・再表示はLinuxのXvfbとMesaで検証しています。
@@ -377,6 +430,25 @@ PRの作成・更新ごとに、Linux版とWindows版をビルドし、ABI検証
 PRでは先頭コミットを明示的にチェックアウトします。ZIP名・プラグインの開発版バージョン・
 `build-info.json` は同じコミットを指します。ZIPを展開すると `SampleVsti.vst3` が得られます。
 ダウンロードにはGitHubへのログインとリポジトリの読み取り権限が必要です。
+
+## 開発フロー
+
+trunk-based developmentを採用し、`main`を唯一のトランク・統合先とします。
+最新の`origin/main`から目的ごとに短命な作業ブランチを作り、単独で検証・マージできる小さなPRを
+必ず`main`へ送ります。作業中は`main`の変更をこまめに取り込みます。
+依存する後続作業は先行PRのマージ後に最新の`origin/main`から開始し、マージ済みブランチは再利用しません。
+
+```sh
+git fetch origin
+git switch -c feat/change-name origin/main
+# 変更・検証・コミット
+git push -u origin HEAD
+gh pr create --base main
+```
+
+PRのマージ先は`PR target`で検査し、宛先を変更した場合も再検査します。
+`main`へ統合する前に、`PR target`と`CI result`の成功、および最新の`main`を取り込んでいることを確認します。
+マージ方法はsquashとし、マージ後は作業ブランチを削除します。
 
 ## Rust CI
 
@@ -427,7 +499,7 @@ cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path 
 
 GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.toml` で監査します。
 依存を追加する際は、利用条件と通知ファイルを確認して許可リストも更新してください。本体の配布ライセンスはこの設定では決定しません。
-ブランチ保護で全ジョブを必須にする場合は、集約チェック **CI result** を指定できます。
+統合前には、集約チェック **CI result** と **PR target** の成功を確認してください。
 
 ## 構成
 

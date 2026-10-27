@@ -739,6 +739,7 @@ dependencies = [
  "baseview",
  "egui",
  "egui_glow",
+ "keyboard-types",
  "raw-window-handle",
 ]
 

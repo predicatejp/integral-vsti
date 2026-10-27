@@ -91,7 +91,7 @@ void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precisi
     configureEnvelope(processor, true); // 既存の波形・イベント検証は時間0、sustain=1で行う。
     ProcessSetup setup {mode, precision, 257, rate};
     assert(processor->setupProcessing(setup) == kResultOk);
-    assert(processor->getTailSamples() == static_cast<uint32>(std::ceil(rate * 5.0)));
+    assert(processor->getTailSamples() == kInfiniteTail);
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
     // 有効化通知を省略するホストの経路でも、同じ波形・イベント時刻を検証する。
     if (activateEvents) assert(component->activateBus(kEvent, kInput, 0, true) == kResultOk);
@@ -212,7 +212,8 @@ void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precisi
 }
 
 // ここからも検証専用のホスト模擬。プラグインは標準VST3 ABIだけでアクセスする。
-constexpr ParamID waveformId = 0x57415645;
+constexpr std::array<ParamID, 6> cutoffEnvelopeIds {0x43415454, 0x43484c44, 0x43444543, 0x43535553, 0x4352454c, 0x43414d54};
+constexpr ParamID waveformId = 0x57415645, phaseId = 0x50484153, volumeId = 0x4d564f4c;
 class Points final : public IParamValueQueue {
 public:
     ParamID id = waveformId;
@@ -241,6 +242,7 @@ public:
     IParamValueQueue* PLUGIN_API addParameterData(const ParamID&, int32&) override { assert(false); return nullptr; }
 };
 constexpr ParamID unisonId = 0x554e4953, detuneId = 0x4454554e, polyphonyId = 0x504f4c59;
+constexpr std::array<ParamID, 3> filterIds {0x46545950, 0x46435554, 0x46524553};
 constexpr std::array<ParamID, 5> envelopeIds {0x4154544b, 0x484f4c44, 0x44454359, 0x53555354, 0x52454c53};
 double timeNormalized(double ms) {
     return (ms <= 1.0 ? ms : 1.0 + 100.0 * std::log10(ms)) / (1.0 + 100.0 * std::log10(5000.0));
@@ -254,6 +256,9 @@ void configureEnvelope(IAudioProcessor* processor, bool immediate) {
         points[i].values = {{0, immediate ? (i == 3 ? 1.0 : 0.0) : defaults[i]}};
         changes.queues.push_back(&points[i]);
     }
+    // 発振器を直接検証する既存テストではフィルタをバイパスする。
+    Points bypass; bypass.id = filterIds[0]; bypass.values = {{0, 0.0}};
+    changes.queues.push_back(&bypass);
     ProcessData data; data.inputParameterChanges = &changes;
     assert(processor->process(data) == kResultOk);
 }
@@ -295,7 +300,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(info.id == waveformId && info.stepCount == 3 && info.defaultNormalizedValue == 0.0);
     assert(info.unitId == 0 && info.flags == (ParameterInfo::kCanAutomate | ParameterInfo::kIsList));
     assert(std::u16string(info.title) == u"Waveform");
-    assert(controller->getParameterInfo(9, info) == kInvalidArgument);
+    assert(controller->getParameterInfo(20, info) == kInvalidArgument);
     const std::array<std::u16string, 4> names {u"Sine", u"Triangle", u"Square", u"Sawtooth"};
     for (size_t i = 0; i < names.size(); ++i) {
         const double normalized = static_cast<double>(i) / 3.0;
@@ -314,7 +319,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(controller->setParamNormalized(0, 0.0) == kInvalidArgument);
     StateStream initial;
     assert(component->getState(&initial) == kResultOk);
-    assert(initial.bytes.size() == 76 && initial.bytes[4] == 4 && initial.bytes[8] == 0);
+    assert(initial.bytes.size() == 164 && initial.bytes[4] == 8 && initial.bytes[8] == 0);
     configureEnvelope(processor, true);
     // Controllerへの表示更新だけではProcessorの値は変わらない。
     assert(controller->getParamNormalized(waveformId) == 1.0);
@@ -380,13 +385,16 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(component->getState(&saved) == kResultOk && saved.bytes[8] == 3);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(waveformId) == 1.0);
-    // 空状態は旧版のサイン波として移行。ComponentとControllerの設定を独立に同期する。
+    // 一体型なのでComponentの復元だけでもControllerの表示を同期する。
+    // 空状態は旧版のサイン波として移行する。
     StateStream empty;
     assert(component->setState(&empty) == kResultOk);
+    assert(controller->getParamNormalized(waveformId) == 0.0);
     assert(controller->setComponentState(&empty) == kResultOk);
     assert(controller->getParamNormalized(waveformId) == 0.0);
     saved.position = 0;
     assert(component->setState(&saved) == kResultOk);
+    assert(controller->getParamNormalized(waveformId) == 1.0);
     saved.position = 0;
     assert(controller->setComponentState(&saved) == kResultOk);
     StateStream own;
@@ -396,7 +404,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     for (int error = 0; error < 5; ++error) {
         StateStream broken; broken.bytes = saved.bytes;
         if (error == 0) broken.bytes.resize(11);
-        if (error == 1) broken.bytes[4] = 5;
+        if (error == 1) broken.bytes[4] = 9;
         if (error == 2) broken.bytes[8] = 4;
         if (error == 3) broken.bytes[0] = 0;
         if (error == 4) broken.fail = true;
@@ -423,7 +431,7 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
     configureEnvelope(processor, false);
     ProcessSetup setup {kRealtime, precision, 16, 1000.0};
     assert(processor->setupProcessing(setup) == kResultOk);
-    assert(processor->getTailSamples() == 5000);
+    assert(processor->getTailSamples() == kInfiniteTail);
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
     assert(component->activateBus(kEvent, kInput, 0, true) == kResultOk);
     // 全追加パラメーターは連続値として公開し、実単位・文字列表現を往復できる。
@@ -484,7 +492,7 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
     check({.3, .25, .2, .15}); // offset=-1の0.7からoffset=3の0.3へ線形補間。
     changes.queues.clear(); check({.15, .15});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 76 && saved.bytes[4] == 4);
+    assert(saved.bytes.size() == 164 && saved.bytes[4] == 8);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(std::abs(controller->getParamNormalized(envelopeIds[3]) - .3) < 1e-12);
     // 旧v1を読み込むと波形以外は既定値へ復帰する。
@@ -563,7 +571,7 @@ void checkUnison(IComponent* component, IAudioProcessor* processor, IEditControl
         events.values.clear(); previousCount = n; previousDetune = target;
     }
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 76 && saved.bytes[4] == 4);
+    assert(saved.bytes.size() == 164 && saved.bytes[4] == 8);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(unisonId) == 1.0);
     assert(controller->getParamNormalized(detuneId) == 1.0);
@@ -646,7 +654,7 @@ void checkPolyphony(IComponent* component, IAudioProcessor* processor, IEditCont
     events.values = {note(true, 0, 200, 12, 0, .5f), note(false, 0, 100, 12)};
     check({15.75, 15.75});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 76 && saved.bytes[4] == 4);
+    assert(saved.bytes.size() == 164 && saved.bytes[4] == 8);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(polyphonyId) == 1.0);
     // 次の割り当て位置は2。減少で範囲外の音を止め、増加しても復活させない。
@@ -663,6 +671,254 @@ void checkPolyphony(IComponent* component, IAudioProcessor* processor, IEditCont
     assert(component->setActive(false) == kResultOk);
 }
 
+// 検証専用: フィルタの回路式をホスト側で計算し、配送された設定・時刻・ノートを照合する。
+struct FilterReference {
+    double state[2][2] {};
+    double process(double input, int type, double hz, double q, double rate) {
+        if (type == 0) { *this = {}; return input; }
+        const double g = std::tan(std::acos(-1.0) * std::min(.49, std::clamp(hz, 20.0, 20000.0) / rate));
+        const int stages = type % 2 == 0 ? 2 : 1;
+        for (int stage = 0; stage < stages; ++stage) {
+            auto& s = state[stage];
+            const double high = (input - (g + 1 / q) * s[0] - s[1]) / (1 + g * (g + 1 / q));
+            const double band = g * high + s[0], low = g * band + s[1];
+            s[0] = 2 * band - s[0]; s[1] = 2 * low - s[1];
+            input = type <= 2 ? low : (type <= 4 ? high : band);
+        }
+        return input;
+    }
+};
+
+template <typename Sample>
+void checkFilter(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
+    for (int i = 0; i < 3; ++i) {
+        ParameterInfo info;
+        assert(controller->getParameterInfo(9 + i, info) == kResultOk && info.id == filterIds[i]);
+        assert(info.stepCount == (i == 0 ? 6 : 0));
+        const double initial = controller->normalizedParamToPlain(info.id, info.defaultNormalizedValue);
+        assert(std::abs(initial - (i == 0 ? 1.0 : (i == 1 ? 4800.0 : 1.0))) < 1e-12);
+    }
+    for (int tick = 0; tick <= 1200; ++tick) {
+        const double cents = -2400.0 + 10 * tick;
+        const double normalized = controller->plainParamToNormalized(filterIds[1], cents);
+        assert(std::abs(controller->normalizedParamToPlain(filterIds[1], normalized) - cents) < 2e-12);
+    }
+    const std::array<std::u16string, 7> names {u"None", u"LowPass1", u"LowPass2", u"HighPass1", u"HighPass2", u"BandPass1", u"BandPass2"};
+    configureEnvelope(processor, true);
+    ProcessSetup setup {kRealtime, precision, 16, 48000.0};
+    assert(processor->setupProcessing(setup) == kResultOk);
+    assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
+    assert(component->setActive(true) == kResultOk);
+    std::array<Sample, 16> buffer {};
+    Sample* channels[] = {buffer.data(), buffer.data()};
+    AudioBusBuffers bus; bus.numChannels = 2;
+    if constexpr (std::is_same_v<Sample, float>) bus.channelBuffers32 = channels;
+    else bus.channelBuffers64 = channels;
+    Points type, cutoff, resonance, wave, poly;
+    type.id = filterIds[0]; cutoff.id = filterIds[1]; resonance.id = filterIds[2]; poly.id = polyphonyId;
+    Changes changes; changes.queues = {&type, &cutoff, &resonance, &wave, &poly};
+    Events events;
+    ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
+    for (int t = 0; t < 7; ++t) {
+        String128 text; double parsed = -1;
+        assert(controller->getParamStringByValue(filterIds[0], t / 6.0, text) == kResultOk && std::u16string(text) == names[t]);
+        assert(controller->getParamValueByString(filterIds[0], text, parsed) == kResultOk && parsed == t / 6.0);
+        const double q0 = 1 / std::sqrt(2.0), q1 = 4.0;
+        type.values = {{0, t / 6.0}}; cutoff.values = {{0, .3}};
+        resonance.values = {{0, (q0 - .5) / 9.5}}; wave.values = {{0, 2.0 / 3.0}}; poly.values = {{0, 1.0 / 31.0}};
+        data.numSamples = 0; data.numOutputs = 0; data.inputEvents = nullptr;
+        assert(processor->process(data) == kResultOk); // 停止中のフラッシュ。
+        assert(processor->setProcessing(true) == kResultOk);
+        type.values.clear(); wave.values.clear(); poly.values.clear();
+        cutoff.values = {{3, 0.0}, {7, 1.0}}; resonance.values = {{7, (q1 - .5) / 9.5}};
+        events.values = {note(true, 0, 1, 12), note(true, 2, 2, 24)};
+        data.numSamples = 12; data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
+        assert(processor->process(data) == kResultOk);
+        FilterReference refs[2];
+        for (int n = 0; n < 12; ++n) {
+            const double cents = n < 3 ? 1200 : (n < 7 ? -2400 : 9600);
+            const double q = n < 8 ? q0 + (q1 - q0) * (n + 1) / 8.0 : q1;
+            double expected = 0;
+            for (int v = 0; v < 2; ++v) {
+                // Note On前のVoiceは無音。発音後はノートごとのカットオフで独立処理。
+                const double hz = 440 * std::pow(2.0, (12 + 12 * v - 69) / 12.0) * std::pow(2.0, cents / 1200.0);
+                expected += refs[v].process(n >= v * 2 ? .5 : 0, t, hz, q, 48000);
+            }
+            assert(std::abs(buffer[n] - expected) < 1e-5);
+        }
+        assert(bus.silenceFlags == 0);
+        StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes.size() == 164);
+        assert(controller->setComponentState(&saved) == kResultOk);
+        assert(controller->getParamNormalized(filterIds[0]) == t / 6.0);
+        assert(controller->getParamNormalized(filterIds[1]) == 1.0);
+        assert(std::abs(controller->normalizedParamToPlain(filterIds[2], controller->getParamNormalized(filterIds[2])) - q1) < 1e-12);
+        assert(processor->setProcessing(false) == kResultOk);
+    }
+    assert(component->setActive(false) == kResultOk);
+}
+
+template <typename Sample>
+void checkPhase(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
+    ParameterInfo info;
+    assert(controller->getParameterInfo(12, info) == kResultOk && info.id == phaseId);
+    assert(info.stepCount == 2 && info.defaultNormalizedValue == 0.0);
+    assert(info.flags == (ParameterInfo::kCanAutomate | ParameterInfo::kIsList));
+    const std::array<std::u16string, 3> names {u"Keep", u"Zero", u"Random"};
+    for (int i = 0; i < 3; ++i) {
+        String128 text; double parsed = -1;
+        assert(controller->getParamStringByValue(phaseId, i / 2.0, text) == kResultOk);
+        assert(std::u16string(text) == names[i]);
+        assert(controller->getParamValueByString(phaseId, text, parsed) == kResultOk && parsed == i / 2.0);
+    }
+    configureEnvelope(processor, true);
+    ProcessSetup setup {kRealtime, precision, 8, 3520.0};
+    assert(processor->setupProcessing(setup) == kResultOk);
+    assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
+    Points phase, waveform;
+    phase.id = phaseId; waveform.values = {{0, 1.0}};
+    Changes changes; changes.queues = {&phase, &waveform};
+    ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
+    assert(processor->process(data) == kResultOk);
+    waveform.values.clear();
+    assert(component->setActive(true) == kResultOk);
+    assert(processor->setProcessing(true) == kResultOk);
+    std::array<Sample, 8> buffer {};
+    Sample* channels[] = {buffer.data(), buffer.data()};
+    AudioBusBuffers bus; bus.numChannels = 2;
+    if constexpr (std::is_same_v<Sample, float>) bus.channelBuffers32 = channels;
+    else bus.channelBuffers64 = channels;
+    Events events;
+    data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
+    const double peak = .5 * std::sqrt(3.0);
+    auto check = [&](std::initializer_list<double> expected) {
+        data.numSamples = static_cast<int32>(expected.size());
+        assert(processor->process(data) == kResultOk);
+        size_t i = 0;
+        for (double value : expected) assert(std::abs(buffer[i++] - value * peak) < 1e-6);
+    };
+    events.values = {note(true, 0, 1)};
+    check({-1, -.75, -.5});
+    // 同位置ではモード変更をNote Onより先に適用。指定サンプルで位相0へ戻す。
+    phase.values = {{1, .5}}; events.values = {note(true, 1, 2)};
+    check({-.25, -1, -.75});
+    phase.values = {{0, 0}}; events.values.clear(); check({-.5});
+    phase.values = {{0, .5}}; check({-.25}); // モード選択だけでは位相を変えない。
+    phase.values.clear(); events.values = {note(true, 0, 3)}; check({-1});
+    phase.values = {{0, 1}}; events.values.clear(); check({-.75});
+    phase.values.clear(); events.values = {note(true, 0, 4)};
+    assert(processor->process(data) == kResultOk);
+    assert(std::isfinite(buffer[0]) && std::abs(buffer[0]) <= peak);
+    assert(processor->setProcessing(false) == kResultOk);
+    assert(component->setActive(false) == kResultOk);
+}
+
+template <typename Sample>
+void checkVolume(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
+    ParameterInfo info;
+    assert(controller->getParameterInfo(13, info) == kResultOk && info.id == volumeId);
+    assert(std::u16string(info.title) == u"Volume" && std::u16string(info.units) == u"dB");
+    assert(info.stepCount == 0 && info.defaultNormalizedValue == .8);
+    for (double db : {-48.0, -12.3, 0.0, 12.0}) {
+        const double normalized = (db + 48) / 60;
+        String128 text; double parsed = -1;
+        assert(controller->getParamStringByValue(volumeId, normalized, text) == kResultOk);
+        assert(controller->getParamValueByString(volumeId, text, parsed) == kResultOk);
+        assert(std::abs(parsed - normalized) < 1e-12);
+    }
+    configureEnvelope(processor, true);
+    Points volume, waveform, polyphony;
+    volume.id = volumeId; polyphony.id = polyphonyId;
+    waveform.values = {{0, 2.0 / 3.0}}; polyphony.values = {{0, 1.0 / 31.0}};
+    Changes changes; changes.queues = {&volume, &waveform, &polyphony};
+    ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
+    assert(processor->process(data) == kResultOk);
+    waveform.values.clear(); polyphony.values.clear();
+    ProcessSetup setup {kRealtime, precision, 8, 48000.0};
+    assert(processor->setupProcessing(setup) == kResultOk);
+    assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
+    assert(component->setActive(true) == kResultOk && processor->setProcessing(true) == kResultOk);
+    std::array<Sample, 8> buffer {};
+    Sample* channels[] = {buffer.data(), buffer.data()};
+    AudioBusBuffers bus; bus.numChannels = 2;
+    if constexpr (std::is_same_v<Sample, float>) bus.channelBuffers32 = channels;
+    else bus.channelBuffers64 = channels;
+    Events events; events.values = {note(true, 0, 1), note(true, 0, 2)};
+    data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
+    auto check = [&](std::initializer_list<double> decibels) {
+        data.numSamples = static_cast<int32>(decibels.size());
+        assert(processor->process(data) == kResultOk);
+        size_t i = 0;
+        // 振幅0.5の矩形波2ボイスを加算した後に、dBの振幅倍率を掛ける。
+        for (double db : decibels) assert(std::abs(buffer[i++] - std::pow(10.0, db / 20.0)) < 1e-6);
+    };
+    check({0}); events.values.clear();
+    volume.values = {{0, 0}, {3, .4}}; check({-48, -40, -32, -24});
+    volume.values.clear(); check({-24, -24});
+    volume.values = {{0, 1}, {1, 1}, {3, .8}}; check({12, 12, 6, 0});
+    volume.values = {{0, (48 - 12.3) / 60}}; check({-12.3});
+    assert(processor->setProcessing(false) == kResultOk && component->setActive(false) == kResultOk);
+    // 停止中のゼロサンプル変更も保存・復元へ反映する。
+    data.numSamples = 0; volume.values = {{0, 0}};
+    assert(processor->process(data) == kResultOk);
+    StateStream saved; assert(component->getState(&saved) == kResultOk);
+    assert(controller->setComponentState(&saved) == kResultOk);
+    assert(controller->getParamNormalized(volumeId) == 0);
+}
+
+template <typename Sample>
+void checkCutoffEnvelope(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
+    const std::array<double, 6> initial {10, 0, 100, .7, 100, 0};
+    const std::array<double, 6> settings {4, 2, 4, .25, 4, 1200};
+    std::array<Points, 9> points;
+    Changes changes;
+    for (size_t i = 0; i < cutoffEnvelopeIds.size(); ++i) {
+        ParameterInfo info;
+        assert(controller->getParameterInfo(static_cast<int32>(14 + i), info) == kResultOk);
+        assert(info.id == cutoffEnvelopeIds[i] && info.stepCount == 0 && info.flags == ParameterInfo::kCanAutomate);
+        assert(std::abs(controller->normalizedParamToPlain(info.id, info.defaultNormalizedValue) - initial[i]) < 1e-9);
+        points[i].id = info.id;
+        points[i].values = {{0, controller->plainParamToNormalized(info.id, settings[i])}};
+        changes.queues.push_back(&points[i]);
+    }
+    configureEnvelope(processor, true);
+    points[6].id = waveformId; points[6].values = {{0, 2.0 / 3.0}};
+    points[7].id = filterIds[0]; points[7].values = {{0, 2.0 / 6.0}};
+    points[8].id = filterIds[1]; points[8].values = {{0, .1}}; // -1200 cent
+    for (int i = 6; i < 9; ++i) changes.queues.push_back(&points[i]);
+    ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
+    assert(processor->process(data) == kResultOk);
+    ProcessSetup setup {kRealtime, precision, 32, 1000.0};
+    assert(processor->setupProcessing(setup) == kResultOk);
+    assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
+    assert(component->setActive(true) == kResultOk && processor->setProcessing(true) == kResultOk);
+    // Amountの保持区間・正負をまたぐランプと、ノートの再割り当てを同一ブロックで検証。
+    changes.queues = {&points[5]};
+    points[5].values = {{0, .625}, {3, .625}, {7, .375}, {8, .375}, {23, 1}};
+    Events events; events.values = {note(true, 0, 1), note(false, 8, 1), note(true, 10, 2), note(false, 19, 2)};
+    data.numSamples = 24; data.inputEvents = &events;
+    std::array<Sample, 24> buffer {};
+    Sample* channels[] = {buffer.data(), buffer.data()};
+    AudioBusBuffers bus; bus.numChannels = 2;
+    if constexpr (std::is_same_v<Sample, float>) bus.channelBuffers32 = channels;
+    else bus.channelBuffers64 = channels;
+    data.numOutputs = 1; data.outputs = &bus;
+    assert(processor->process(data) == kResultOk);
+    const std::array<double, 24> levels {0, .25, .5, .75, 1, 1, 1, .8125, .625, .46875,
+        .3125, .484375, .65625, .828125, 1, 1, 1, .8125, .625, .4375, .328125, .21875, .109375, 0};
+    FilterReference reference;
+    double phase = 0;
+    for (int n = 0; n < 24; ++n) {
+        const bool gate = n < 8 || (n >= 10 && n < 19);
+        const double source = gate ? (phase < .5 ? .5 : -.5) : 0;
+        if (gate) phase = std::fmod(phase + .44, 1.0);
+        const double amount = n <= 3 ? 1200 : (n <= 7 ? 1200 - (n - 3) * 600 : -1200 + (n - 8) * 400);
+        const double hz = 440 * std::pow(2.0, (-1200 + amount * levels[n]) / 1200);
+        const double expected = reference.process(source, 2, hz, 1.0, 1000);
+        assert(std::abs(buffer[n] - expected) < 1e-5);
+    }
+    assert(processor->setProcessing(false) == kResultOk && component->setActive(false) == kResultOk);
+}
+
 #include "gui-smoke.h"
 
 template <typename T>
@@ -671,6 +927,53 @@ T* query(FUnknown* object, const TUID iid) {
     assert(object->queryInterface(iid, &result) == kResultOk);
     assert(result);
     return static_cast<T*>(result);
+}
+
+void checkStateReload(IPluginFactory* factory, const TUID cid) {
+    // 全20設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
+    const std::array<double, 20> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125};
+    std::array<double, 20> expected {};
+    StateStream saved;
+    for (bool restore : {false, true}) {
+        void* object = nullptr;
+        assert(factory->createInstance(cid, IComponent_iid, &object) == kResultOk);
+        auto* component = static_cast<IComponent*>(object);
+        auto* processor = query<IAudioProcessor>(component, IAudioProcessor_iid);
+        auto* controller = query<IEditController>(component, IEditController_iid);
+        assert(component->initialize(factory) == kResultOk);
+        if (!restore) {
+            std::array<Points, 20> points;
+            Changes changes;
+            for (size_t i = 0; i < points.size(); ++i) {
+                ParameterInfo info {};
+                assert(controller->getParameterInfo(static_cast<int32>(i), info) == kResultOk);
+                expected[i] = controller->plainParamToNormalized(info.id, plain[i]);
+                points[i].id = info.id;
+                points[i].values = {{0, expected[i]}};
+                changes.queues.push_back(&points[i]);
+            }
+            ProcessData data;
+            data.inputParameterChanges = &changes;
+            assert(processor->process(data) == kResultOk);
+            assert(component->getState(&saved) == kResultOk);
+        } else {
+            // setComponentStateの追加呼び出しやprocessより前に、表示が復元されること。
+            assert(component->setState(&saved) == kResultOk);
+            StateStream own;
+            assert(controller->setState(&own) == kResultOk);
+            for (size_t i = 0; i < expected.size(); ++i) {
+                ParameterInfo info {};
+                assert(controller->getParameterInfo(static_cast<int32>(i), info) == kResultOk);
+                assert(std::abs(controller->getParamNormalized(info.id) - expected[i]) < 1e-12);
+            }
+            StateStream restored;
+            assert(component->getState(&restored) == kResultOk && restored.bytes == saved.bytes);
+        }
+        assert(component->terminate() == kResultOk);
+        controller->release();
+        processor->release();
+        assert(component->release() == 0);
+    }
 }
 
 template <typename Sample>
@@ -772,6 +1075,7 @@ int main(int argc, char** argv) {
     assert(factory2->getClassInfo2(1, &info) == kInvalidArgument);
     factory2->release();
 
+    checkStateReload(factory, info.cid);
     for (int iteration = 0; iteration < 100; ++iteration) {
         void* result = nullptr;
         assert(factory->createInstance(info.cid, IComponent_iid, &result) == kResultOk);
@@ -794,10 +1098,10 @@ int main(int argc, char** argv) {
         assert(bus.channelCount == 2 && bus.name[0] == u'S');
         SpeakerArrangement output = SpeakerArr::kStereo;
         assert(processor->setBusArrangements(nullptr, 0, &output, 1) == kResultOk);
-        assert(controller->getParameterCount() == 9);
+        assert(controller->getParameterCount() == 20);
         checkViewContract(controller);
         assert(controller->setComponentHandler(nullptr) == kResultOk);
-        assert(processor->getLatencySamples() == 0 && processor->getTailSamples() == 220500);
+        assert(processor->getLatencySamples() == 0 && processor->getTailSamples() == kInfiniteTail);
         checkSilence<float>(component, processor, kSample32);
         checkSilence<double>(component, processor, kSample64);
         if (iteration == 15) checkEnvelope<float>(component, processor, controller, kSample32);
@@ -806,6 +1110,14 @@ int main(int argc, char** argv) {
         if (iteration == 18) checkUnison<double>(component, processor, controller, kSample64);
         if (iteration == 19) checkPolyphony<float>(component, processor, controller, kSample32, kRealtime);
         if (iteration == 20) checkPolyphony<double>(component, processor, controller, kSample64, kOffline);
+        if (iteration == 21) checkFilter<float>(component, processor, controller, kSample32);
+        if (iteration == 22) checkFilter<double>(component, processor, controller, kSample64);
+        if (iteration == 23) checkPhase<float>(component, processor, controller, kSample32);
+        if (iteration == 24) checkPhase<double>(component, processor, controller, kSample64);
+        if (iteration == 25) checkVolume<float>(component, processor, controller, kSample32);
+        if (iteration == 26) checkVolume<double>(component, processor, controller, kSample64);
+        if (iteration == 27) checkCutoffEnvelope<float>(component, processor, controller, kSample32);
+        if (iteration == 28) checkCutoffEnvelope<double>(component, processor, controller, kSample64);
         if (iteration < 12) {
             const double rate = std::array<double, 3> {44100.0, 48000.0, 96000.0}[iteration % 3];
             if (iteration % 2 == 0) checkNotes<float>(component, processor, kSample32, rate, iteration % 3, iteration < 6);
