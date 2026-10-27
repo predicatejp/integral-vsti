@@ -4,7 +4,7 @@
 //! 単位に依存せず、0〜1の正規化値を操作する線形AHDSR。
 
 /// エンベロープの時間と正規化値をまとめたパラメーター。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EnvelopeParameters {
     /// 開始値からピーク値へ移行する時間（0..=5000 ms）。
     pub attack_ms: f64,
@@ -31,10 +31,10 @@ impl EnvelopeParameters {
     /// 範囲外、NaN、無限大を拒否する。
     pub fn is_valid(&self) -> bool {
         (0.0..=5000.0).contains(&self.attack_ms)
-            && (0.0..=5000.0).contains(&self.hold_ms)
-            && (0.0..=5000.0).contains(&self.decay_ms)
-            && (0.0..=1.0).contains(&self.sustain)
-            && (0.0..=5000.0).contains(&self.release_ms)
+            & (0.0..=5000.0).contains(&self.hold_ms)
+            & (0.0..=5000.0).contains(&self.decay_ms)
+            & (0.0..=1.0).contains(&self.sustain)
+            & (0.0..=5000.0).contains(&self.release_ms)
     }
 }
 
@@ -46,6 +46,7 @@ impl EnvelopeParameters {
 /// その時刻以降はノートオフ時の値からrelease_msかけて0へ線形に下げる。
 /// パラメーター不正、負の時刻、NaN、無限大では0を返す。
 /// 内部状態を持たず、毎回渡されたパラメーターから計算する。
+#[allow(dead_code)] // 時刻指定の単体入口。Envelope内部は検証済みの設定を再利用する。
 pub fn value(
     parameters: &EnvelopeParameters,
     elapsed_ms: f64,
@@ -53,40 +54,43 @@ pub fn value(
     start_value: f64,
     peak_value: f64,
 ) -> f64 {
-    if !(0.0..=1.0).contains(&start_value)
-        || !(0.0..=1.0).contains(&peak_value)
-        || !parameters.is_valid()
-        || !elapsed_ms.is_finite()
-        || elapsed_ms < 0.0
-        || note_off_ms.is_some_and(|time| !time.is_finite() || time < 0.0)
+    let off = note_off_ms.unwrap_or(0.0);
+    if !((0.0..=1.0).contains(&start_value)
+        & (0.0..=1.0).contains(&peak_value)
+        & parameters.is_valid()
+        & (0.0..=f64::MAX).contains(&elapsed_ms)
+        & (0.0..=f64::MAX).contains(&off))
     {
         return 0.0;
     }
-    if let Some(off) = note_off_ms.filter(|&off| elapsed_ms >= off) {
-        if parameters.release_ms == 0.0 {
-            return 0.0;
-        }
-        let remaining = (1.0 - (elapsed_ms - off) / parameters.release_ms).max(0.0);
-        held_value(parameters, off, start_value, peak_value) * remaining
-    } else {
-        held_value(parameters, elapsed_ms, start_value, peak_value)
-    }
+    value_validated(parameters, elapsed_ms, note_off_ms, start_value, peak_value)
 }
 
-/// ノートオフ前のattack → hold → decay → sustainを計算する。
-fn held_value(parameters: &EnvelopeParameters, elapsed_ms: f64, start: f64, peak: f64) -> f64 {
-    if elapsed_ms < parameters.attack_ms {
-        return start + (peak - start) * (elapsed_ms / parameters.attack_ms);
-    }
-    let after_attack = elapsed_ms - parameters.attack_ms;
-    if after_attack < parameters.hold_ms {
-        return peak;
-    }
-    let after_hold = after_attack - parameters.hold_ms;
-    if after_hold < parameters.decay_ms {
-        return peak * (1.0 - (1.0 - parameters.sustain) * (after_hold / parameters.decay_ms));
-    }
-    peak * parameters.sustain
+/// 検証済みの設定を使い、各段階を0〜1の線形ランプの積で合成する。
+fn value_validated(
+    parameters: &EnvelopeParameters,
+    elapsed_ms: f64,
+    note_off_ms: Option<f64>,
+    start: f64,
+    peak: f64,
+) -> f64 {
+    let off = note_off_ms.unwrap_or(f64::INFINITY);
+    let held = elapsed_ms.min(off);
+    let attack = ramp(held, parameters.attack_ms);
+    let decay = ramp(
+        held - parameters.attack_ms - parameters.hold_ms,
+        parameters.decay_ms,
+    );
+    let release = ramp(elapsed_ms - off, parameters.release_ms);
+    (start * (1.0 - attack) + peak * attack)
+        * ((1.0 - decay) + parameters.sustain * decay)
+        * (1.0 - release)
+}
+
+/// 0ms段階は時刻0で即時完了する。0/0のNaNもmin(1)で1へ変換する。
+#[allow(clippy::manual_clamp)] // clampはNaNを保持するため、0msの境界の意味が異なる。
+fn ramp(time: f64, duration: f64) -> f64 {
+    (time / duration.abs()).min(1.0).max(0.0)
 }
 
 /// エンベロープの独立した時間・再トリガー履歴。データだけを保持する。
@@ -94,6 +98,8 @@ fn held_value(parameters: &EnvelopeParameters, elapsed_ms: f64, start: f64, peak
 struct EnvelopeState {
     /// 次サンプル時点の正規化値。再ノートオンの開始値に使う。
     current_value: f64,
+    /// 検証・値計算に使用した設定、レート、ピーク。変更時だけ再検証する。
+    input: Option<(EnvelopeParameters, f64, f64)>,
     /// 直近のノートオン時の値。attack中は固定する。
     start_value: f64,
     /// 直近のノートオンから次サンプルまでのサンプル数。
@@ -120,6 +126,7 @@ impl Envelope {
         Self {
             state: EnvelopeState {
                 current_value: 0.0,
+                input: None,
                 start_value: 0.0,
                 elapsed_samples: 0,
                 note_off_sample: None,
@@ -141,19 +148,25 @@ impl Envelope {
         reset_generation: u64,
         peak: f64,
     ) -> f64 {
-        if !parameters.is_valid()
-            || !(0.0..=1.0).contains(&peak)
-            || !sample_rate.is_finite()
-            || sample_rate <= 0.0
-        {
-            return 0.0;
+        let input = (*parameters, sample_rate, peak);
+        let changed = self.state.input != Some(input);
+        if changed {
+            if !(parameters.is_valid()
+                & (0.0..=1.0).contains(&peak)
+                & sample_rate.is_finite()
+                & (sample_rate > 0.0))
+            {
+                return 0.0;
+            }
+            self.state.input = Some(input);
         }
         let reset = reset_generation != self.state.reset_generation;
         if reset {
             self.state.active = false;
             self.state.current_value = 0.0;
         }
-        if note_generation != self.state.note_generation && (gate || !reset) {
+        let triggered = note_generation != self.state.note_generation && (gate || !reset);
+        if triggered {
             self.state.start_value = self.state.current_value;
             self.state.elapsed_samples = 0;
             self.state.note_off_sample = None;
@@ -161,10 +174,14 @@ impl Envelope {
         }
         self.state.note_generation = note_generation;
         self.state.reset_generation = reset_generation;
-        if !gate && self.state.active && self.state.note_off_sample.is_none() {
+        let released = !gate && self.state.active && self.state.note_off_sample.is_none();
+        if released {
             self.state.note_off_sample = Some(self.state.elapsed_samples);
         }
-        self.refresh_value(parameters, sample_rate, peak);
+        // 同じ入力ならupdate_sampleが用意した現在値をそのまま使う。
+        if changed || reset || triggered || released {
+            self.refresh_value(parameters, sample_rate, peak);
+        }
         self.state.current_value
     }
 
@@ -181,14 +198,12 @@ impl Envelope {
     }
 
     fn refresh_value(&mut self, parameters: &EnvelopeParameters, sample_rate: f64, peak: f64) {
-        if self.state.note_off_sample.is_some_and(|off| {
+        self.state.active &= !self.state.note_off_sample.is_some_and(|off| {
             (self.state.elapsed_samples - off) as f64
                 >= (parameters.release_ms * sample_rate / 1000.0).ceil()
-        }) {
-            self.state.active = false;
-        }
+        });
         self.state.current_value = if self.state.active {
-            value(
+            value_validated(
                 parameters,
                 self.state.elapsed_samples as f64 / sample_rate * 1000.0,
                 self.state
@@ -363,5 +378,72 @@ mod tests {
             PARAMETERS.sustain
         );
         assert_eq!(value(&PARAMETERS, f64::MAX, Some(50.0), 0.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn signed_zero_and_subnormal_durations_have_exact_boundaries() {
+        for zero in [0.0, -0.0] {
+            let p = EnvelopeParameters {
+                attack_ms: zero,
+                hold_ms: zero,
+                decay_ms: zero,
+                sustain: 0.25,
+                release_ms: zero,
+            };
+            for time in [0.0, 1.0] {
+                assert_eq!(value(&p, time, None, 0.5, 1.0), 0.25);
+                assert_eq!(value(&p, time, Some(0.0), 0.5, 1.0), 0.0);
+            }
+        }
+        let p = EnvelopeParameters {
+            attack_ms: f64::from_bits(1),
+            ..PARAMETERS
+        };
+        assert_eq!(value(&p, 0.0, None, 0.25, 1.0), 0.25);
+        assert_eq!(value(&p, p.attack_ms, None, 0.25, 1.0), 1.0);
+    }
+
+    #[test]
+    fn cached_value_tracks_parameters_rate_peak_and_note_boundaries() {
+        let mut envelope = Envelope::new();
+        let mut p = EnvelopeParameters {
+            attack_ms: 10.0,
+            hold_ms: 0.0,
+            decay_ms: 10.0,
+            sustain: 0.5,
+            release_ms: 10.0,
+        };
+        assert_eq!(envelope.generate_sample(&p, 1000.0, true, 1, 0, 1.0), 0.0);
+        envelope.update_sample(&p, 1000.0, 1.0);
+        assert_eq!(envelope.generate_sample(&p, 1000.0, true, 1, 0, 1.0), 0.1);
+        p.attack_ms = 20.0;
+        assert_eq!(envelope.generate_sample(&p, 1000.0, true, 1, 0, 1.0), 0.05);
+        envelope.update_sample(&p, 1000.0, 1.0);
+        assert_eq!(envelope.generate_sample(&p, 1000.0, true, 1, 0, 0.5), 0.05);
+        assert_eq!(envelope.generate_sample(&p, 2000.0, true, 1, 0, 0.5), 0.025);
+        let invalid = EnvelopeParameters {
+            attack_ms: f64::NAN,
+            ..p
+        };
+        assert_eq!(
+            envelope.generate_sample(&invalid, 2000.0, false, 2, 1, 0.5),
+            0.0
+        );
+        assert_eq!(
+            envelope.generate_sample(&p, 2000.0, false, 1, 0, 0.5),
+            0.025
+        );
+        envelope.update_sample(&p, 2000.0, 0.5);
+        let released = envelope.generate_sample(&p, 2000.0, false, 1, 0, 0.5);
+        assert!((released - 0.02375).abs() < 1e-15);
+        assert_eq!(
+            envelope.generate_sample(&p, 2000.0, true, 2, 0, 0.75),
+            released
+        );
+        envelope.update_sample(&p, 2000.0, 0.75);
+        let expected = released * 0.975 + 0.75 * 0.025;
+        assert!((envelope.generate_sample(&p, 2000.0, true, 2, 0, 0.75) - expected).abs() < 1e-15);
+        assert_eq!(envelope.generate_sample(&p, 2000.0, false, 2, 1, 0.75), 0.0);
+        assert!(!envelope.is_active());
     }
 }

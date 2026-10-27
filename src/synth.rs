@@ -60,10 +60,8 @@ impl Synthesizer {
         }
         self.state.parameters = values;
         let count = parameters::to_plain(8, values[8]) as usize;
-        if count < self.state.polyphony {
-            for voice in &mut self.state.voices[count..self.state.polyphony] {
-                voice.stop();
-            }
+        for voice in &mut self.state.voices[count..self.state.polyphony.max(count)] {
+            voice.stop();
         }
         self.state.polyphony = count;
         self.state.next_oscillator_id %= count;
@@ -72,20 +70,15 @@ impl Synthesizer {
         let cutoff_envelope = parameters::envelope(&values, 14);
         let unison_voices = parameters::to_plain(6, values[6]) as u32;
         let detune_cents = parameters::to_plain(7, values[7]);
+        let phase_mode = parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize];
+        let filter_type = parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize];
+        let cutoff_cents = parameters::to_plain(10, values[10]);
+        let resonance_q = parameters::to_plain(11, values[11]);
+        let cutoff_amount = parameters::to_plain(19, values[19]);
         for voice in &mut self.state.voices {
-            voice.set_parameters(
-                waveform,
-                envelope,
-                unison_voices,
-                detune_cents,
-                parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize],
-            );
-            voice.set_cutoff_envelope(cutoff_envelope, parameters::to_plain(19, values[19]));
-            voice.set_filter(
-                parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
-                parameters::to_plain(10, values[10]),
-                parameters::to_plain(11, values[11]),
-            );
+            voice.set_parameters(waveform, envelope, unison_voices, detune_cents, phase_mode);
+            voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
+            voice.set_filter(filter_type, cutoff_cents, resonance_q);
         }
         true
     }
