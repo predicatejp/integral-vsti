@@ -1,0 +1,22 @@
+name: Pull request policy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
+
+jobs:
+  target:
+    name: PR target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Require main as the merge target
+        env:
+          PR_BASE: ${{ github.base_ref }}
+        run: |
+          if [ "$PR_BASE" != main ]; then
+            echo '::error::Pull requests must target main.'
+            exit 1
+          fi

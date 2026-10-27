@@ -431,6 +431,25 @@ PRでは先頭コミットを明示的にチェックアウトします。ZIP名
 `build-info.json` は同じコミットを指します。ZIPを展開すると `SampleVsti.vst3` が得られます。
 ダウンロードにはGitHubへのログインとリポジトリの読み取り権限が必要です。
 
+## 開発フロー
+
+trunk-based developmentを採用し、`main`を唯一のトランク・統合先とします。
+最新の`origin/main`から目的ごとに短命な作業ブランチを作り、単独で検証・マージできる小さなPRを
+必ず`main`へ送ります。作業中は`main`の変更をこまめに取り込みます。
+依存する後続作業は先行PRのマージ後に最新の`origin/main`から開始し、マージ済みブランチは再利用しません。
+
+```sh
+git fetch origin
+git switch -c feat/change-name origin/main
+# 変更・検証・コミット
+git push -u origin HEAD
+gh pr create --base main
+```
+
+PRのマージ先は`PR target`で検査し、宛先を変更した場合も再検査します。
+`main`への統合には`PR target`と`CI result`の成功、および最新の`main`の取り込みが必要です。
+マージ方法はsquashとし、マージ後はGitHubが作業ブランチを自動削除します。
+
 ## Rust CI
 
 GitHub Actionsの `.github/workflows/rust.yml` で、mainへのpush・リリースタグのpush・プルリクエスト・手動実行・毎週月曜03:23 UTCに以下を検証します。
@@ -480,7 +499,7 @@ cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path 
 
 GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.toml` で監査します。
 依存を追加する際は、利用条件と通知ファイルを確認して許可リストも更新してください。本体の配布ライセンスはこの設定では決定しません。
-ブランチ保護で全ジョブを必須にする場合は、集約チェック **CI result** を指定できます。
+`main`の保護ルールでは、集約チェック **CI result** と **PR target** を必須にします。
 
 ## 構成
 
