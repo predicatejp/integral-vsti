@@ -447,8 +447,8 @@ gh pr create --base main
 ```
 
 PRのマージ先は`PR target`で検査し、宛先を変更した場合も再検査します。
-`main`への統合には`PR target`と`CI result`の成功、および最新の`main`の取り込みが必要です。
-マージ方法はsquashとし、マージ後はGitHubが作業ブランチを自動削除します。
+`main`へ統合する前に、`PR target`と`CI result`の成功、および最新の`main`を取り込んでいることを確認します。
+マージ方法はsquashとし、マージ後は作業ブランチを削除します。
 
 ## Rust CI
 
@@ -499,7 +499,7 @@ cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path 
 
 GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.toml` で監査します。
 依存を追加する際は、利用条件と通知ファイルを確認して許可リストも更新してください。本体の配布ライセンスはこの設定では決定しません。
-`main`の保護ルールでは、集約チェック **CI result** と **PR target** を必須にします。
+統合前には、集約チェック **CI result** と **PR target** の成功を確認してください。
 
 ## 構成
 
