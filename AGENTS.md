@@ -98,6 +98,7 @@ VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体の
 | SDK・依存関係のセットアップ | GUI依存はCargo.lockで固定。検証時は公式SDKの展開先を `VST3_SDK_DIR` に指定 |
 | 開発用ビルド | `cargo build --locked` |
 | リリース用ビルド・バンドル生成 | `python3 scripts/build-vst3.py`（Windowsは `python`） |
+| LinuxからWindows版を生成 | READMEのcargo-xwin導入後、`python3 scripts/build-vst3.py --target x86_64-pc-windows-msvc` |
 | 自動テスト | `cargo test --locked`、`python3 scripts/check-abi.py --gui`（LinuxはXvfb可） |
 | フォーマット・静的解析 | `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings` |
 | VST3 SDK Validatorによる検証 | READMEの手順で構築後、`target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3` |
