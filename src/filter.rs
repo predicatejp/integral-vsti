@@ -114,7 +114,15 @@ impl Svf {
         // 入力設定を書き換えず、係数計算時だけ20〜20,000 Hzへクランプする。
         // 極端に低いレートでもNyquist未満という上限を優先する。
         let cutoff_hz = parameters.cutoff_hz.clamp(20.0, 20_000.0);
-        let g = (std::f64::consts::PI * (cutoff_hz / sample_rate).min(0.49)).tan();
+        // Qだけの変更ではプリワープ係数を再利用し、減衰係数と分母だけ更新する。
+        let g = match self.state.coefficients {
+            Some((previous, rate, cached))
+                if previous.cutoff_hz == parameters.cutoff_hz && rate == sample_rate =>
+            {
+                cached.g
+            }
+            _ => (std::f64::consts::PI * (cutoff_hz / sample_rate).min(0.49)).tan(),
+        };
         let damping = 1.0 / parameters.resonance_q;
         let coefficients = SvfCoefficients {
             g,

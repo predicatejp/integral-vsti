@@ -58,7 +58,12 @@ impl Synthesizer {
                 return true;
             }
         }
+        let previous = self.state.parameters;
         self.state.parameters = values;
+        // 変更した設定グループだけ配送する。未発音の枠も次のNote Onに備えて更新する。
+        let oscillator_changed = values[..8] != previous[..8] || values[12] != previous[12];
+        let envelope_changed = values[14..] != previous[14..];
+        let filter_changed = values[9..12] != previous[9..12];
         let count = parameters::to_plain(8, values[8]) as usize;
         for voice in &mut self.state.voices[count..self.state.polyphony.max(count)] {
             voice.stop();
@@ -76,9 +81,15 @@ impl Synthesizer {
         let resonance_q = parameters::to_plain(11, values[11]);
         let cutoff_amount = parameters::to_plain(19, values[19]);
         for voice in &mut self.state.voices {
-            voice.set_parameters(waveform, envelope, unison_voices, detune_cents, phase_mode);
-            voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
-            voice.set_filter(filter_type, cutoff_cents, resonance_q);
+            if oscillator_changed {
+                voice.set_parameters(waveform, envelope, unison_voices, detune_cents, phase_mode);
+            }
+            if envelope_changed {
+                voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
+            }
+            if filter_changed {
+                voice.set_filter(filter_type, cutoff_cents, resonance_q);
+            }
         }
         true
     }
@@ -131,6 +142,51 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn individual_parameter_updates_reach_current_and_future_voices() {
+        for index in (0..parameters::COUNT).filter(|&i| i != 8 && i != 12) {
+            for value in [0.0, 1.0] {
+                for count in [1, 32] {
+                    let mut synth = Synthesizer::new();
+                    synth.set_sample_rate(48000.0);
+                    let mut values = parameters::defaults();
+                    values[index] = value;
+                    synth.set_parameters(values);
+                    // 設定を配送した後に使用枠を増やす。
+                    values[8] = parameters::to_normalized(8, f64::from(count));
+                    synth.set_parameters(values);
+                    let mut reference = Voice::new();
+                    reference.set_parameters(
+                        parameters::from_normalized(values[0]).unwrap(),
+                        parameters::envelope(&values, 1),
+                        parameters::to_plain(6, values[6]) as u32,
+                        parameters::to_plain(7, values[7]),
+                        crate::oscillator::PhaseMode::Keep,
+                    );
+                    reference.set_filter(
+                        parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
+                        parameters::to_plain(10, values[10]),
+                        parameters::to_plain(11, values[11]),
+                    );
+                    reference.set_cutoff_envelope(
+                        parameters::envelope(&values, 14),
+                        parameters::to_plain(19, values[19]),
+                    );
+                    reference.note_on(note(0, 0, 69), 0.0, 1.0);
+                    for id in 0..count {
+                        synth.note_on(note(id, 0, 69), 0.0, 1.0);
+                    }
+                    let gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
+                    for _ in 0..96 {
+                        let sample = reference.generate_sample(48000.0);
+                        let expected = (0..count).map(|_| sample).sum::<f64>() * gain;
+                        assert_eq!(synth.generate_sample(), expected, "parameter {index}");
+                    }
+                }
+            }
+        }
     }
 
     fn polyphonic(count: usize) -> Synthesizer {
