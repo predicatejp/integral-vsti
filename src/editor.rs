@@ -215,8 +215,14 @@ impl Editor {
                 egui::Order::Tooltip,
                 egui::Id::unique("knob-value"),
             ));
-            let text =
-                painter.layout_no_wrap(label, egui::FontId::monospace(18.0), egui::Color32::BLACK);
+            let mut layout = egui::text::LayoutJob::simple(
+                label,
+                egui::FontId::monospace(18.0),
+                egui::Color32::BLACK,
+                f32::INFINITY,
+            );
+            layout.halign = egui::Align::Center;
+            let text = painter.layout_job(layout);
             let bounds = egui::Rect::from_min_size(
                 egui::pos2(
                     center.x - text.size().x / 2.0,
@@ -229,7 +235,7 @@ impl Editor {
                 3.0,
                 egui::Color32::from_rgb(255, 250, 220),
             );
-            painter.galley(bounds.min, text, egui::Color32::BLACK);
+            painter.galley(bounds.center_top(), text, egui::Color32::BLACK);
         }
     }
 

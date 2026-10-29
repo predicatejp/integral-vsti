@@ -259,7 +259,7 @@ OscillatorにはWaveform・Phase・Unison・Detune、MasterにはPolyphony・Vol
 ノブは直径44pxで横に並べ、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
 Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeとカットオフ用AHDSR・Amountはノブです。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
-操作中はカーソルを隠して移動のたびに基準位置へ戻し、ノブの中央直上に「正式名称」「現在値」を2行で表示します。
+操作中はカーソルを隠して移動のたびに基準位置へ戻し、ノブの中央直上に「正式名称」「現在値」を中央揃えの2行で表示します。
 Unison・Polyphonyは整数、連続パラメーターは小数点以下3桁と単位を表示します。
 ボタン解放・Esc・フォーカス喪失・画面終了で調整を終了します。Escでも調整済みの値は保持します。
 時間・音量などへの換算は整数tickから行い、各パラメーターの刻み幅は上記の仕様に従います。
