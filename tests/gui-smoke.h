@@ -18,9 +18,17 @@ static_assert(sizeof(ViewRect) == 16);
 struct NativeParent {
 #ifdef _WIN32
     HWND window;
+    inline static unsigned keyDowns = 0, keyUps = 0;
+    static LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+        if (wparam == 'Z' || wparam == VK_SPACE) {
+            if (message == WM_KEYDOWN) ++keyDowns;
+            if (message == WM_KEYUP) ++keyUps;
+        }
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
     NativeParent() {
         WNDCLASSW cls {};
-        cls.lpfnWndProc = DefWindowProcW;
+        cls.lpfnWndProc = procedure;
         cls.hInstance = GetModuleHandleW(nullptr);
         cls.lpszClassName = L"SampleVstiGuiTest";
         RegisterClassW(&cls);
@@ -185,6 +193,15 @@ struct NativeParent {
         SetFocus(window);
 #else
         XSetInputFocus(display, window, RevertToParent, CurrentTime); XFlush(display);
+#endif
+    }
+    bool focused() {
+#ifdef _WIN32
+        return GetFocus() == window;
+#else
+        ::Window focus; int revert;
+        XGetInputFocus(display, &focus, &revert);
+        return focus == window;
 #endif
     }
     bool pointerAt(int x, int y) {
@@ -368,6 +385,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(controller->getParamNormalized(waveformId) == 2.0 / 3.0);
         pump(); assert(handler.sequence.empty());
         // 全17ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
+        parent.unfocus(); pump(); assert(parent.focused());
         for (int i = 1; i < 20; ++i) {
             if (i == 9 || i == 12) continue;
             ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
@@ -397,6 +415,22 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             parent.knobButton(false);
             waitFor([&] { return handler.sequence.size() == 3; }, "knob end");
             assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+            waitFor([&] { return parent.focused(); }, "host focus after knob");
+#ifdef _WIN32
+            // フォーカス先へ実キー入力を配送し、文字キーとスペースの両端を確認する。
+            if (i == 13) {
+                const auto downs = NativeParent::keyDowns, ups = NativeParent::keyUps;
+                INPUT keys[4] {};
+                for (int k = 0; k < 4; ++k) {
+                    keys[k].type = INPUT_KEYBOARD;
+                    keys[k].ki.wVk = k < 2 ? 'Z' : VK_SPACE;
+                    keys[k].ki.dwFlags = (k % 2) ? KEYEVENTF_KEYUP : 0;
+                }
+                assert(SendInput(4, keys, sizeof(INPUT)) == 4);
+                waitFor([&] { return NativeParent::keyDowns == downs + 2 &&
+                                    NativeParent::keyUps == ups + 2; }, "host keys after volume");
+            }
+#endif
             assert(parent.pointerAt(x, y));
             parent.movePointer(20, 20); pump(); assert(parent.pointerAt(20, 20));
             assert(parent.cursorVisible());
@@ -418,8 +452,13 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         // 実際のフォーカス喪失で、ボタン解放を待たずに終了する。
         parent.movePointer(controls[6].first, controls[6].second); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence.size() == 1; }, "knob before focus loss");
+        {
+            NativeParent other;
+            other.unfocus();
+            waitFor([&] { return handler.sequence.size() == 2; }, "knob focus loss");
+            assert(other.focused()); // 別ウィンドウに移ったフォーカスを奪わない。
+        }
         parent.unfocus();
-        waitFor([&] { return handler.sequence.size() == 2; }, "knob focus loss");
         assert(handler.sequence == (std::vector<int>{0, 2}));
         assert(parent.cursorVisible());
         parent.knobButton(false); pump(); handler.sequence.clear();

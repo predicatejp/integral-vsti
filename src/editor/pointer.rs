@@ -22,12 +22,30 @@ mod native {
         fn SetCursorPos(x: i32, y: i32) -> i32;
         fn GetCapture() -> *mut c_void;
         fn GetFocus() -> *mut c_void;
+        fn GetParent(window: *mut c_void) -> *mut c_void;
+        fn SetFocus(window: *mut c_void) -> *mut c_void;
         fn ReleaseCapture() -> i32;
         fn GetAsyncKeyState(key: i32) -> i16;
         fn SetCursor(cursor: *mut c_void) -> *mut c_void;
         fn LoadCursorW(instance: *mut c_void, name: *const u16) -> *mut c_void;
     }
     impl Editor {
+        pub(in crate::editor) fn restore_host_focus(&self) {
+            let Some(window) = self.hwnd() else {
+                return;
+            };
+            // SAFETY: UIスレッド上の生存中の子と親。既に他へ移ったフォーカスは奪わない。
+            // SetFocusは同期的に再入し得るため、呼び出し前にdragの状態・借用を解放する。
+            unsafe {
+                if GetFocus() == window {
+                    let parent = GetParent(window);
+                    if !parent.is_null() {
+                        SetFocus(parent);
+                    }
+                }
+            }
+        }
+
         fn hwnd(&self) -> Option<*mut c_void> {
             match self.window.window_handle().ok()?.as_raw() {
                 RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as *mut c_void),
@@ -104,6 +122,16 @@ mod native {
     #[link(name = "libX11.so.6", kind = "dylib", modifiers = "+verbatim")]
     unsafe extern "C" {
         fn XGetInputFocus(d: *mut c_void, focus: *mut c_ulong, revert: *mut c_int) -> c_int;
+        fn XSetInputFocus(d: *mut c_void, focus: c_ulong, revert: c_int, time: c_ulong) -> c_int;
+        fn XQueryTree(
+            d: *mut c_void,
+            w: c_ulong,
+            root: *mut c_ulong,
+            parent: *mut c_ulong,
+            children: *mut *mut c_ulong,
+            count: *mut c_uint,
+        ) -> c_int;
+        fn XFree(data: *mut c_void) -> c_int;
         fn XQueryPointer(
             d: *mut c_void,
             w: c_ulong,
@@ -154,6 +182,36 @@ mod native {
         fn XFlush(d: *mut c_void) -> c_int;
     }
     impl Editor {
+        pub(in crate::editor) fn restore_host_focus(&self) {
+            let Some((display, window)) = self.x11() else {
+                return;
+            };
+            if !self.drag_has_focus() {
+                return;
+            }
+            let (mut root, mut parent, mut count) = (0, 0, 0);
+            let mut children = std::ptr::null_mut();
+            // SAFETY: 生存中の子ウィンドウの親を取得する。子がフォーカスを持つ間は
+            // 親も表示可能。Xlib所有の子一覧を解放し、RevertToParentで親へ戻す。
+            unsafe {
+                let ok = XQueryTree(
+                    display,
+                    window,
+                    &mut root,
+                    &mut parent,
+                    &mut children,
+                    &mut count,
+                );
+                if !children.is_null() {
+                    XFree(children.cast());
+                }
+                if ok != 0 && parent != 0 {
+                    XSetInputFocus(display, parent, 2, 0);
+                    XFlush(display);
+                }
+            }
+        }
+
         fn x11(&self) -> Option<(*mut c_void, c_ulong)> {
             let RawWindowHandle::Xlib(window) = self.window.window_handle().ok()?.as_raw() else {
                 return None;

@@ -310,6 +310,7 @@ impl Editor {
                     parameters::slider_to_plain(drag.index, drag.tick),
                 )
             })));
+            self.restore_host_focus();
             self.window.request_redraw();
         }
     }
