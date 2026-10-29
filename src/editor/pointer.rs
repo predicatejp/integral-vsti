@@ -1,10 +1,24 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! ノブのドラッグ中だけ使うOS操作。カーソルの移動範囲は拘束しない。
+//! ノブ操作の開始・継続判定・終了に必要なOS操作。カーソルの移動範囲は拘束しない。
 use super::Editor;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
+
+impl Editor {
+    /// 継続条件と現在位置の取得を、移動・領域離脱・タイマーで共用する。
+    pub(super) fn current_drag_position(&self) -> Option<egui::Pos2> {
+        if !self.drag_has_focus() {
+            return None;
+        }
+        #[cfg(target_os = "windows")]
+        if self.drag_escape_pressed() {
+            return None;
+        }
+        self.drag_pointer_position()
+    }
+}
 
 #[cfg(target_os = "windows")]
 mod native {
@@ -67,7 +81,7 @@ mod native {
             }
             Some(egui::pos2(point.x as f32, point.y as f32))
         }
-        pub(in crate::editor) fn hide_drag_pointer(&self) -> bool {
+        pub(in crate::editor) fn begin_drag_input(&self) -> bool {
             // SAFETY: baseviewがボタン押下時に確保したキャプチャの期間だけ非表示にする。
             // ShowCursorの表示カウンターは変更しない。
             unsafe {
@@ -88,7 +102,7 @@ mod native {
                 ClientToScreen(window, &mut point) != 0 && SetCursorPos(point.x, point.y) != 0
             }
         }
-        pub(in crate::editor) fn restore_drag_pointer(&self) {
+        pub(in crate::editor) fn end_drag_input(&self) {
             // SAFETY: 自分のキャプチャだけ解除する。標準カーソルは共有資源で破棄不要。
             unsafe {
                 if self.hwnd().is_some_and(|window| GetCapture() == window) {
@@ -177,36 +191,6 @@ mod native {
         fn XFlush(d: *mut c_void) -> c_int;
     }
     impl Editor {
-        pub(in crate::editor) fn restore_host_focus(&self) {
-            let Some((display, window)) = self.x11() else {
-                return;
-            };
-            if !self.drag_has_focus() {
-                return;
-            }
-            let (mut root, mut parent, mut count) = (0, 0, 0);
-            let mut children = std::ptr::null_mut();
-            // SAFETY: 生存中の子ウィンドウの親を取得する。子がフォーカスを持つ間は
-            // 親も表示可能。Xlib所有の子一覧を解放し、RevertToParentで親へ戻す。
-            unsafe {
-                let ok = XQueryTree(
-                    display,
-                    window,
-                    &mut root,
-                    &mut parent,
-                    &mut children,
-                    &mut count,
-                );
-                if !children.is_null() {
-                    XFree(children.cast());
-                }
-                if ok != 0 && parent != 0 {
-                    XSetInputFocus(display, parent, 2, 0);
-                    XFlush(display);
-                }
-            }
-        }
-
         fn x11(&self) -> Option<(*mut c_void, c_ulong)> {
             let RawWindowHandle::Xlib(window) = self.window.window_handle().ok()?.as_raw() else {
                 return None;
@@ -242,7 +226,8 @@ mod native {
             };
             (valid != 0 && mask & (1 << 8) != 0).then(|| egui::pos2(x as f32, y as f32))
         }
-        pub(in crate::editor) fn hide_drag_pointer(&self) -> bool {
+        pub(in crate::editor) fn begin_drag_input(&self) -> bool {
+            let _ = self.window.focus();
             let Some((display, window)) = self.x11() else {
                 return false;
             };
@@ -294,13 +279,33 @@ mod native {
             }
             true
         }
-        pub(in crate::editor) fn restore_drag_pointer(&self) {
-            if let Some((display, _)) = self.x11() {
-                // SAFETY: 同じ接続の自分のグラブだけを解除する。解放済みなら何もしない。
-                unsafe {
-                    XUngrabPointer(display, 0);
-                    XFlush(display);
+        pub(in crate::editor) fn end_drag_input(&self) {
+            let Some((display, window)) = self.x11() else {
+                return;
+            };
+            // SAFETY: 生存中のUI接続で自分のグラブだけを解除する。
+            // 子がフォーカスを持つ場合だけ、表示可能な親へ戻す。
+            unsafe {
+                XUngrabPointer(display, 0);
+                if self.drag_has_focus() {
+                    let (mut root, mut parent, mut count) = (0, 0, 0);
+                    let mut children = std::ptr::null_mut();
+                    let ok = XQueryTree(
+                        display,
+                        window,
+                        &mut root,
+                        &mut parent,
+                        &mut children,
+                        &mut count,
+                    );
+                    if !children.is_null() {
+                        XFree(children.cast());
+                    }
+                    if ok != 0 && parent != 0 {
+                        XSetInputFocus(display, parent, 2, 0);
+                    }
                 }
+                XFlush(display);
             }
         }
     }
