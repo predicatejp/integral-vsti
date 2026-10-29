@@ -4,7 +4,7 @@
 use std::{collections::VecDeque, sync::Mutex};
 
 pub(crate) enum Edit {
-    /// 数値入力・選択リストの単発編集。
+    /// 選択リストの単発編集。
     Set(usize, f64),
     /// ノブのドラッグ開始。
     Begin(usize),

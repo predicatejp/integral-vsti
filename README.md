@@ -93,7 +93,6 @@ Stateはデータ保持専用とし、所有コンポーネントのメソッド
 
 GUIではFilterをドロップダウン、CutoffとResonanceを整数ノブで操作します。
 Cutoffは0〜1200 tickを10 cent刻みへ換算し、Resonanceは0〜950 tickをQ=0.5〜10（0.01刻み）へ換算します。
-CutoffとResonanceは右の数値欄でも入力でき、範囲内の小数値を保持します。
 Filterは`stepCount=6`のリスト、Cutoffは`stepCount=0`の連続値として公開し、どちらも変更点で切り替えます。
 Resonanceは連続値で、ホストの変更点間を正規化値で線形補間します。
 
@@ -135,14 +134,14 @@ sustainではAmount×Sustainの変化量を保ち、releaseで基本のCutoffへ
 音量のreleaseが先に終わっても、カットオフ用のreleaseはフィルタの残響に適用されます。
 
 時間ノブは音量用と同じ対数軸、Sustainは線形です。
-Amountは10 cent刻みの整数ノブで、各数値欄から直接入力もできます。
+Amountは10 cent刻みの整数ノブで操作します。
 6パラメーターは連続値として公開し、VST3の変更点間を正規化値で線形補間します。
 
 ## マスターボリューム
 
 Volumeは全Voiceのフィルタ出力を加算した後の音量です（ParamID `0x4d564f4c`）。
 範囲は−48〜＋12 dB、初期値は0 dBです。整数ノブの0〜600 tickを
-`dB = tick / 10 − 48` で換算し、0.1 dB刻みで設定します。右の数値欄からも直接入力できます。
+`dB = tick / 10 − 48` で換算し、0.1 dB刻みで設定します。
 出力へ掛ける振幅倍率は `10^(dB / 20)` で、値が変わったときだけ計算して保持します。
 VST3では連続値として公開し、オートメーションの変更点間はdB値で線形補間します。
 
@@ -214,7 +213,7 @@ tick=1〜370は `ms = 10^((tick−1)/100)`、最大端点のtick=371は5000msに
 正の対数領域では100 tick進むと10倍になります。
 VST3の正規化値は実単位から連続値へ換算し、0〜1msの区間は線形に対応させます。
 Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算します。
-ノブ右側に現在値（時間はms）を表示します。
+ノブ操作中は中央直上に現在値（時間はms）を表示します。
 
 5パラメーターは `stepCount=0` / `kCanAutomate` で公開します。
 変更キューの連続値は、前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間し、
@@ -254,19 +253,18 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 
 ## GUI
 
-ホストのプラグイン画面に、ライトテーマのパラメーターリストを表示します。
-左からパラメーター名、操作欄、現在値を配置し、縦方向に並べます。
+ホストのプラグイン画面に、ライトテーマの4グループを2列で表示します。
+左上はSynthesizer、右上はAmplitude envelope、左下はFilter、右下はCutoff envelopeです。
+ノブは直径44pxで横に並べ、下にパラメーター名を表示します。
 Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeとカットオフ用AHDSR・Amountはノブです。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
 操作中はカーソルを隠して移動のたびに基準位置へ戻し、現在値をノブの中央直上に表示します。
+Unison・Polyphonyは整数、連続パラメーターは小数点以下3桁と単位を表示します。
 ボタン解放・Esc・フォーカス喪失・画面終了で調整を終了します。Escでも調整済みの値は保持します。
 時間・音量などへの換算は整数tickから行い、各パラメーターの刻み幅は上記の仕様に従います。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
 サイズは1024×768物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
-各ノブ右の数値欄をクリックして直接入力できます。Enterまたは別の欄へのフォーカス移動で確定し、Escで取り消します。
-時間はms、Detune・Cutoff・Cutoff Amountはcent、ResonanceはQ、VolumeはdBで入力します。UnisonとPolyphonyは範囲内の整数、その他は範囲内の小数値も受け付けます。
-直接入力した値はノブの刻みに丸めず、音源へ反映して保存します。範囲外や不正な文字列は確定時に元の表示へ戻します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
 対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。
@@ -545,7 +543,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/lib.rs`: モジュールの公開関数とファクトリー。
 - `src/plugin.rs`: インスタンス、バス、イベント・パラメーター処理、音声出力、Controller。
 - `src/gui.rs`: VST3画面の直接実装とホストへの編集通知。
-- `src/editor.rs`: 波形選択リストのマウス入力とegui/OpenGL描画。
+- `src/editor.rs`: カテゴリ別ノブ・選択リストのマウス入力とegui/OpenGL描画。
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した4波形オシレータ。

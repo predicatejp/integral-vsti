@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! パラメーターのマウス・数値入力とOpenGL描画を接続する。
+//! カテゴリ別のノブ・選択リストとOpenGL描画を接続する。
 
 pub(crate) mod edits;
 mod pointer;
@@ -20,12 +20,6 @@ use std::{
 };
 
 struct EditorState {
-    /// 確定前の入力文字列。数値の解析・VST3値への換算は確定時に行う。
-    text: [String; parameters::COUNT],
-    /// 前フレームで入力欄が編集中だったか。フォーカス移動時にも入力を保持する。
-    editing: [bool; parameters::COUNT],
-    /// 文字列を編集した欄だけを確定し、ホスト値の表示更新を再通知しない。
-    changed: [bool; parameters::COUNT],
     /// 現在操作しているノブ。終了時にtakeして二重終了を防ぐ。
     drag: Option<DragState>,
     /// 最後の描画で配置したノブの当たり判定。
@@ -41,7 +35,7 @@ struct DragState {
     remainder: f32,
     /// 入力開始時のクライアント座標。
     anchor: egui::Pos2,
-    /// 直接入力値を押下だけで丸めないための変更フラグ。
+    /// ホストからの連続値を押下だけで丸めないための変更フラグ。
     changed: bool,
 }
 
@@ -96,7 +90,7 @@ fn unit(index: usize) -> &'static str {
 }
 
 pub(super) struct Editor {
-    /// 描画スレッド内の数値入力状態。
+    /// 描画スレッド内のノブ操作状態。
     state: RefCell<EditorState>,
     /// 描画スレッド内だけで使う子ウィンドウの操作口。
     window: WindowContext,
@@ -144,9 +138,6 @@ impl Editor {
         };
         let editor = Self {
             state: RefCell::new(EditorState {
-                text: std::array::from_fn(|_| String::new()),
-                editing: [false; parameters::COUNT],
-                changed: [false; parameters::COUNT],
                 drag: None,
                 knobs: [egui::Rect::NOTHING; parameters::COUNT],
             }),
@@ -178,9 +169,9 @@ impl Editor {
         Ok(editor)
     }
 
-    fn knob(&self, ui: &mut egui::Ui, index: usize, selected: f64) -> f64 {
-        let (area, _) = ui.allocate_exact_size(egui::vec2(390.0, 21.0), egui::Sense::hover());
-        let rect = egui::Rect::from_center_size(area.center(), egui::vec2(25.0, 25.0));
+    fn knob(&self, ui: &mut egui::Ui, index: usize, selected: f64, width: f32) {
+        let (area, _) = ui.allocate_exact_size(egui::vec2(width, 50.0), egui::Sense::hover());
+        let rect = egui::Rect::from_center_size(area.center(), egui::vec2(50.0, 50.0));
         let mut state = self.state.borrow_mut();
         state.knobs[index] = rect;
         let drag = state.drag.as_ref().filter(|d| d.index == index);
@@ -199,16 +190,20 @@ impl Editor {
         };
         ui.painter().circle(
             center,
-            11.0,
+            22.0,
             color,
             egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
         );
         ui.painter().line_segment(
-            [center, center + egui::vec2(angle.cos(), angle.sin()) * 8.0],
+            [center, center + egui::vec2(angle.cos(), angle.sin()) * 16.0],
             egui::Stroke::new(2.0, egui::Color32::from_rgb(40, 90, 150)),
         );
         if drag.is_some() {
-            let label = format!("{value:.3} {}", unit(index));
+            let label = if matches!(index, 6 | 8) {
+                format!("{value:.0}")
+            } else {
+                format!("{value:.3} {}", unit(index))
+            };
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
                 egui::Id::unique("knob-value"),
@@ -229,7 +224,6 @@ impl Editor {
             );
             painter.galley(bounds.min, text, egui::Color32::BLACK);
         }
-        value
     }
 
     fn begin_drag(&self, index: usize) {
@@ -237,27 +231,7 @@ impl Editor {
         let Some(anchor) = self.drag_pointer_position() else {
             return;
         };
-        let mut selected = self.parameters.get(index);
-        {
-            let mut state = self.state.borrow_mut();
-            for i in 0..parameters::COUNT {
-                if state.editing[i] && state.changed[i] {
-                    if let Some(value) = parameters::parse_numeric(i, &state.text[i]) {
-                        self.edits.push(Edit::Set(i, value));
-                        if i == index {
-                            selected = value;
-                        }
-                    }
-                    state.changed[i] = false;
-                }
-                state.editing[i] = false;
-            }
-        }
-        self.context.memory_mut(|memory| {
-            if let Some(id) = memory.focused() {
-                memory.surrender_focus(id);
-            }
-        });
+        let selected = self.parameters.get(index);
         if !self.edits.push(Edit::Begin(index)) {
             return;
         }
@@ -327,43 +301,68 @@ impl Editor {
         }
     }
 
-    fn numeric_input(&self, ui: &mut egui::Ui, index: usize, value: f64, slider_edited: bool) {
-        let mut state = self.state.borrow_mut();
-        if slider_edited || !state.editing[index] {
-            // 固定小数桁・右寄せで1の位を揃える。編集開始時には丸め前の値を渡す。
-            state.text[index] = if matches!(index, 6 | 8) {
-                format!("{value:.0}")
-            } else {
-                format!("{value:.3}")
-            };
-            state.changed[index] = false;
-        }
-        let cancel = state.editing[index] && ui.input(|i| i.key_pressed(egui::Key::Escape));
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut state.text[index])
-                .id_salt(("number", index))
-                .font(egui::TextStyle::Monospace)
-                .align(egui::Align2::RIGHT_CENTER)
-                .margin(egui::vec2(4.0, 0.0))
-                .desired_width(125.0),
-        );
-        if response.gained_focus() {
-            state.text[index] = value.to_string();
-            let _ = self.window.focus();
-        }
-        state.changed[index] |= response.changed();
-        if response.lost_focus() && state.changed[index] && !cancel {
-            if let Some(normalized) = parameters::parse_numeric(index, &state.text[index]) {
-                let _ = self.edits.push(Edit::Set(index, normalized));
-            }
-            state.changed[index] = false;
-        }
-        state.editing[index] = response.has_focus();
-        if cancel {
-            state.changed[index] = false;
-            state.editing[index] = false;
-            response.surrender_focus();
-        }
+    fn group(
+        &self,
+        ui: &mut egui::Ui,
+        title: &str,
+        choices: &[usize],
+        knobs: &[usize],
+        selected: &[f64; parameters::COUNT],
+    ) {
+        egui::Frame::group(ui.style())
+            .inner_margin(16)
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(448.0);
+                    ui.set_min_height(180.0);
+                    ui.heading(title);
+                    if !choices.is_empty() {
+                        ui.horizontal(|ui| {
+                            for &index in choices {
+                                ui.vertical(|ui| {
+                                    ui.label(NAMES[index]);
+                                    let names: &[&str] = match index {
+                                        0 => &WAVEFORM_NAMES,
+                                        9 => &FILTER_NAMES,
+                                        _ => &parameters::PHASE_NAMES,
+                                    };
+                                    let mut choice =
+                                        parameters::to_plain(index, selected[index]) as usize;
+                                    if egui::ComboBox::from_id_salt(index)
+                                        .width(200.0)
+                                        .show_index(ui, &mut choice, names.len(), |i| names[i])
+                                        .changed()
+                                    {
+                                        self.edits.push(Edit::Set(
+                                            index,
+                                            parameters::to_normalized(index, choice as f64),
+                                        ));
+                                    }
+                                });
+                            }
+                        });
+                    }
+                    ui.add_space(24.0);
+                    let width = (448.0 - ui.spacing().item_spacing.x * (knobs.len() - 1) as f32)
+                        / knobs.len() as f32;
+                    ui.horizontal(|ui| {
+                        for &index in knobs {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(width, 80.0),
+                                egui::Layout::top_down(egui::Align::Center),
+                                |ui| {
+                                    self.knob(ui, index, selected[index], width);
+                                    ui.label(
+                                        NAMES[index]
+                                            .strip_prefix("Cutoff ")
+                                            .unwrap_or(NAMES[index]),
+                                    );
+                                },
+                            );
+                        }
+                    });
+                });
+            });
     }
 
     fn keyboard_input(&self, event: KeyboardEvent) -> EventStatus {
@@ -388,15 +387,12 @@ impl Editor {
             Key::Named(NamedKey::Enter) => Some(egui::Key::Enter),
             Key::Named(NamedKey::Escape) => Some(egui::Key::Escape),
             Key::Named(NamedKey::Tab) => Some(egui::Key::Tab),
-            Key::Named(NamedKey::Backspace) => Some(egui::Key::Backspace),
-            Key::Named(NamedKey::Delete) => Some(egui::Key::Delete),
             Key::Named(NamedKey::ArrowLeft) => Some(egui::Key::ArrowLeft),
             Key::Named(NamedKey::ArrowRight) => Some(egui::Key::ArrowRight),
             Key::Named(NamedKey::ArrowUp) => Some(egui::Key::ArrowUp),
             Key::Named(NamedKey::ArrowDown) => Some(egui::Key::ArrowDown),
             Key::Named(NamedKey::Home) => Some(egui::Key::Home),
             Key::Named(NamedKey::End) => Some(egui::Key::End),
-            Key::Character(text) if text.eq_ignore_ascii_case("a") => Some(egui::Key::A),
             _ => None,
         };
         let mut input = self.input.borrow_mut();
@@ -410,13 +406,6 @@ impl Editor {
                 repeat: event.repeat,
                 modifiers,
             });
-        }
-        if pressed
-            && !modifiers.ctrl
-            && !modifiers.alt
-            && let Key::Character(text) = event.key
-        {
-            input.events.push(egui::Event::Text(text));
         }
         self.window.request_redraw();
         EventStatus::Captured
@@ -444,65 +433,22 @@ impl WindowHandler for Editor {
                     ui.add_space(14.0);
                     ui.heading("Sample VSTi");
                     ui.add_space(12.0);
-                    egui::Grid::new("parameters")
-                        .num_columns(3)
-                        .min_col_width(160.0)
-                        .spacing([16.0, 8.0])
+                    egui::Grid::new("parameter-groups")
+                        .num_columns(2)
+                        .spacing([16.0, 16.0])
                         .show(ui, |ui| {
-                            ui.label("Waveform");
-                            let mut index = parameters::to_plain(0, selected[0]) as usize;
-                            if egui::ComboBox::from_id_salt("waveform")
-                                .width(200.0)
-                                .show_index(ui, &mut index, WAVEFORM_NAMES.len(), |i| {
-                                    WAVEFORM_NAMES[i]
-                                })
-                                .changed()
-                            {
-                                let _ = self.edits.push(Edit::Set(0, index as f64 / 3.0));
-                            }
-                            ui.label("");
+                            self.group(ui, "Synthesizer", &[0, 12], &[6, 7, 8, 13], &selected);
+                            self.group(ui, "Amplitude envelope", &[], &[1, 2, 3, 4, 5], &selected);
                             ui.end_row();
-
-                            for i in 1..NAMES.len() {
-                                ui.label(NAMES[i]);
-                                if matches!(i, 9 | 12) {
-                                    let names: &[&str] = if i == 9 {
-                                        &FILTER_NAMES
-                                    } else {
-                                        &parameters::PHASE_NAMES
-                                    };
-                                    let mut index = parameters::to_plain(i, selected[i]) as usize;
-                                    if egui::ComboBox::from_id_salt(if i == 9 {
-                                        "filter"
-                                    } else {
-                                        "phase"
-                                    })
-                                    .width(200.0)
-                                    .show_index(ui, &mut index, names.len(), |n| names[n])
-                                    .changed()
-                                    {
-                                        let _ = self.edits.push(Edit::Set(
-                                            i,
-                                            parameters::to_normalized(i, index as f64),
-                                        ));
-                                    }
-                                    ui.label("");
-                                    ui.end_row();
-                                    continue;
-                                }
-                                let value = self.knob(ui, i, selected[i]);
-                                ui.horizontal(|ui| {
-                                    let dragging = self
-                                        .state
-                                        .borrow()
-                                        .drag
-                                        .as_ref()
-                                        .is_some_and(|d| d.index == i && d.changed);
-                                    self.numeric_input(ui, i, value, dragging);
-                                    ui.label(unit(i));
-                                });
-                                ui.end_row();
-                            }
+                            self.group(ui, "Filter", &[9], &[10, 11], &selected);
+                            self.group(
+                                ui,
+                                "Cutoff envelope",
+                                &[],
+                                &[14, 15, 16, 17, 18, 19],
+                                &selected,
+                            );
+                            ui.end_row();
                         });
                 });
         });

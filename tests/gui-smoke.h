@@ -198,37 +198,7 @@ struct NativeParent {
 #endif
     }
     void click(int x, int y) { pointer(x, y, true); pointer(x, y, false); }
-    // 実際の子ウィンドウへキー入力を送る。0は未確定、27はEsc、13はEnter。
-    void replaceText(const char* text, int finish = 13) {
-#ifdef _WIN32
-        HWND child = GetWindow(window, GW_CHILD); assert(child);
-        auto key = [&](UINT code) {
-            const LPARAM scan = static_cast<LPARAM>(MapVirtualKeyW(code, MAPVK_VK_TO_VSC)) << 16;
-            SendMessageW(child, WM_KEYDOWN, code, scan | 1);
-            SendMessageW(child, WM_KEYUP, code, scan | 0xc0000001);
-        };
-        key(VK_HOME);
-        for (int i = 0; i < 32; ++i) key(VK_DELETE);
-        for (const char* c = text; *c; ++c) SendMessageW(child, WM_CHAR, static_cast<WPARAM>(*c), 1);
-        if (finish) key(static_cast<UINT>(finish));
-#else
-        auto key = [&](KeySym symbol) {
-            const auto code = XKeysymToKeycode(display, symbol); assert(code);
-            for (int type : {KeyPress, KeyRelease}) {
-                XEvent event {};
-                event.xkey = {type, 0, True, display, child(), DefaultRootWindow(display), 0,
-                              CurrentTime, 0, 0, 0, 0, 0, code, True};
-                XSendEvent(display, event.xkey.window, False,
-                           type == KeyPress ? KeyPressMask : KeyReleaseMask, &event);
-            }
-        };
-        key(XK_Home);
-        for (int i = 0; i < 32; ++i) key(XK_Delete);
-        for (const char* c = text; *c; ++c) key(static_cast<KeySym>(*c));
-        if (finish) key(finish == 27 ? XK_Escape : XK_Return);
-        XFlush(display);
-#endif
-    }
+
 };
 
 class GuiFrame final : public IPlugFrame
@@ -360,15 +330,19 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size() << std::endl;
         assert(false);
     };
-    // リストの文字・枠が描画されるまで待つ。固定時間の待機では、ソフトウェアGLの
-    // 初回描画が終わる前に項目をクリックしてしまうことがある。
-    auto menuVisible = [&] {
-        const auto background = parent.pixel(20, 130);
-        int border = 0;
-        for (int y = 100; y < 190; ++y) {
-            if (parent.pixel(192, y) != background) ++border;
-        }
-        return border > 70;
+    // グループ内のノブ中心と選択リスト。画面上の実入力で全設定を検証する。
+    const std::array<std::pair<int, int>, 20> controls {{
+        {129, 153}, {568, 166}, {660, 166}, {751, 166}, {842, 166}, {933, 166},
+        {82, 218}, {196, 218}, {310, 218}, {129, 385}, {138, 449}, {366, 449},
+        {338, 153}, {424, 218}, {560, 397}, {637, 397}, {713, 397}, {789, 397}, {865, 397}, {941, 397}
+    }};
+    auto choose = [&](int index, int item) {
+        const auto [x, y] = controls[index];
+        parent.click(x, y); pump(); assert(handler.sequence.empty());
+        parent.click(x, y + 30 + item * 25);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "grouped choice");
+        assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+        handler.sequence.clear(); pump();
     };
     for (int cycle = 0; cycle < 2; ++cycle) {
 #ifdef _WIN32
@@ -380,30 +354,15 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         pump();
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
-        parent.click(253, 80); // ドロップダウンを開くだけでは編集を通知しない。
-        waitFor(menuVisible, "open Waveform list");
-        assert(handler.sequence.empty());
-        parent.click(253, 185);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "Sawtooth selection");
-        assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-        assert(handler.editedId == waveformId && handler.value == 1.0 && controller->getParamNormalized(waveformId) == 1.0);
-        handler.sequence.clear();
-        waitFor([&] { return !menuVisible(); }, "close Waveform list");
-        parent.click(253, 80);
-        waitFor(menuVisible, "reopen Waveform list");
-        assert(handler.sequence.empty());
-        parent.click(253, 110);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "Sine selection");
-        assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+        choose(0, 3);
+        assert(handler.editedId == waveformId && handler.value == 1.0);
+        choose(0, 0);
         assert(handler.editedId == waveformId && handler.value == 0.0);
-        handler.sequence.clear();
-        // GUIの編集値を標準の変更キューへ配送し、DSPが保存する値を確認。
         Points point; point.values = {{0, handler.value}};
         Changes changes; changes.queues = {&point};
         ProcessData data; data.inputParameterChanges = &changes;
         assert(processor->process(data) == kResultOk);
         StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes[8] == 0);
-        // Componentの復元だけで表示を同期し、開いているGUIから再通知しない。
         saved.bytes[8] = 2;
         assert(component->setState(&saved) == kResultOk);
         assert(controller->getParamNormalized(waveformId) == 2.0 / 3.0);
@@ -414,7 +373,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
             pump(); assert(handler.sequence.empty());
-            const int x = 383, y = 113 + (i - 1) * 29;
+            const auto [x, y] = controls[i];
             parent.movePointer(x, y); pump(); parent.knobButton(true);
             waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
             assert(handler.sequence == (std::vector<int>{0}));
@@ -430,6 +389,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                                  i == 11 ? .51 : i == 13 ? -47.9 : i == 19 ? -4790.0 : .01;
             assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
             assert(parent.pointerAt(x, y));
+            point.id = info.id; point.values = {{0, handler.value}};
+            assert(processor->process(data) == kResultOk);
+            StateStream state; assert(component->getState(&state) == kResultOk);
+            double stored = 0; std::memcpy(&stored, state.bytes.data() + 12 + (i - 1) * 8, 8);
+            assert(std::abs(stored - plain) < 1e-9);
             parent.knobButton(false);
             waitFor([&] { return handler.sequence.size() == 3; }, "knob end");
             assert(handler.sequence == (std::vector<int>{0, 1, 2}));
@@ -441,89 +405,18 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             pump(); assert(handler.sequence.empty());
         }
         assert(controller->setParamNormalized(filterIds[0], 1.0 / 6.0) == kResultOk);
-        pump(); parent.click(253, 345); pump();
-        // 左枠の連続部分から、下側へ開いたリストの先頭項目の位置を得る。
-        const auto background = parent.pixel(20, 130);
-        int run = 0, best = 0, top = 0;
-        for (int y = 360; y < 600; ++y) {
-            run = parent.pixel(188, y) != background ? run + 1 : 0;
-            if (run > best) { best = run; top = y - run + 1; }
-        }
-        assert(best > 100);
-        parent.click(253, top + 14);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "filter type selection");
+        pump(); choose(9, 0);
         assert(handler.editedId == filterIds[0] && handler.value == 0.0);
-        handler.sequence.clear(); pump();
-        if (cycle == 0) {
-            // 各数値欄で、スライダーの刻みの間にある値もホストへそのまま渡す。
-            const std::array<const char*, 20> text {"", "12.345", "0.125", "123.456", "0.4567",
-                "0.0625", "3", "25.125", "19", "", "-1234.125", "1.2345", "", "", "12.345", "0.125", "123.456", "0.4567", "0.0625", "-1234.125"};
-            for (int i = 1; i < 20; ++i) {
-                if (i == 9 || i == 12 || i == 13) continue;
-                ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
-                parent.click(643, 84 + 29 * i); pump();
-                parent.replaceText(text[i]);
-                waitFor([&] { return handler.sequence.size() >= 3; }, ("numeric entry " + std::to_string(i)).c_str());
-                assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-                assert(handler.editedId == info.id);
-                const double plain = std::stod(text[i]);
-                assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 2e-10);
-                // 標準キューを通した後も、保存データに丸め前の実単位が残る。
-                point.id = info.id; point.values = {{0, handler.value}};
-                assert(processor->process(data) == kResultOk);
-                StateStream state; assert(component->getState(&state) == kResultOk);
-                double stored = 0; std::memcpy(&stored, state.bytes.data() + 12 + (i - 1) * 8, 8);
-                assert(std::abs(stored - plain) < 2e-10);
-                handler.sequence.clear();
-            }
-            // 範囲外は元の値へ戻し、Escも編集を取り消す。
-            for (bool cancel : {false, true}) {
-                parent.click(643, 403); pump();
-                parent.replaceText(cancel ? "3.25" : "0.1", cancel ? 27 : 13); pump();
-                assert(handler.sequence.empty());
-                assert(std::abs(controller->normalizedParamToPlain(filterIds[2],
-                    controller->getParamNormalized(filterIds[2])) - 1.2345) < 1e-12);
-            }
-            parent.click(643, 403); pump(); parent.replaceText("2.3456", 0); pump();
-            assert(handler.sequence.empty());
-            parent.click(30, 40);
-            waitFor([&] { return handler.sequence.size() >= 3; }, "numeric entry focus loss");
-            assert(std::abs(controller->normalizedParamToPlain(filterIds[2], handler.value) - 2.3456) < 1e-12);
-            handler.sequence.clear(); pump();
-        }
-        // PhaseリストからRandomを選択し、状態へ保存する。
         assert(controller->setParamNormalized(phaseId, 0.0) == kResultOk);
-        pump(); parent.click(253, 435); pump();
-        const auto phaseBackground = parent.pixel(20, 130);
-        int phaseRun = 0, phaseBest = 0, phaseTop = 0;
-        for (int y = 450; y < 600; ++y) {
-            phaseRun = parent.pixel(188, y) != phaseBackground ? phaseRun + 1 : 0;
-            if (phaseRun > phaseBest) { phaseBest = phaseRun; phaseTop = y - phaseRun + 1; }
-        }
-        assert(phaseBest > 60);
-        parent.click(253, phaseTop + 64);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "Random phase selection");
-        assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+        pump(); choose(12, 2);
         assert(handler.editedId == phaseId && handler.value == 1.0);
         point.id = phaseId; point.values = {{0, handler.value}};
         assert(processor->process(data) == kResultOk);
         StateStream phaseState; assert(component->getState(&phaseState) == kResultOk);
-        double phaseMode = -1;
-        std::memcpy(&phaseMode, phaseState.bytes.data() + 100, 8);
+        double phaseMode = -1; std::memcpy(&phaseMode, phaseState.bytes.data() + 100, 8);
         assert(phaseMode == 2.0);
-        handler.sequence.clear(); pump();
-        // Volumeの直接入力を実単位で保存する。
-        parent.click(643, 464); pump(); parent.replaceText("-12.345");
-        waitFor([&] { return handler.sequence.size() >= 3; }, "volume numeric entry");
-        assert(handler.sequence == (std::vector<int>{0, 1, 2}) && handler.editedId == volumeId);
-        point.id = volumeId; point.values = {{0, handler.value}};
-        assert(processor->process(data) == kResultOk);
-        StateStream volumeState; assert(component->getState(&volumeState) == kResultOk);
-        double volumeDb = 0; std::memcpy(&volumeDb, volumeState.bytes.data() + 108, 8);
-        assert(std::abs(volumeDb + 12.345) < 1e-12);
-        handler.sequence.clear(); pump();
         // 実際のフォーカス喪失で、ボタン解放を待たずに終了する。
-        parent.movePointer(383, 113); pump(); parent.knobButton(true);
+        parent.movePointer(controls[6].first, controls[6].second); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence.size() == 1; }, "knob before focus loss");
         parent.unfocus();
         waitFor([&] { return handler.sequence.size() == 2; }, "knob focus loss");
@@ -531,7 +424,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(parent.cursorVisible());
         parent.knobButton(false); pump(); handler.sequence.clear();
         // 押したまま画面を閉じても開始済み編集は終了する。
-        parent.movePointer(383, 113); pump(); parent.knobButton(true);
+        parent.movePointer(controls[6].first, controls[6].second); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence.size() == 1; }, "knob before close");
         pump(); parent.screenshot();
         assert(view->removed() == kResultOk);
