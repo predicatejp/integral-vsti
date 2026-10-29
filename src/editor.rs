@@ -33,6 +33,9 @@ struct EditorState {
 }
 
 struct DragState {
+    #[cfg(target_os = "windows")]
+    /// 操作開始時のキー入力先と前面ウィンドウ。所有せず変化の検知だけに使う。
+    keyboard_focus: [usize; 2],
     /// 操作対象のパラメーター。
     index: usize,
     /// 操作中の整数tick。ホストへの配送遅延で巻き戻さない。
@@ -249,25 +252,22 @@ impl Editor {
             return;
         }
         self.state.borrow_mut().drag = Some(DragState {
+            #[cfg(target_os = "windows")]
+            keyboard_focus: self.keyboard_focus(),
             index,
             tick: value_tick(index, selected),
             remainder: 0.0,
             anchor,
             changed: false,
         });
-        let _ = self.window.focus();
-        if !self.hide_drag_pointer() {
+        if !self.begin_drag_input() {
             self.end_drag();
         }
         self.window.request_redraw();
     }
 
     fn move_drag(&self) {
-        if !self.drag_has_focus() {
-            self.end_drag();
-            return;
-        }
-        let Some(position) = self.drag_pointer_position() else {
+        let Some(position) = self.current_drag_position() else {
             self.end_drag();
             return;
         };
@@ -303,14 +303,13 @@ impl Editor {
     fn end_drag(&self) {
         let drag = self.state.borrow_mut().drag.take();
         if let Some(drag) = drag {
-            self.restore_drag_pointer();
+            self.end_drag_input();
             self.edits.push(Edit::End(drag.changed.then(|| {
                 parameters::to_normalized(
                     drag.index,
                     parameters::slider_to_plain(drag.index, drag.tick),
                 )
             })));
-            self.restore_host_focus();
             self.window.request_redraw();
         }
     }
@@ -590,7 +589,7 @@ impl WindowHandler for Editor {
                 }
             }
             Event::Mouse(MouseEvent::CursorLeft) => {
-                if !self.drag_has_focus() || self.drag_pointer_position().is_none() {
+                if self.current_drag_position().is_none() {
                     self.end_drag();
                 }
                 egui::Event::PointerGone
@@ -603,6 +602,11 @@ impl WindowHandler for Editor {
     }
 
     fn on_timer(&self, _: &baseview::TimerHandle) {
+        // キーボードフォーカスを取得しないWindowsでは、終了条件もタイマーで確認する。
+        #[cfg(target_os = "windows")]
+        if self.state.borrow().drag.is_some() && self.current_drag_position().is_none() {
+            self.end_drag();
+        }
         if self.displayed.get() != self.parameters.snapshot() {
             self.window.request_redraw();
         }
