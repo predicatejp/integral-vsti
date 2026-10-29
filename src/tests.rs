@@ -559,6 +559,23 @@ fn gui_gesture_keeps_handler_alive_during_reentrant_replacement() {
         assert_eq!(plugin::edit_parameter(controller, 0, 0.0), OK);
         assert_eq!((*handler).sequence.get(), 123);
         assert_eq!((*handler).refs.get(), 1);
+        // ドラッグ中にホストがhandlerを交換しても、開始した相手へ最後まで通知する。
+        assert_eq!((ct.set_component_handler)(controller, handler.cast()), OK);
+        let gesture = plugin::begin_parameter_edit(controller, 0).unwrap();
+        assert_eq!((*handler).refs.get(), 3);
+        assert_eq!(
+            plugin::perform_parameter_edit(controller, &gesture, 0, 0.5),
+            OK
+        );
+        assert_eq!((*handler).refs.get(), 2);
+        assert_eq!(
+            plugin::perform_parameter_edit(controller, &gesture, 0, 1.0),
+            OK
+        );
+        plugin::end_parameter_edit(&gesture, 0);
+        assert_eq!((*handler).sequence.get(), 1223);
+        drop(gesture);
+        assert_eq!((*handler).refs.get(), 1);
         assert_eq!((ct.unknown.release)(controller), 0);
         assert_eq!((ft.unknown.release)(factory), 0);
     }

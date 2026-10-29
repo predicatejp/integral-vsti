@@ -140,6 +140,63 @@ struct NativeParent {
         XDestroyImage(image);
     }
 #endif
+    // OSの実ボタン状態と暗黙グラブも検証するため、ノブには実入力を注入する。
+    void knobButton(bool down) {
+#ifdef _WIN32
+        INPUT input {}; input.type = INPUT_MOUSE;
+        input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+        assert(SendInput(1, &input, sizeof(input)) == 1);
+#else
+        static void* xtst = dlopen("libXtst.so.6", RTLD_NOW | RTLD_LOCAL); assert(xtst);
+        using Button = int (*)(Display*, unsigned int, Bool, unsigned long);
+        static auto button = reinterpret_cast<Button>(dlsym(xtst, "XTestFakeButtonEvent")); assert(button);
+        assert(button(display, 1, down ? True : False, 0)); XFlush(display);
+#endif
+    }
+    void movePointer(int x, int y) {
+#ifdef _WIN32
+        POINT point {x, y}; assert(ClientToScreen(GetWindow(window, GW_CHILD), &point));
+        assert(SetCursorPos(point.x, point.y));
+#else
+        XWarpPointer(display, 0, child(), 0, 0, 0, 0, x, y); XFlush(display);
+#endif
+    }
+    bool cursorVisible() {
+#ifdef _WIN32
+        CURSORINFO info {}; info.cbSize = sizeof(info); assert(GetCursorInfo(&info));
+        return (info.flags & CURSOR_SHOWING) != 0;
+#else
+        struct CursorImage {
+            short x, y; unsigned short width, height, xhot, yhot;
+            unsigned long serial; unsigned long* pixels; unsigned long atom; const char* name;
+        };
+        static void* fixes = dlopen("libXfixes.so.3", RTLD_NOW | RTLD_LOCAL); assert(fixes);
+        using GetImage = CursorImage* (*)(Display*);
+        static auto getImage = reinterpret_cast<GetImage>(dlsym(fixes, "XFixesGetCursorImage")); assert(getImage);
+        auto* image = getImage(display); assert(image);
+        bool visible = false;
+        for (unsigned i = 0; i < static_cast<unsigned>(image->width) * image->height; ++i)
+            visible |= (image->pixels[i] & 0xff000000UL) != 0;
+        XFree(image); return visible;
+#endif
+    }
+    void unfocus() {
+#ifdef _WIN32
+        SetFocus(window);
+#else
+        XSetInputFocus(display, window, RevertToParent, CurrentTime); XFlush(display);
+#endif
+    }
+    bool pointerAt(int x, int y) {
+#ifdef _WIN32
+        POINT point; assert(GetCursorPos(&point)); assert(ScreenToClient(GetWindow(window, GW_CHILD), &point));
+        return point.x == x && point.y == y;
+#else
+        ::Window root, sub; int rx, ry, px, py; unsigned mask;
+        assert(XQueryPointer(display, child(), &root, &sub, &rx, &ry, &px, &py, &mask));
+        return px == x && py == y;
+#endif
+    }
     void click(int x, int y) { pointer(x, y, true); pointer(x, y, false); }
     // 実際の子ウィンドウへキー入力を送る。0は未確定、27はEsc、13はEnter。
     void replaceText(const char* text, int finish = 13) {
@@ -288,7 +345,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     parent.resize(size.getWidth(), size.getHeight());
     assert(view->setFrame(&frame) == kResultOk);
     auto pump = [&] {
-        for (int i = 0; i < 50; ++i) {
+        for (int i = 0; i < 10; ++i) {
             parent.pump(); frame.tick(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     };
@@ -351,78 +408,36 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(component->setState(&saved) == kResultOk);
         assert(controller->getParamNormalized(waveformId) == 2.0 / 3.0);
         pump(); assert(handler.sequence.empty());
-        // スライダーは左端0、右端最大を選べる。ホストからの復元値を丸めて再通知しない。
-        for (size_t i = 0; i < envelopeIds.size(); ++i) {
-            for (int x : {577, 188}) {
-                const int y = 113 + static_cast<int>(i) * 29;
-                parent.pointer(x, y, true); pump(); parent.pointer(x, y, false);
-                waitFor([&] { return handler.sequence.size() >= 3; }, "envelope slider edit");
-                assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-                assert(handler.editedId == envelopeIds[i]);
-                assert(handler.value == (x == 577 ? 1.0 : 0.0));
-                handler.sequence.clear(); pump();
-            }
-            if (i != 3) {
-                // 0ms端点の追加後も、対数軸の10msと1000msをマウスで選べる。
-                for (int x : {297, 501}) {
-                    parent.pointer(x, 113 + static_cast<int>(i) * 29, true);
-                    pump(); parent.pointer(x, 113 + static_cast<int>(i) * 29, false);
-                    waitFor([&] { return handler.sequence.size() >= 3; }, "exact envelope time");
-                    assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-                    assert(handler.editedId == envelopeIds[i]);
-                    const double expected = x == 297 ? 10.0 : 1000.0;
-                    assert(std::abs(controller->normalizedParamToPlain(handler.editedId, handler.value)
-                                    - expected) < 1e-9);
-                    handler.sequence.clear(); pump();
-                }
-            }
-            assert(controller->setParamNormalized(envelopeIds[i], .123456789) == kResultOk);
+        // 全17ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
+        for (int i = 1; i < 20; ++i) {
+            if (i == 9 || i == 12) continue;
+            ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
+            assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
             pump(); assert(handler.sequence.empty());
-        }
-        if (cycle == 0) {
-            // 全整数tickをマウスで選択し、実単位への換算とホストへの反映を確認。
-            // 390pxの操作欄・18pxフォントでのハンドル移動範囲を整数ピクセルへ丸める。
-            for (int tick = 0; tick <= 371; ++tick) {
-                const int x = static_cast<int>(std::lround(194.20625 + 377.5875 * tick / 371.0));
-                const double ms = tick == 0 ? 0.0 : std::min(5000.0, std::pow(10.0, (tick - 1) / 100.0));
-                const double expected = controller->plainParamToNormalized(envelopeIds[0], ms);
-                parent.pointer(x, 113, true);
-                waitFor([&] {
-                    return std::abs(controller->getParamNormalized(envelopeIds[0]) - expected) < 1e-12;
-                }, ("envelope integer tick " + std::to_string(tick)).c_str());
-                parent.pointer(x, 113, false);
-                for (int step = 0; step < 3; ++step) {
-                    parent.pump(); frame.tick(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-                handler.sequence.clear();
-            }
-        }
-        // 追加3行は整数で操作し、ホスト値の表示更新では編集通知しない。
-        for (int row = 0; row < 3; ++row) {
-            const ParamID id = row == 0 ? unisonId : (row == 1 ? detuneId : polyphonyId);
-            for (int x : {577, 188}) {
-                parent.pointer(x, 258 + row * 29, true); pump();
-                parent.pointer(x, 258 + row * 29, false);
-                waitFor([&] { return handler.sequence.size() >= 3; }, "unison/detune/polyphony slider edit");
-                assert(handler.editedId == id && handler.value == (x == 577 ? 1.0 : 0.0));
-                assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-                handler.sequence.clear(); pump();
-            }
-            assert(controller->setParamNormalized(id, .5) == kResultOk);
-            pump(); assert(handler.sequence.empty());
-        }
-        // フィルタの新規行も整数UIから規定の編集通知を送る。
-        for (int row = 0; row < 2; ++row) {
-            const ParamID id = filterIds[row + 1];
-            for (int x : {577, 188}) {
-                parent.pointer(x, 374 + row * 29, true); pump();
-                parent.pointer(x, 374 + row * 29, false);
-                waitFor([&] { return handler.sequence.size() >= 3; }, "filter slider edit");
-                assert(handler.editedId == id && handler.value == (x == 577 ? 1.0 : 0.0));
-                assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-                handler.sequence.clear(); pump();
-            }
-            assert(controller->setParamNormalized(id, .3) == kResultOk);
+            const int x = 383, y = 113 + (i - 1) * 29;
+            parent.movePointer(x, y); pump(); parent.knobButton(true);
+            waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
+            assert(handler.sequence == (std::vector<int>{0}));
+            assert(!parent.cursorVisible());
+            parent.movePointer(x, y - 3); pump(); // 4px未満は保持。
+            assert(handler.sequence.size() == 1 && controller->getParamNormalized(info.id) == 0.0);
+            assert(parent.pointerAt(x, y));
+            parent.movePointer(x, y - 1);
+            waitFor([&] { return handler.sequence.size() == 2; }, "knob integer tick");
+            assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
+            const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
+            const double plain = time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
+                                 i == 11 ? .51 : i == 13 ? -47.9 : i == 19 ? -4790.0 : .01;
+            assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
+            assert(parent.pointerAt(x, y));
+            parent.knobButton(false);
+            waitFor([&] { return handler.sequence.size() == 3; }, "knob end");
+            assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+            assert(parent.pointerAt(x, y));
+            parent.movePointer(20, 20); pump(); assert(parent.pointerAt(20, 20));
+            assert(parent.cursorVisible());
+            handler.sequence.clear();
+            assert(controller->setParamNormalized(info.id, .123456789) == kResultOk);
             pump(); assert(handler.sequence.empty());
         }
         assert(controller->setParamNormalized(filterIds[0], 1.0 / 6.0) == kResultOk);
@@ -497,14 +512,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         std::memcpy(&phaseMode, phaseState.bytes.data() + 100, 8);
         assert(phaseMode == 2.0);
         handler.sequence.clear(); pump();
-        // Volumeの整数スライダー両端と直接入力を検証し、実単位で保存する。
-        for (int x : {577, 188}) {
-            parent.pointer(x, 464, true); pump(); parent.pointer(x, 464, false);
-            waitFor([&] { return handler.sequence.size() >= 3; }, "volume slider edit");
-            assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-            assert(handler.editedId == volumeId && handler.value == (x == 577 ? 1.0 : 0.0));
-            handler.sequence.clear(); pump();
-        }
+        // Volumeの直接入力を実単位で保存する。
         parent.click(643, 464); pump(); parent.replaceText("-12.345");
         waitFor([&] { return handler.sequence.size() >= 3; }, "volume numeric entry");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}) && handler.editedId == volumeId);
@@ -514,9 +522,21 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         double volumeDb = 0; std::memcpy(&volumeDb, volumeState.bytes.data() + 108, 8);
         assert(std::abs(volumeDb + 12.345) < 1e-12);
         handler.sequence.clear(); pump();
-        parent.screenshot();
+        // 実際のフォーカス喪失で、ボタン解放を待たずに終了する。
+        parent.movePointer(383, 113); pump(); parent.knobButton(true);
+        waitFor([&] { return handler.sequence.size() == 1; }, "knob before focus loss");
+        parent.unfocus();
+        waitFor([&] { return handler.sequence.size() == 2; }, "knob focus loss");
+        assert(handler.sequence == (std::vector<int>{0, 2}));
+        assert(parent.cursorVisible());
+        parent.knobButton(false); pump(); handler.sequence.clear();
+        // 押したまま画面を閉じても開始済み編集は終了する。
+        parent.movePointer(383, 113); pump(); parent.knobButton(true);
+        waitFor([&] { return handler.sequence.size() == 1; }, "knob before close");
+        pump(); parent.screenshot();
         assert(view->removed() == kResultOk);
-        pump(); assert(handler.sequence.empty());
+        parent.knobButton(false); pump();
+        assert(handler.sequence == (std::vector<int>{0, 2})); handler.sequence.clear();
     }
     assert(view->setFrame(nullptr) == kResultOk && frame.refs == 1);
     assert(view->release() == 0);

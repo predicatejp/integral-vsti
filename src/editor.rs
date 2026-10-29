@@ -3,6 +3,10 @@
 
 //! パラメーターのマウス・数値入力とOpenGL描画を接続する。
 
+pub(crate) mod edits;
+mod pointer;
+use edits::{Edit, Edits};
+
 use crate::parameters::{self, FILTER_NAMES, NAMES, SharedParameters, WAVEFORM_NAMES};
 use baseview::{
     Event, EventStatus, HandlerError, MouseButton, MouseEvent, WindowContext, WindowEvent,
@@ -11,7 +15,7 @@ use baseview::{
 use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers, NamedKey};
 use std::{
     cell::{Cell, RefCell},
-    sync::{Arc, mpsc::SyncSender},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -22,6 +26,73 @@ struct EditorState {
     editing: [bool; parameters::COUNT],
     /// 文字列を編集した欄だけを確定し、ホスト値の表示更新を再通知しない。
     changed: [bool; parameters::COUNT],
+    /// 現在操作しているノブ。終了時にtakeして二重終了を防ぐ。
+    drag: Option<DragState>,
+    /// 最後の描画で配置したノブの当たり判定。
+    knobs: [egui::Rect; parameters::COUNT],
+}
+
+struct DragState {
+    /// 操作対象のパラメーター。
+    index: usize,
+    /// 操作中の整数tick。ホストへの配送遅延で巻き戻さない。
+    tick: u32,
+    /// 1tick未満の上下移動量（物理px）。
+    remainder: f32,
+    /// 入力開始時のクライアント座標。
+    anchor: egui::Pos2,
+    /// 直接入力値を押下だけで丸めないための変更フラグ。
+    changed: bool,
+}
+
+/// 上限での余分な移動を捨て、逆方向の操作を即座に受け付ける。
+fn move_tick(tick: u32, remainder: f32, dy: f32, max: u32) -> (u32, f32) {
+    let pixels = remainder - dy;
+    let steps = (pixels / 4.0).trunc() as i32;
+    let next = (i64::from(tick) + i64::from(steps)).clamp(0, i64::from(max)) as u32;
+    let rest = if (next == 0 && pixels < 0.0) || (next == max && pixels > 0.0) {
+        0.0
+    } else {
+        pixels - steps as f32 * 4.0
+    };
+    (next, rest)
+}
+
+fn max_tick(index: usize) -> u32 {
+    if parameters::is_time(index) {
+        371
+    } else {
+        match index {
+            6 => 6,
+            8 => 31,
+            19 => 960,
+            10 => 1200,
+            13 => 600,
+            11 => 950,
+            _ => 100,
+        }
+    }
+}
+
+fn value_tick(index: usize, value: f64) -> u32 {
+    let scale = if parameters::is_time(index) {
+        parameters::time_scale()
+    } else {
+        f64::from(max_tick(index))
+    };
+    (value * scale).round() as u32
+}
+
+fn unit(index: usize) -> &'static str {
+    if parameters::is_time(index) {
+        "ms"
+    } else {
+        match index {
+            13 => "dB",
+            7 | 10 | 19 => "cent",
+            _ => "",
+        }
+    }
 }
 
 pub(super) struct Editor {
@@ -46,7 +117,7 @@ pub(super) struct Editor {
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
     displayed: Cell<[f64; parameters::COUNT]>,
     /// ホストUIスレッドへの編集キュー。描画中にはホストを呼ばない。
-    edits: SyncSender<(usize, f64)>,
+    edits: Arc<Edits>,
     #[cfg(target_os = "windows")]
     /// Windowsでは同じUIスレッドのウィンドウタイマーから編集を配送する。
     view: std::rc::Weak<super::gui::EditorView>,
@@ -56,7 +127,7 @@ impl Editor {
     pub(super) fn new(
         window: WindowContext,
         parameters: Arc<SharedParameters>,
-        edits: SyncSender<(usize, f64)>,
+        edits: Arc<Edits>,
         #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::EditorView>,
     ) -> Result<Self, HandlerError> {
         let gl = window
@@ -76,6 +147,8 @@ impl Editor {
                 text: std::array::from_fn(|_| String::new()),
                 editing: [false; parameters::COUNT],
                 changed: [false; parameters::COUNT],
+                drag: None,
+                knobs: [egui::Rect::NOTHING; parameters::COUNT],
             }),
             window,
             gl,
@@ -105,6 +178,155 @@ impl Editor {
         Ok(editor)
     }
 
+    fn knob(&self, ui: &mut egui::Ui, index: usize, selected: f64) -> f64 {
+        let (area, _) = ui.allocate_exact_size(egui::vec2(390.0, 21.0), egui::Sense::hover());
+        let rect = egui::Rect::from_center_size(area.center(), egui::vec2(25.0, 25.0));
+        let mut state = self.state.borrow_mut();
+        state.knobs[index] = rect;
+        let drag = state.drag.as_ref().filter(|d| d.index == index);
+        let tick = drag.map_or_else(|| value_tick(index, selected), |d| d.tick);
+        let value = if drag.is_some_and(|d| d.changed) {
+            parameters::slider_to_plain(index, tick)
+        } else {
+            parameters::to_plain(index, selected)
+        };
+        let angle = std::f32::consts::PI * (0.75 + 1.5 * tick as f32 / max_tick(index) as f32);
+        let center = rect.center();
+        let color = if drag.is_some() {
+            ui.visuals().selection.bg_fill
+        } else {
+            egui::Color32::from_gray(220)
+        };
+        ui.painter().circle(
+            center,
+            11.0,
+            color,
+            egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
+        );
+        ui.painter().line_segment(
+            [center, center + egui::vec2(angle.cos(), angle.sin()) * 8.0],
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(40, 90, 150)),
+        );
+        if drag.is_some() {
+            let label = format!("{value:.3} {}", unit(index));
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                egui::Id::unique("knob-value"),
+            ));
+            let text =
+                painter.layout_no_wrap(label, egui::FontId::monospace(18.0), egui::Color32::BLACK);
+            let bounds = egui::Rect::from_min_size(
+                egui::pos2(
+                    center.x - text.size().x / 2.0,
+                    rect.top() - 6.0 - text.size().y,
+                ),
+                text.size(),
+            );
+            painter.rect_filled(
+                bounds.expand(4.0),
+                3.0,
+                egui::Color32::from_rgb(255, 250, 220),
+            );
+            painter.galley(bounds.min, text, egui::Color32::BLACK);
+        }
+        value
+    }
+
+    fn begin_drag(&self, index: usize) {
+        self.end_drag();
+        let Some(anchor) = self.drag_pointer_position() else {
+            return;
+        };
+        let mut selected = self.parameters.get(index);
+        {
+            let mut state = self.state.borrow_mut();
+            for i in 0..parameters::COUNT {
+                if state.editing[i] && state.changed[i] {
+                    if let Some(value) = parameters::parse_numeric(i, &state.text[i]) {
+                        self.edits.push(Edit::Set(i, value));
+                        if i == index {
+                            selected = value;
+                        }
+                    }
+                    state.changed[i] = false;
+                }
+                state.editing[i] = false;
+            }
+        }
+        self.context.memory_mut(|memory| {
+            if let Some(id) = memory.focused() {
+                memory.surrender_focus(id);
+            }
+        });
+        if !self.edits.push(Edit::Begin(index)) {
+            return;
+        }
+        self.state.borrow_mut().drag = Some(DragState {
+            index,
+            tick: value_tick(index, selected),
+            remainder: 0.0,
+            anchor,
+            changed: false,
+        });
+        let _ = self.window.focus();
+        if !self.hide_drag_pointer() {
+            self.end_drag();
+        }
+        self.window.request_redraw();
+    }
+
+    fn move_drag(&self) {
+        if !self.drag_has_focus() {
+            self.end_drag();
+            return;
+        }
+        let Some(position) = self.drag_pointer_position() else {
+            self.end_drag();
+            return;
+        };
+        let anchor = {
+            let mut state = self.state.borrow_mut();
+            let Some(drag) = state.drag.as_mut() else {
+                return;
+            };
+            let (tick, rest) = move_tick(
+                drag.tick,
+                drag.remainder,
+                position.y - drag.anchor.y,
+                max_tick(drag.index),
+            );
+            drag.remainder = rest;
+            if tick != drag.tick {
+                drag.tick = tick;
+                drag.changed = true;
+                self.edits.push(Edit::Value(parameters::to_normalized(
+                    drag.index,
+                    parameters::slider_to_plain(drag.index, tick),
+                )));
+            }
+            drag.anchor
+        };
+        // OSの現在位置を使うため、引き戻しの通知や溜まった移動イベントを二重計上しない。
+        if position != anchor && !self.warp_drag_pointer(anchor) {
+            self.end_drag();
+        }
+        self.window.request_redraw();
+    }
+
+    fn end_drag(&self) {
+        let drag = self.state.borrow_mut().drag.take();
+        if let Some(drag) = drag {
+            self.restore_drag_pointer();
+            self.edits.push(Edit::End(drag.changed.then(|| {
+                parameters::to_normalized(
+                    drag.index,
+                    parameters::slider_to_plain(drag.index, drag.tick),
+                )
+            })));
+            self.window.request_redraw();
+        }
+    }
+
     fn numeric_input(&self, ui: &mut egui::Ui, index: usize, value: f64, slider_edited: bool) {
         let mut state = self.state.borrow_mut();
         if slider_edited || !state.editing[index] {
@@ -132,7 +354,7 @@ impl Editor {
         state.changed[index] |= response.changed();
         if response.lost_focus() && state.changed[index] && !cancel {
             if let Some(normalized) = parameters::parse_numeric(index, &state.text[index]) {
-                let _ = self.edits.try_send((index, normalized));
+                let _ = self.edits.push(Edit::Set(index, normalized));
             }
             state.changed[index] = false;
         }
@@ -145,6 +367,13 @@ impl Editor {
     }
 
     fn keyboard_input(&self, event: KeyboardEvent) -> EventStatus {
+        if event.state == KeyState::Down
+            && event.key == Key::Named(NamedKey::Escape)
+            && self.state.borrow().drag.is_some()
+        {
+            self.end_drag();
+            return EventStatus::Captured;
+        }
         if !self.context.egui_wants_keyboard_input() || event.is_composing {
             return EventStatus::Ignored;
         }
@@ -229,11 +458,11 @@ impl WindowHandler for Editor {
                                 })
                                 .changed()
                             {
-                                let _ = self.edits.try_send((0, index as f64 / 3.0));
+                                let _ = self.edits.push(Edit::Set(0, index as f64 / 3.0));
                             }
                             ui.label("");
                             ui.end_row();
-                            ui.spacing_mut().slider_width = 390.0;
+
                             for i in 1..NAMES.len() {
                                 ui.label(NAMES[i]);
                                 if matches!(i, 9 | 12) {
@@ -252,7 +481,7 @@ impl WindowHandler for Editor {
                                     .show_index(ui, &mut index, names.len(), |n| names[n])
                                     .changed()
                                     {
-                                        let _ = self.edits.try_send((
+                                        let _ = self.edits.push(Edit::Set(
                                             i,
                                             parameters::to_normalized(i, index as f64),
                                         ));
@@ -261,59 +490,16 @@ impl WindowHandler for Editor {
                                     ui.end_row();
                                     continue;
                                 }
-                                let time = parameters::is_time(i);
-                                let max: u32 = if time {
-                                    371
-                                } else if i == 6 {
-                                    6
-                                } else if i == 8 {
-                                    31
-                                } else if i == 19 {
-                                    960
-                                } else if i == 10 {
-                                    1200
-                                } else if i == 13 {
-                                    600
-                                } else if i == 11 {
-                                    950
-                                } else {
-                                    100
-                                };
-                                let scale = if time {
-                                    parameters::time_scale()
-                                } else {
-                                    f64::from(max)
-                                };
-                                let mut tick = (selected[i] * scale).round() as u32;
-                                let response = ui.add(
-                                    egui::Slider::new(&mut tick, 0..=max)
-                                        // 丸い数への補正で隣のtickが選べなくなるのを防ぐ。
-                                        .smart_aim(false)
-                                        .show_value(false),
-                                );
-                                // ホスト値から表示用の整数に丸めただけでは再通知しない。
-                                let edited =
-                                    response.changed() && response.interact_pointer_pos().is_some();
-                                let value = if edited {
-                                    let value = parameters::slider_to_plain(i, tick);
-                                    let _ = self
-                                        .edits
-                                        .try_send((i, parameters::to_normalized(i, value)));
-                                    value
-                                } else {
-                                    parameters::to_plain(i, selected[i])
-                                };
+                                let value = self.knob(ui, i, selected[i]);
                                 ui.horizontal(|ui| {
-                                    self.numeric_input(ui, i, value, edited);
-                                    ui.label(if time {
-                                        "ms"
-                                    } else if i == 13 {
-                                        "dB"
-                                    } else if matches!(i, 7 | 10 | 19) {
-                                        "cent"
-                                    } else {
-                                        ""
-                                    });
+                                    let dragging = self
+                                        .state
+                                        .borrow()
+                                        .drag
+                                        .as_ref()
+                                        .is_some_and(|d| d.index == i && d.changed);
+                                    self.numeric_input(ui, i, value, dragging);
+                                    ui.label(unit(i));
                                 });
                                 ui.end_row();
                             }
@@ -357,11 +543,23 @@ impl WindowHandler for Editor {
         let event = match event {
             Event::Keyboard(event) => return self.keyboard_input(event),
             Event::Window(WindowEvent::Focused | WindowEvent::Unfocused) => {
-                let focused = matches!(event, Event::Window(WindowEvent::Focused));
+                let focused = matches!(event, Event::Window(WindowEvent::Focused))
+                    || (self.state.borrow().drag.is_some() && self.drag_has_focus());
+                if !focused {
+                    self.end_drag();
+                }
                 self.input.borrow_mut().focused = focused;
                 egui::Event::WindowFocused(focused)
             }
+            Event::Window(WindowEvent::WillClose) => {
+                self.end_drag();
+                return EventStatus::Captured;
+            }
             Event::Mouse(MouseEvent::CursorMoved { position, .. }) => {
+                if self.state.borrow().drag.is_some() {
+                    self.move_drag();
+                    return EventStatus::Captured;
+                }
                 let pos = egui::pos2(position.x as f32, position.y as f32);
                 self.pointer.set(pos);
                 egui::Event::PointerMoved(pos)
@@ -369,22 +567,47 @@ impl WindowHandler for Editor {
             Event::Mouse(MouseEvent::ButtonPressed {
                 button: MouseButton::Left,
                 ..
-            }) => egui::Event::PointerButton {
-                pos: self.pointer.get(),
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            },
+            }) => {
+                let index = self
+                    .state
+                    .borrow()
+                    .knobs
+                    .iter()
+                    .position(|rect| rect.contains(self.pointer.get()));
+                if let Some(index) = index.filter(|_| !egui::Popup::is_any_open(&self.context)) {
+                    self.begin_drag(index);
+                    return EventStatus::Captured;
+                }
+                egui::Event::PointerButton {
+                    pos: self.pointer.get(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }
+            }
             Event::Mouse(MouseEvent::ButtonReleased {
                 button: MouseButton::Left,
                 ..
-            }) => egui::Event::PointerButton {
-                pos: self.pointer.get(),
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            },
-            Event::Mouse(MouseEvent::CursorLeft) => egui::Event::PointerGone,
+            }) => {
+                let anchor = self.state.borrow().drag.as_ref().map(|d| d.anchor);
+                if let Some(anchor) = anchor {
+                    self.warp_drag_pointer(anchor);
+                    self.end_drag();
+                    return EventStatus::Captured;
+                }
+                egui::Event::PointerButton {
+                    pos: self.pointer.get(),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }
+            }
+            Event::Mouse(MouseEvent::CursorLeft) => {
+                if !self.drag_has_focus() || self.drag_pointer_position().is_none() {
+                    self.end_drag();
+                }
+                egui::Event::PointerGone
+            }
             _ => return EventStatus::Ignored,
         };
         self.input.borrow_mut().events.push(event);
@@ -406,12 +629,36 @@ impl WindowHandler for Editor {
 
 impl Drop for Editor {
     fn drop(&mut self) {
+        self.end_drag();
         // SAFETY: baseviewは描画スレッドでhandlerを破棄する。GL資源も同じ場所で解放する。
         unsafe {
             if self.gl.make_current().is_ok() {
                 self.painter.get_mut().destroy();
                 let _ = self.gl.make_not_current();
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn every_knob_tick_is_reachable_in_both_directions() {
+        for index in 1..parameters::COUNT {
+            if matches!(index, 9 | 12) {
+                continue;
+            }
+            let max = max_tick(index);
+            for tick in 0..max {
+                let (same, remainder) = move_tick(tick, 0.0, -3.0, max);
+                assert_eq!(same, tick);
+                assert_eq!(move_tick(same, remainder, -1.0, max), (tick + 1, 0.0));
+                assert_eq!(move_tick(tick + 1, 0.0, 4.0, max), (tick, 0.0));
+            }
+            assert_eq!(move_tick(max, 0.0, -100.0, max), (max, 0.0));
+            assert_eq!(move_tick(max, 0.0, 4.0, max), (max - 1, 0.0));
+            assert_eq!(move_tick(0, 0.0, 100.0, max), (0, 0.0));
         }
     }
 }

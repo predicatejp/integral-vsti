@@ -3,7 +3,12 @@
 
 //! VST3 IPlugViewを直接公開するeguiエディター。音声処理にはアクセスしない。
 
-use crate::{abi::*, host::HostRef, parameters::SharedParameters};
+use crate::{
+    abi::*,
+    editor::edits::{Edit, Edits},
+    host::HostRef,
+    parameters::SharedParameters,
+};
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 use std::{
     cell::{Cell, RefCell},
@@ -13,7 +18,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
-        mpsc::{self, Receiver, SyncSender},
     },
 };
 
@@ -70,9 +74,9 @@ struct ViewState {
     /// Controllerと共有する20個の正規化値。
     parameters: Arc<SharedParameters>,
     /// 描画側からの操作の送り口。音声スレッドでは使用しない。
-    sender: SyncSender<(usize, f64)>,
-    /// 操作の受け口。ホストUIスレッドだけで取り出す。
-    receiver: RefCell<Receiver<(usize, f64)>>,
+    sender: Arc<Edits>,
+    /// 開始が成功した編集先。終了時にtakeし、再入による二重通知を防ぐ。
+    editing: RefCell<Option<(usize, HostRef)>>,
     /// ホストコールバックによる再入で二重配送しないためのフラグ。
     polling: Cell<bool>,
 }
@@ -91,17 +95,67 @@ impl EditorView {
         let window = self.state.window.borrow().clone();
         if let Some(_window) = window {
             for _ in 0..32 {
-                let edit = self.state.receiver.borrow().try_recv();
-                let Ok((index, value)) = edit else {
+                let Some(edit) = self.state.sender.pop() else {
                     break;
                 };
-                // SAFETY: 両OSのタイマーはホストUIスレッドでのみ配送する。controllerが所有参照を保持する。
+                // SAFETY: 両OSのタイマーはホストUIスレッドでのみ配送する。
                 unsafe {
-                    crate::plugin::edit_parameter(self.state.controller.as_ptr(), index, value);
+                    match edit {
+                        Edit::Set(index, value) => {
+                            crate::plugin::edit_parameter(
+                                self.state.controller.as_ptr(),
+                                index,
+                                value,
+                            );
+                        }
+                        Edit::Begin(index) => {
+                            self.finish_edit(None);
+                            if let Some(handler) = crate::plugin::begin_parameter_edit(
+                                self.state.controller.as_ptr(),
+                                index,
+                            ) {
+                                *self.state.editing.borrow_mut() = Some((index, handler));
+                                if self.state.window.borrow().is_none() {
+                                    self.finish_edit(None);
+                                }
+                            }
+                        }
+                        Edit::Value(value) => self.update_edit(value),
+                        Edit::End(value) => self.finish_edit(value),
+                    }
+                }
+                if self.state.window.borrow().is_none() {
+                    break;
                 }
             }
         }
         self.state.polling.set(false);
+    }
+    fn update_edit(&self, value: f64) {
+        let editing = self.state.editing.borrow().clone();
+        if let Some((index, handler)) = editing {
+            // SAFETY: ホストUIスレッドで、再入中もhandlerの所有参照を保持する。
+            unsafe {
+                crate::plugin::perform_parameter_edit(
+                    self.state.controller.as_ptr(),
+                    &handler,
+                    index,
+                    value,
+                );
+            }
+        }
+    }
+    fn finish_edit(&self, value: Option<f64>) {
+        if let Some(value) = value {
+            self.update_edit(value);
+        }
+        let editing = self.state.editing.borrow_mut().take();
+        if let Some((index, handler)) = editing {
+            // SAFETY: beginEditが成功した相手へ、ホストUIスレッドで一度だけ終了を通知する。
+            unsafe {
+                crate::plugin::end_parameter_edit(&handler, index);
+            }
+        }
     }
     fn close(&self) {
         #[cfg(target_os = "windows")]
@@ -118,7 +172,15 @@ impl EditorView {
         }
         let window = self.state.window.borrow_mut().take();
         drop(window);
-        while self.state.receiver.borrow().try_recv().is_ok() {}
+        // ウィンドウ破棄時に送られた最終値を、開始済みの編集に反映する。
+        while let Some(edit) = self.state.sender.pop() {
+            match edit {
+                Edit::Value(value) => self.update_edit(value),
+                Edit::End(value) => self.finish_edit(value),
+                _ => {}
+            }
+        }
+        self.finish_edit(None);
     }
 }
 
@@ -167,7 +229,7 @@ pub unsafe fn create(controller: This, parameters: Arc<SharedParameters>) -> Thi
     let Some(controller) = (unsafe { HostRef::retain(controller) }) else {
         return ptr::null_mut();
     };
-    let (sender, receiver) = mpsc::sync_channel(32);
+    let sender = Arc::new(Edits::new());
     let state = Rc::new(EditorView {
         state: ViewState {
             controller,
@@ -179,7 +241,7 @@ pub unsafe fn create(controller: This, parameters: Arc<SharedParameters>) -> Thi
             ticker: RefCell::new(None),
             parameters,
             sender,
-            receiver: RefCell::new(receiver),
+            editing: RefCell::new(None),
             polling: Cell::new(false),
         },
     });
