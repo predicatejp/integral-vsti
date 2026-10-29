@@ -139,6 +139,7 @@ impl Envelope {
 
     /// ノート境界を反映し、現在サンプルの正規化値を生成する。
     /// peakは0〜1。生成後は同じ設定でupdate_sampleを呼ぶ。
+    #[inline(always)] // 音量・Cutoffの毎サンプル呼び出しと周辺のレジスタ退避を省く。
     pub fn generate_sample(
         &mut self,
         parameters: &EnvelopeParameters,

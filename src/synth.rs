@@ -70,24 +70,29 @@ impl Synthesizer {
         }
         self.state.polyphony = count;
         self.state.next_oscillator_id %= count;
-        let waveform = parameters::from_normalized(values[0]).expect("validated values");
-        let envelope = parameters::envelope(&values, 1);
-        let cutoff_envelope = parameters::envelope(&values, 14);
-        let unison_voices = parameters::to_plain(6, values[6]) as u32;
-        let detune_cents = parameters::to_plain(7, values[7]);
-        let phase_mode = parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize];
-        let filter_type = parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize];
-        let cutoff_cents = parameters::to_plain(10, values[10]);
-        let resonance_q = parameters::to_plain(11, values[11]);
-        let cutoff_amount = parameters::to_plain(19, values[19]);
-        for voice in &mut self.state.voices {
-            if oscillator_changed {
+        // 変更のないグループの時間換算（pow）なども省く。
+        if oscillator_changed {
+            let waveform = parameters::from_normalized(values[0]).expect("validated values");
+            let envelope = parameters::envelope(&values, 1);
+            let unison_voices = parameters::to_plain(6, values[6]) as u32;
+            let detune_cents = parameters::to_plain(7, values[7]);
+            let phase_mode = parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize];
+            for voice in &mut self.state.voices {
                 voice.set_parameters(waveform, envelope, unison_voices, detune_cents, phase_mode);
             }
-            if envelope_changed {
+        }
+        if envelope_changed {
+            let cutoff_envelope = parameters::envelope(&values, 14);
+            let cutoff_amount = parameters::to_plain(19, values[19]);
+            for voice in &mut self.state.voices {
                 voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
             }
-            if filter_changed {
+        }
+        if filter_changed {
+            let filter_type = parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize];
+            let cutoff_cents = parameters::to_plain(10, values[10]);
+            let resonance_q = parameters::to_plain(11, values[11]);
+            for voice in &mut self.state.voices {
                 voice.set_filter(filter_type, cutoff_cents, resonance_q);
             }
         }

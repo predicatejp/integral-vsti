@@ -260,8 +260,12 @@ impl Oscillator {
                 .zip(&self.state.frequency_ratios[..count])
             {
                 let hz = (input.frequency_hz * ratio).min(f64::MAX);
-                // 極端に小さなレートでも除算をオーバーフローさせない。
-                *increment = (hz % sample_rate) / sample_rate;
+                // 通常音程では剰余を省く。高周波では除算のオーバーフローを防ぐ。
+                *increment = if hz < sample_rate {
+                    hz
+                } else {
+                    hz % sample_rate
+                } / sample_rate;
             }
             self.state.frequency_input = Some(frequency);
         }
@@ -288,6 +292,28 @@ impl Oscillator {
 mod tests {
     use super::*;
     use crate::envelope::DEFAULT_ENVELOPE;
+
+    #[test]
+    fn phase_wraps_at_and_above_the_sample_rate() {
+        for (frequency_hz, expected) in [
+            (0.0, 0.0),
+            (1.0, 0.25),
+            (4.0_f64.next_down(), 1.0_f64.next_down()),
+            (4.0, 0.0),
+            (4.0_f64.next_up(), f64::EPSILON),
+            (5.0, 0.25),
+            (8.0, 0.0),
+            (9.0, 0.25),
+        ] {
+            let mut oscillator = Oscillator::new();
+            let input = OscillatorInput {
+                frequency_hz,
+                ..test_input()
+            };
+            assert!(oscillator.generate_sample(&input, 4.0).is_finite());
+            assert_eq!(oscillator.state.phases[0], expected, "{frequency_hz}");
+        }
+    }
 
     #[test]
     fn phase_modes_apply_only_at_note_on_and_cover_all_unison_phases() {
