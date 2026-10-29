@@ -33,6 +33,9 @@ struct EditorState {
 }
 
 struct DragState {
+    #[cfg(target_os = "windows")]
+    /// 操作開始時のキー入力先と前面ウィンドウ。所有せず変化の検知だけに使う。
+    keyboard_focus: [usize; 2],
     /// 操作対象のパラメーター。
     index: usize,
     /// 操作中の整数tick。ホストへの配送遅延で巻き戻さない。
@@ -249,12 +252,16 @@ impl Editor {
             return;
         }
         self.state.borrow_mut().drag = Some(DragState {
+            #[cfg(target_os = "windows")]
+            keyboard_focus: self.keyboard_focus(),
             index,
             tick: value_tick(index, selected),
             remainder: 0.0,
             anchor,
             changed: false,
         });
+        // Windowsではホストのキー入力先を維持し、既存のマウスキャプチャだけを使う。
+        #[cfg(target_os = "linux")]
         let _ = self.window.focus();
         if !self.hide_drag_pointer() {
             self.end_drag();
@@ -310,6 +317,7 @@ impl Editor {
                     parameters::slider_to_plain(drag.index, drag.tick),
                 )
             })));
+            #[cfg(target_os = "linux")]
             self.restore_host_focus();
             self.window.request_redraw();
         }
@@ -603,6 +611,15 @@ impl WindowHandler for Editor {
     }
 
     fn on_timer(&self, _: &baseview::TimerHandle) {
+        // キーボードフォーカスを取得しないWindowsでは、終了条件もタイマーで確認する。
+        #[cfg(target_os = "windows")]
+        if self.state.borrow().drag.is_some()
+            && (!self.drag_has_focus()
+                || self.drag_pointer_position().is_none()
+                || self.drag_escape_pressed())
+        {
+            self.end_drag();
+        }
         if self.displayed.get() != self.parameters.snapshot() {
             self.window.request_redraw();
         }

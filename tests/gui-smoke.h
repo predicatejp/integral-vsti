@@ -17,12 +17,13 @@ static_assert(sizeof(ViewRect) == 16);
 
 struct NativeParent {
 #ifdef _WIN32
-    HWND window;
+    HWND window, keyboard;
+    inline static HWND lastKeyWindow = nullptr;
     inline static unsigned keyDowns = 0, keyUps = 0;
     static LRESULT CALLBACK procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
         if (wparam == 'Z' || wparam == VK_SPACE) {
-            if (message == WM_KEYDOWN) ++keyDowns;
-            if (message == WM_KEYUP) ++keyUps;
+            if (message == WM_KEYDOWN) { ++keyDowns; lastKeyWindow = hwnd; }
+            if (message == WM_KEYUP) { ++keyUps; lastKeyWindow = hwnd; }
         }
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
@@ -36,8 +37,17 @@ struct NativeParent {
         window = CreateWindowExW(0, cls.lpszClassName, L"VST3 GUI test", WS_POPUP,
                                  0, 0, 800, 600, nullptr, nullptr, cls.hInstance, nullptr);
         assert(window); ShowWindow(window, SW_SHOW);
+        // 埋め込み先とは別のホスト側コントロールをキー入力先にする。
+        keyboard = CreateWindowExW(0, cls.lpszClassName, L"Host keyboard", WS_CHILD | WS_VISIBLE,
+                                   0, 0, 1, 1, window, nullptr, cls.hInstance, nullptr);
+        assert(keyboard);
     }
     ~NativeParent() { DestroyWindow(window); }
+    HWND child() {
+        for (HWND result = GetWindow(window, GW_CHILD); result; result = GetWindow(result, GW_HWNDNEXT))
+            if (result != keyboard) return result;
+        return nullptr;
+    }
     void* handle() { return window; }
     void resize(int32 width, int32 height) { SetWindowPos(window, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER); }
     static void pump() {
@@ -45,7 +55,7 @@ struct NativeParent {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     }
     void pointer(int x, int y, bool down) {
-        HWND child = GetWindow(window, GW_CHILD); assert(child);
+        HWND child = this->child(); assert(child);
         // キャプチャ解除時のOSのマウス通知も、送信するクリックと同じ座標に揃える。
         POINT screen {x, y};
         assert(ClientToScreen(child, &screen));
@@ -56,7 +66,7 @@ struct NativeParent {
         SendMessageW(child, down ? WM_LBUTTONDOWN : WM_LBUTTONUP, down ? MK_LBUTTON : 0, position);
     }
     bool drawn(int width, int height) {
-        HWND child = GetWindow(window, GW_CHILD);
+        HWND child = this->child();
         if (!child) return false;
         RECT rect; assert(GetClientRect(child, &rect));
         if (rect.right != width || rect.bottom != height) return false;
@@ -66,7 +76,7 @@ struct NativeParent {
         return pixel != CLR_INVALID && pixel != RGB(0, 0, 0);
     }
     uint32 pixel(int x, int y) {
-        HWND child = GetWindow(window, GW_CHILD); assert(child);
+        HWND child = this->child(); assert(child);
         HDC dc = GetDC(child); assert(dc);
         COLORREF value = GetPixel(dc, x, y);
         ReleaseDC(child, dc);
@@ -74,7 +84,7 @@ struct NativeParent {
         return value;
     }
     void screenshot() {
-        HWND child = GetWindow(window, GW_CHILD); assert(child);
+        HWND child = this->child(); assert(child);
         RECT rect; assert(GetClientRect(child, &rect));
         HDC dc = GetDC(child); assert(dc);
         std::ofstream file("target/gui-smoke.ppm", std::ios::binary);
@@ -163,7 +173,7 @@ struct NativeParent {
     }
     void movePointer(int x, int y) {
 #ifdef _WIN32
-        POINT point {x, y}; assert(ClientToScreen(GetWindow(window, GW_CHILD), &point));
+        POINT point {x, y}; assert(ClientToScreen(child(), &point));
         assert(SetCursorPos(point.x, point.y));
 #else
         XWarpPointer(display, 0, child(), 0, 0, 0, 0, x, y); XFlush(display);
@@ -190,14 +200,14 @@ struct NativeParent {
     }
     void unfocus() {
 #ifdef _WIN32
-        SetFocus(window);
+        SetFocus(keyboard);
 #else
         XSetInputFocus(display, window, RevertToParent, CurrentTime); XFlush(display);
 #endif
     }
     bool focused() {
 #ifdef _WIN32
-        return GetFocus() == window;
+        return GetFocus() == keyboard;
 #else
         ::Window focus; int revert;
         XGetInputFocus(display, &focus, &revert);
@@ -206,7 +216,7 @@ struct NativeParent {
     }
     bool pointerAt(int x, int y) {
 #ifdef _WIN32
-        POINT point; assert(GetCursorPos(&point)); assert(ScreenToClient(GetWindow(window, GW_CHILD), &point));
+        POINT point; assert(GetCursorPos(&point)); assert(ScreenToClient(child(), &point));
         return point.x == x && point.y == y;
 #else
         ::Window root, sub; int rx, ry, px, py; unsigned mask;
@@ -396,6 +406,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
             assert(handler.sequence == (std::vector<int>{0}));
             assert(!parent.cursorVisible());
+#ifdef _WIN32
+            assert(parent.focused()); // 操作中にもホストの入力先を維持する。
+#endif
             parent.movePointer(x, y - 3); pump(); // 4px未満は保持。
             assert(handler.sequence.size() == 1 && controller->getParamNormalized(info.id) == 0.0);
             assert(parent.pointerAt(x, y));
@@ -429,6 +442,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 assert(SendInput(4, keys, sizeof(INPUT)) == 4);
                 waitFor([&] { return NativeParent::keyDowns == downs + 2 &&
                                     NativeParent::keyUps == ups + 2; }, "host keys after volume");
+                assert(NativeParent::lastKeyWindow == parent.keyboard);
             }
 #endif
             assert(parent.pointerAt(x, y));
@@ -449,6 +463,17 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         StateStream phaseState; assert(component->getState(&phaseState) == kResultOk);
         double phaseMode = -1; std::memcpy(&phaseMode, phaseState.bytes.data() + 100, 8);
         assert(phaseMode == 2.0);
+#ifdef _WIN32
+        parent.movePointer(controls[13].first, controls[13].second); pump(); parent.knobButton(true);
+        waitFor([&] { return handler.sequence.size() == 1; }, "knob before escape");
+        INPUT escape {}; escape.type = INPUT_KEYBOARD; escape.ki.wVk = VK_ESCAPE;
+        assert(SendInput(1, &escape, sizeof(INPUT)) == 1);
+        waitFor([&] { return handler.sequence.size() == 2; }, "escape without plug-in focus");
+        assert(parent.focused() && parent.cursorVisible());
+        escape.ki.dwFlags = KEYEVENTF_KEYUP;
+        assert(SendInput(1, &escape, sizeof(INPUT)) == 1);
+        parent.knobButton(false); pump(); handler.sequence.clear();
+#endif
         // 実際のフォーカス喪失で、ボタン解放を待たずに終了する。
         parent.movePointer(controls[6].first, controls[6].second); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence.size() == 1; }, "knob before focus loss");

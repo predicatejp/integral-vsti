@@ -22,28 +22,21 @@ mod native {
         fn SetCursorPos(x: i32, y: i32) -> i32;
         fn GetCapture() -> *mut c_void;
         fn GetFocus() -> *mut c_void;
-        fn GetParent(window: *mut c_void) -> *mut c_void;
-        fn SetFocus(window: *mut c_void) -> *mut c_void;
+        fn GetForegroundWindow() -> *mut c_void;
         fn ReleaseCapture() -> i32;
         fn GetAsyncKeyState(key: i32) -> i16;
         fn SetCursor(cursor: *mut c_void) -> *mut c_void;
         fn LoadCursorW(instance: *mut c_void, name: *const u16) -> *mut c_void;
     }
     impl Editor {
-        pub(in crate::editor) fn restore_host_focus(&self) {
-            let Some(window) = self.hwnd() else {
-                return;
-            };
-            // SAFETY: UIスレッド上の生存中の子と親。既に他へ移ったフォーカスは奪わない。
-            // SetFocusは同期的に再入し得るため、呼び出し前にdragの状態・借用を解放する。
-            unsafe {
-                if GetFocus() == window {
-                    let parent = GetParent(window);
-                    if !parent.is_null() {
-                        SetFocus(parent);
-                    }
-                }
-            }
+        pub(in crate::editor) fn keyboard_focus(&self) -> [usize; 2] {
+            // SAFETY: UIスレッドのフォーカスと前面ウィンドウを照会するだけで変更しない。
+            unsafe { [GetFocus() as usize, GetForegroundWindow() as usize] }
+        }
+
+        pub(in crate::editor) fn drag_escape_pressed(&self) -> bool {
+            // SAFETY: ノブ操作中だけEscの現在の押下状態を参照する。
+            unsafe { GetAsyncKeyState(0x1b) < 0 }
         }
 
         fn hwnd(&self) -> Option<*mut c_void> {
@@ -53,9 +46,11 @@ mod native {
             }
         }
         pub(in crate::editor) fn drag_has_focus(&self) -> bool {
-            // SAFETY: 呼び出し元UIスレッドのフォーカスと子ウィンドウを比較する。
-            self.hwnd()
-                .is_some_and(|window| unsafe { GetFocus() == window })
+            self.state
+                .borrow()
+                .drag
+                .as_ref()
+                .is_some_and(|drag| drag.keyboard_focus == self.keyboard_focus())
         }
         pub(in crate::editor) fn drag_pointer_position(&self) -> Option<egui::Pos2> {
             let window = self.hwnd()?;
