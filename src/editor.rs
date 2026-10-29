@@ -437,7 +437,7 @@ impl WindowHandler for Editor {
                         .num_columns(2)
                         .spacing([16.0, 16.0])
                         .show(ui, |ui| {
-                            self.group(ui, "Synthesizer", &[0, 12], &[6, 7, 8, 13], &selected);
+                            self.group(ui, "Oscillator", &[0, 12], &[6, 7], &selected);
                             self.group(ui, "Amplitude envelope", &[], &[1, 2, 3, 4, 5], &selected);
                             ui.end_row();
                             self.group(ui, "Filter", &[9], &[10, 11], &selected);
@@ -448,6 +448,8 @@ impl WindowHandler for Editor {
                                 &[14, 15, 16, 17, 18, 19],
                                 &selected,
                             );
+                            ui.end_row();
+                            self.group(ui, "Master", &[], &[8, 13], &selected);
                             ui.end_row();
                         });
                 });

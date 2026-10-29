@@ -253,8 +253,9 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 
 ## GUI
 
-ホストのプラグイン画面に、ライトテーマの4グループを2列で表示します。
-左上はSynthesizer、右上はAmplitude envelope、左下はFilter、右下はCutoff envelopeです。
+ホストのプラグイン画面に、ライトテーマの5グループを2列で表示します。
+上段はOscillatorとAmplitude envelope、中段はFilterとCutoff envelope、下段はMasterです。
+OscillatorにはWaveform・Phase・Unison・Detune、MasterにはPolyphony・Volumeを配置します。
 ノブは直径44pxで横に並べ、下にパラメーター名を表示します。
 Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeとカットオフ用AHDSR・Amountはノブです。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
