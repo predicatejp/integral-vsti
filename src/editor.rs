@@ -314,6 +314,7 @@ impl Editor {
         title: &str,
         choices: &[usize],
         knobs: &[usize],
+        size: egui::Vec2,
         selected: &[f64; parameters::COUNT],
     ) {
         egui::Frame::group(ui.style())
@@ -322,7 +323,8 @@ impl Editor {
                 ui.vertical(|ui| {
                     let knob_width = knobs.len() as f32 * 52.0 + (knobs.len() - 1) as f32 * 8.0;
                     let choice_width = choices.len() as f32 * 138.0 - 8.0;
-                    ui.set_width(knob_width.max(choice_width));
+                    ui.set_min_size(size);
+                    ui.set_width(size.x.max(knob_width).max(choice_width));
                     ui.heading(title);
                     if !choices.is_empty() {
                         ui.horizontal(|ui| {
@@ -436,24 +438,51 @@ impl WindowHandler for Editor {
                     ui.add_space(4.0);
                     ui.horizontal_top(|ui| {
                         ui.vertical(|ui| {
-                            self.group(ui, "Oscillator", &[0, 12], &[6, 7], &selected);
+                            self.group(
+                                ui,
+                                "Oscillator",
+                                &[0, 12],
+                                &[6, 7],
+                                egui::vec2(292.0, 162.0),
+                                &selected,
+                            );
                             ui.add_space(5.0);
-                            ui.horizontal_top(|ui| {
-                                self.group(ui, "Filter", &[9], &[10, 11], &selected);
-                                self.group(ui, "Master", &[], &[8, 13], &selected);
-                            });
+                            self.group(
+                                ui,
+                                "Amplitude envelope",
+                                &[],
+                                &[1, 2, 3, 4, 5],
+                                egui::vec2(292.0, 0.0),
+                                &selected,
+                            );
                         });
                         ui.vertical(|ui| {
-                            self.group(ui, "Amplitude envelope", &[], &[1, 2, 3, 4, 5], &selected);
+                            self.group(
+                                ui,
+                                "Filter",
+                                &[9],
+                                &[10, 11],
+                                egui::vec2(352.0, 162.0),
+                                &selected,
+                            );
                             ui.add_space(5.0);
                             self.group(
                                 ui,
                                 "Cutoff envelope",
                                 &[],
                                 &[14, 15, 16, 17, 18, 19],
+                                egui::vec2(352.0, 0.0),
                                 &selected,
                             );
                         });
+                        self.group(
+                            ui,
+                            "Master",
+                            &[],
+                            &[8, 13],
+                            egui::vec2(112.0, 162.0),
+                            &selected,
+                        );
                     });
                 });
         });
