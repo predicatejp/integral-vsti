@@ -19,6 +19,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// ノブの表示名。ホスト公開名とオーバーレイはparameters::NAMESを使う。
+const KNOB_NAMES: [&str; parameters::COUNT] = [
+    "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
+    "Vol", "A", "H", "D", "S", "R", "Amt",
+];
+
 struct EditorState {
     /// 現在操作しているノブ。終了時にtakeして二重終了を防ぐ。
     drag: Option<DragState>,
@@ -199,11 +205,12 @@ impl Editor {
             egui::Stroke::new(2.0, egui::Color32::from_rgb(40, 90, 150)),
         );
         if drag.is_some() {
-            let label = if matches!(index, 6 | 8) {
+            let value_label = if matches!(index, 6 | 8) {
                 format!("{value:.0}")
             } else {
                 format!("{value:.3} {}", unit(index))
             };
+            let label = format!("{}\n{}", NAMES[index], value_label.trim_end());
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
                 egui::Id::unique("knob-value"),
@@ -310,11 +317,12 @@ impl Editor {
         selected: &[f64; parameters::COUNT],
     ) {
         egui::Frame::group(ui.style())
-            .inner_margin(16)
+            .inner_margin(8)
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(448.0);
-                    ui.set_min_height(180.0);
+                    let knob_width = knobs.len() as f32 * 52.0 + (knobs.len() - 1) as f32 * 8.0;
+                    let choice_width = choices.len() as f32 * 138.0 - 8.0;
+                    ui.set_width(knob_width.max(choice_width));
                     ui.heading(title);
                     if !choices.is_empty() {
                         ui.horizontal(|ui| {
@@ -329,7 +337,7 @@ impl Editor {
                                     let mut choice =
                                         parameters::to_plain(index, selected[index]) as usize;
                                     if egui::ComboBox::from_id_salt(index)
-                                        .width(200.0)
+                                        .width(130.0)
                                         .show_index(ui, &mut choice, names.len(), |i| names[i])
                                         .changed()
                                     {
@@ -342,21 +350,15 @@ impl Editor {
                             }
                         });
                     }
-                    ui.add_space(24.0);
-                    let width = (448.0 - ui.spacing().item_spacing.x * (knobs.len() - 1) as f32)
-                        / knobs.len() as f32;
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         for &index in knobs {
                             ui.allocate_ui_with_layout(
-                                egui::vec2(width, 80.0),
+                                egui::vec2(52.0, 74.0),
                                 egui::Layout::top_down(egui::Align::Center),
                                 |ui| {
-                                    self.knob(ui, index, selected[index], width);
-                                    ui.label(
-                                        NAMES[index]
-                                            .strip_prefix("Cutoff ")
-                                            .unwrap_or(NAMES[index]),
-                                    );
+                                    self.knob(ui, index, selected[index], 52.0);
+                                    ui.label(KNOB_NAMES[index]);
                                 },
                             );
                         }
@@ -426,21 +428,24 @@ impl WindowHandler for Editor {
         self.displayed.set(selected);
         let mut output = self.context.run_ui(input, |ui| {
             egui::Frame::new()
-                .inner_margin(12)
+                .inner_margin(8)
                 .fill(ui.visuals().panel_fill)
                 .show(ui, |ui| {
                     ui.set_min_size(ui.available_size());
-                    ui.add_space(14.0);
                     ui.heading("Sample VSTi");
-                    ui.add_space(12.0);
-                    egui::Grid::new("parameter-groups")
-                        .num_columns(2)
-                        .spacing([16.0, 16.0])
-                        .show(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal_top(|ui| {
+                        ui.vertical(|ui| {
                             self.group(ui, "Oscillator", &[0, 12], &[6, 7], &selected);
+                            ui.add_space(5.0);
+                            ui.horizontal_top(|ui| {
+                                self.group(ui, "Filter", &[9], &[10, 11], &selected);
+                                self.group(ui, "Master", &[], &[8, 13], &selected);
+                            });
+                        });
+                        ui.vertical(|ui| {
                             self.group(ui, "Amplitude envelope", &[], &[1, 2, 3, 4, 5], &selected);
-                            ui.end_row();
-                            self.group(ui, "Filter", &[9], &[10, 11], &selected);
+                            ui.add_space(5.0);
                             self.group(
                                 ui,
                                 "Cutoff envelope",
@@ -448,10 +453,8 @@ impl WindowHandler for Editor {
                                 &[14, 15, 16, 17, 18, 19],
                                 &selected,
                             );
-                            ui.end_row();
-                            self.group(ui, "Master", &[], &[8, 13], &selected);
-                            ui.end_row();
                         });
+                    });
                 });
         });
         let shapes = self

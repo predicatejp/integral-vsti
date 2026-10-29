@@ -254,12 +254,12 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの5グループを2列で表示します。
-上段はOscillatorとAmplitude envelope、中段はFilterとCutoff envelope、下段はMasterです。
+左列はOscillatorと、その下に横並びのFilter・Master、右列はAmplitude envelopeとCutoff envelopeです。各グループの幅と高さを操作欄に合わせ、余白を詰めています。
 OscillatorにはWaveform・Phase・Unison・Detune、MasterにはPolyphony・Volumeを配置します。
-ノブは直径44pxで横に並べ、下にパラメーター名を表示します。
+ノブは直径44pxで横に並べ、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
 Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeとカットオフ用AHDSR・Amountはノブです。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
-操作中はカーソルを隠して移動のたびに基準位置へ戻し、現在値をノブの中央直上に表示します。
+操作中はカーソルを隠して移動のたびに基準位置へ戻し、ノブの中央直上に「正式名称」「現在値」を2行で表示します。
 Unison・Polyphonyは整数、連続パラメーターは小数点以下3桁と単位を表示します。
 ボタン解放・Esc・フォーカス喪失・画面終了で調整を終了します。Escでも調整済みの値は保持します。
 時間・音量などへの換算は整数tickから行い、各パラメーターの刻み幅は上記の仕様に従います。

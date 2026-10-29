@@ -183,9 +183,9 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - 状態データの読み書き結果、長さ、値の範囲を検証し、破損・途中切れ・未対応バージョンで不正な状態を適用しないこと。
 - 処理中の状態保存・復元とDSPのデータ共有を設計し、音声スレッドをブロックしないこと。設定の復元と、発音中のボイスや残響履歴の完全な復元を同一視しないこと。
 - GUIはegui 0.37.0・egui_glow 0.37.0・baseview 0.4.1のOpenGL描画を使用する。GPUは描画専用とし、DSPでは使用しない。LinuxはX11EmbedWindowIDとIPlugFrameから取得するIRunLoop、WindowsはHWNDを使う。
-- GUIは1024×768物理ピクセルの固定サイズ、ライトテーマとする。標準フォントは18px、見出しは24pxとする。Oscillator・Amplitude envelope・Filter・Cutoff envelope・Masterの5グループを2列で配置する。OscillatorはWaveform・Phase・Unison・Detune、MasterはPolyphony・Volumeを操作する。直径44pxのノブを横に並べ、名前を下に表示する。WaveformとPhaseのドロップダウンとAHDSRの5ノブ、Unison（1ボイス刻み）とDetune（1 cent刻み）、Polyphony（1刻み）の整数ノブをマウスで操作する。Filterの7択とCutoff（0〜1200 tickを10 cent刻みへ換算）、Resonance（0〜950 tickをQ=0.5〜10へ換算）、Volume（0〜600 tickを−48〜＋12 dBへ0.1 dB刻みで換算）も操作する。カットオフ用AHDSRも同じ時間軸・Sustain軸で操作し、Cutoff Amountは0〜960 tickを−4800〜＋4800 centへ10 cent刻みで換算する。CutoffのVST3公開値は連続値、初期値は4800 cent、Resonanceの初期値はQ=1とする。時間軸は0ms専用の左端、次が1ms、以降100tickで10倍。sustainは線形。任意倍率・自由なサイズ変更は未対応。
+- GUIは1024×768物理ピクセルの固定サイズ、ライトテーマとする。標準フォントは18px、見出しは24pxとする。Oscillator・Amplitude envelope・Filter・Cutoff envelope・Masterの5グループを2列で配置する。OscillatorはWaveform・Phase・Unison・Detune、MasterはPolyphony・Volumeを操作する。各グループは操作欄に合わせた幅と高さにし、余白を詰める。直径44pxのノブを横に並べ、省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを下に表示する。WaveformとPhaseのドロップダウンとAHDSRの5ノブ、Unison（1ボイス刻み）とDetune（1 cent刻み）、Polyphony（1刻み）の整数ノブをマウスで操作する。Filterの7択とCutoff（0〜1200 tickを10 cent刻みへ換算）、Resonance（0〜950 tickをQ=0.5〜10へ換算）、Volume（0〜600 tickを−48〜＋12 dBへ0.1 dB刻みで換算）も操作する。カットオフ用AHDSRも同じ時間軸・Sustain軸で操作し、Cutoff Amountは0〜960 tickを−4800〜＋4800 centへ10 cent刻みで換算する。CutoffのVST3公開値は連続値、初期値は4800 cent、Resonanceの初期値はQ=1とする。時間軸は0ms専用の左端、次が1ms、以降100tickで10倍。sustainは線形。任意倍率・自由なサイズ変更は未対応。
 - GUIの編集通知はホストのUIスレッドに配送し、描画処理中にはホストを呼ばない。UI専用の32件キューは1件をノブの終了通知用に予約する。途中の値変更が満杯で破棄されても、終了時に最終値とendEditを通知する。
-- ノブは4物理pxの上下移動で整数tickを1増減する。調整中の現在値はノブ中央直上へ表示する。Unison・Polyphonyのオーバーレイは整数、連続パラメーターは小数点以下3桁と単位を表示する。カーソル操作はドラッグ期間に限定し、復帰をホストへのendEdit通知の成否に依存させない。
+- ノブは4物理pxの上下移動で整数tickを1増減する。調整中はノブ中央直上に「正式名称\n現在値」の2行オーバーレイを表示する。Unison・Polyphonyのオーバーレイは整数、連続パラメーターは小数点以下3桁と単位を表示する。カーソル操作はドラッグ期間に限定し、復帰をホストへのendEdit通知の成否に依存させない。
 - 独自GUIを実装する場合は、表示・取り外し・再表示、サイズ変更、スケーリング、フォーカスと入力の扱いを確認すること。GUIを閉じても音源の処理を継続できるようにすること。
 
 ## 検証方針
