@@ -274,7 +274,9 @@ impl Oscillator {
             .iter_mut()
             .zip(&self.state.phase_increments)
         {
-            *phase = (*phase + increment).fract();
+            // 位相・増分は[0, 1)なので、和は[0, 2)。1周期だけ引けばよい。
+            let next = *phase + increment;
+            *phase = next - f64::from((next >= 1.0) as u8);
         }
         self.state
             .envelope

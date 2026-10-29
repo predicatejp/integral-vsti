@@ -172,7 +172,10 @@ impl Voice {
             1.0,
         );
         let cents = level * self.state.cutoff_amount_cents;
-        if cents != self.state.cutoff_modulation.0 {
+        // バイパス中もEnvelopeは進め、有効化したサンプルで現在値の倍率を求める。
+        if !matches!(self.state.filter_type, FilterType::None)
+            && cents != self.state.cutoff_modulation.0
+        {
             self.state.cutoff_modulation = (cents, 2.0_f64.powf(cents / 1200.0));
         }
         let sample = self
@@ -203,6 +206,44 @@ impl Voice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enabling_filter_uses_the_envelope_advanced_during_bypass() {
+        let mut bypassed = Voice::new();
+        let mut reference = Voice::new();
+        let note = Note {
+            id: 1,
+            channel: 0,
+            pitch: 69,
+        };
+        bypassed.set_filter(FilterType::None, 1200.0, 2.0);
+        reference.set_filter(FilterType::LowPass2, 1200.0, 2.0);
+        for voice in [&mut bypassed, &mut reference] {
+            voice.set_cutoff_envelope(DEFAULT_ENVELOPE, 2400.0);
+            voice.note_on(note, 0.0, 1.0);
+        }
+        for n in 0..96 {
+            if n == 32 {
+                bypassed.note_off(note);
+                reference.note_off(note);
+            }
+            if n == 48 {
+                bypassed.note_on(note, 0.0, 1.0);
+                reference.note_on(note, 0.0, 1.0);
+            }
+            bypassed.generate_sample(48000.0);
+            reference.generate_sample(48000.0);
+        }
+        // 有効中に進めた参照側も、バイパス解除時と同じ無履歴から比較する。
+        reference.state.filter.reset();
+        bypassed.set_filter(FilterType::LowPass2, 1200.0, 2.0);
+        for _ in 0..128 {
+            assert_eq!(
+                bypassed.generate_sample(48000.0),
+                reference.generate_sample(48000.0)
+            );
+        }
+    }
 
     #[test]
     fn cutoff_envelope_modulates_cents_and_retriggers_from_its_current_value() {
