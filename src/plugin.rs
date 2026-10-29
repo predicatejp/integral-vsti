@@ -668,7 +668,7 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
         || !matches!(setup.symbolic_sample_size, SAMPLE32 | SAMPLE64)
         || setup.max_samples_per_block <= 0
         || !setup.sample_rate.is_finite()
-        || setup.sample_rate <= 0.0
+        || setup.sample_rate < crate::filter::MIN_SAMPLE_RATE
     {
         return INVALID_ARGUMENT;
     }

@@ -307,9 +307,34 @@ fn check_host_events(activate_events: bool) {
             process_mode: 0,
             symbolic_sample_size: SAMPLE64,
             max_samples_per_block: 4,
-            sample_rate: 1760.0,
+            sample_rate: 56_320.0, // 440 Hzの1サンプルあたりの位相は1/128周期。
         };
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let accepted = ProcessSetup {
+                sample_rate,
+                ..setup
+            };
+            assert_eq!((pt.setup_processing)(processor, &accepted), OK);
+        }
         assert_eq!((pt.setup_processing)(processor, &setup), OK);
+        for sample_rate in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+            0.0,
+            32_000.0,
+            44_100.0_f64.next_down(),
+        ] {
+            let rejected = ProcessSetup {
+                sample_rate,
+                ..setup
+            };
+            assert_eq!(
+                (pt.setup_processing)(processor, &rejected),
+                INVALID_ARGUMENT
+            );
+        }
         assert_eq!((pt.get_tail_samples)(processor), u32::MAX);
         assert_eq!((ct.activate_bus)(component, AUDIO, OUTPUT, 0, 1), OK);
         if activate_events {
@@ -322,13 +347,14 @@ fn check_host_events(activate_events: bool) {
         assert_eq!(crate::float_mode::read(), before_mode);
         assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0, 0.0, 9.0, 9.0]);
         assert_eq!((*data.outputs).silence_flags, STEREO);
-        // ブロック先頭で音程を変更しても、前ブロック末尾の位相1/4を継承する。
+        // レート拒否後も直前の設定を維持。音程変更時は末尾の位相1/128を継承する。
         (*events_ptr).event.sample_offset = 0;
         (*events_ptr).event.payload.note_on.pitch = 81;
         data.num_samples = 1;
         assert_eq!((pt.process)(processor, &mut data), OK);
-        let step = 1000.0 / 1760.0 / 10.0;
-        assert!((*sample_ptr - 0.5 * step * std::f64::consts::SQRT_2).abs() < 1e-14);
+        let step = 1000.0 / setup.sample_rate / 10.0;
+        let sine = |position: f64| (std::f64::consts::TAU * position / 128.0).sin();
+        assert!((*sample_ptr - 0.5 * step * std::f64::consts::SQRT_2 * sine(1.0)).abs() < 1e-14);
         (*events_ptr).event.event_type = 1;
         (*events_ptr).event.payload = EventPayload {
             note_off: NoteOffEvent {
@@ -341,7 +367,7 @@ fn check_host_events(activate_events: bool) {
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
         let release_start = 0.5 * (2.0 * step - step * step);
-        assert!((*sample_ptr + release_start * std::f64::consts::SQRT_2).abs() < 1e-14);
+        assert!((*sample_ptr - release_start * std::f64::consts::SQRT_2 * sine(3.0)).abs() < 1e-14);
         (*events_ptr).event.event_type = 0;
         (*events_ptr).event.payload = EventPayload {
             note_on: NoteOnEvent {
@@ -354,8 +380,8 @@ fn check_host_events(activate_events: bool) {
             },
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
-        let restart = release_start * (1.0 - 1000.0 / 1760.0 / 100.0);
-        assert!((*sample_ptr - restart * std::f64::consts::SQRT_2).abs() < 1e-14);
+        let restart = release_start * (1.0 - 1000.0 / setup.sample_rate / 100.0);
+        assert!((*sample_ptr - restart * std::f64::consts::SQRT_2 * sine(5.0)).abs() < 1e-14);
         assert_eq!((pt.set_processing)(processor, 0), OK);
         assert_eq!((ct.set_active)(component, 0), OK);
         // 明示的な無効化は再開しても維持され、届いたNote Onを処理しない。
@@ -378,13 +404,12 @@ fn check_host_events(activate_events: bool) {
         assert_eq!((pt.set_processing)(processor, 1), OK);
         assert_eq!((pt.process)(processor, &mut data), OK);
         let peak = 0.5 * step * std::f64::consts::SQRT_2;
-        for (sample, expected) in
-            sample_ptr
-                .cast::<[f64; 4]>()
-                .read()
-                .into_iter()
-                .zip([0.0, -peak, 0.0, 3.0 * peak])
-        {
+        for (sample, expected) in sample_ptr.cast::<[f64; 4]>().read().into_iter().zip([
+            0.0,
+            peak * sine(7.0),
+            2.0 * peak * sine(8.0),
+            3.0 * peak * sine(9.0),
+        ]) {
             assert!((sample - expected).abs() < 1e-14);
         }
         assert_eq!((*data.outputs).silence_flags, 0);

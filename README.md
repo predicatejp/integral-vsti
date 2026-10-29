@@ -15,6 +15,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
+| サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
 | ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープをVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
@@ -102,7 +103,7 @@ Voiceはノートの音程とtuningを含む周波数に `2^(cent/1200)` を乗�
 - `FilterParameters`はそのサンプルのHzとQを持ち、既定値はUI／VST3設定側で定義します。
 - `SvfState`はTPT SVF1段の状態を保持し、`Svf::process_sample`が`low / band / high`を同時に返します。外側の`Filter::process_sample`が`FilterState`を更新しながら出力選択・直列接続を行います。
 - LPF・HPFは1段で12 dB/oct、2段で24 dB/oct。BPFの両側はそれぞれ6／12 dB/oct、中心利得はQ／Q²です。
-- 周波数は有限値を受け取り、内部の係数計算時だけ20〜20,000 Hzにクランプし、さらにサンプルレート×0.49を上限とします。極端に低いレートではこの上限を優先します。
+- 周波数は有限値を受け取り、内部の係数計算時だけ20〜20,000 Hzにクランプします。対応サンプルレートは44.1 kHz以上なので、この範囲は常にNyquist未満です。
 - 設定変更やVoiceの再使用でも有効な段の履歴を保持します。未使用の2段目とNone時の両段は消去します。Noneでは入力値を検証せずそのまま返します。
 - Note Off後のフィルタ残響も処理します。処理停止・Voice数の減少による停止ではフィルタの履歴も消去します。音量補正・クリッピングは追加しません。
 

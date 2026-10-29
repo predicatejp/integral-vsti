@@ -83,7 +83,7 @@ Event note(bool on, int32 offset, int32 id, int16 pitch = 69, int16 channel = 0,
     return event;
 }
 
-void configureEnvelope(IAudioProcessor*, bool);
+void configureEnvelope(IAudioProcessor*, bool, double timeScale = 1.0);
 
 template <typename Sample>
 void checkNotes(IComponent* component, IAudioProcessor* processor, int32 precision, double rate, int32 mode,
@@ -247,10 +247,10 @@ constexpr std::array<ParamID, 5> envelopeIds {0x4154544b, 0x484f4c44, 0x44454359
 double timeNormalized(double ms) {
     return (ms <= 1.0 ? ms : 1.0 + 100.0 * std::log10(ms)) / (1.0 + 100.0 * std::log10(5000.0));
 }
-void configureEnvelope(IAudioProcessor* processor, bool immediate) {
+void configureEnvelope(IAudioProcessor* processor, bool immediate, double timeScale) {
     std::array<Points, 5> points;
     Changes changes;
-    const std::array<double, 5> defaults {timeNormalized(10), 0.0, timeNormalized(100), 0.7, timeNormalized(100)};
+    const std::array<double, 5> defaults {timeNormalized(10 * timeScale), 0.0, timeNormalized(100 * timeScale), 0.7, timeNormalized(100 * timeScale)};
     for (size_t i = 0; i < 5; ++i) {
         points[i].id = envelopeIds[i];
         points[i].values = {{0, immediate ? (i == 3 ? 1.0 : 0.0) : defaults[i]}};
@@ -324,8 +324,12 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     // Controllerへの表示更新だけではProcessorの値は変わらない。
     assert(controller->getParamNormalized(waveformId) == 1.0);
 
-    ProcessSetup setup {mode, precision, 8, 3520.0}; // A4は8サンプルで1周期。
+    ProcessSetup setup {mode, precision, 8, 56320.0}; // Note Onのtuningを4oct上げ、8サンプルで1周期にする。
     assert(processor->setupProcessing(setup) == kResultOk);
+    for (double rate : {0.0, 32000.0, std::nextafter(44100.0, 0.0), std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+        auto rejected = setup; rejected.sampleRate = rate;
+        assert(processor->setupProcessing(rejected) == kInvalidArgument);
+    }
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
     Points ignored, points;
     ignored.id = 123; ignored.values = {{0, 1.0}};
@@ -345,6 +349,8 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(processor->setProcessing(true) == kResultOk);
     data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
     auto check = [&](std::initializer_list<double> expected) {
+        // レートを16倍にした分、ノート周波数も16倍にして位相の期待値を保つ。
+        for (auto& event : events.values) if (event.type == Event::kNoteOnEvent) event.noteOn.tuning = 4800.0f;
         data.numSamples = static_cast<int32>(expected.size());
         buffer.fill(Sample(9));
         assert(processor->process(data) == kResultOk);
@@ -428,8 +434,8 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
 
 template <typename Sample>
 void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
-    configureEnvelope(processor, false);
-    ProcessSetup setup {kRealtime, precision, 16, 1000.0};
+    configureEnvelope(processor, false, 1.0 / 48.0); // 48 kHzでも1サンプルごとの振幅期待値を保つ。
+    ProcessSetup setup {kRealtime, precision, 16, 48000.0};
     assert(processor->setupProcessing(setup) == kResultOk);
     assert(processor->getTailSamples() == kInfiniteTail);
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
@@ -771,7 +777,7 @@ void checkPhase(IComponent* component, IAudioProcessor* processor, IEditControll
         assert(controller->getParamValueByString(phaseId, text, parsed) == kResultOk && parsed == i / 2.0);
     }
     configureEnvelope(processor, true);
-    ProcessSetup setup {kRealtime, precision, 8, 3520.0};
+    ProcessSetup setup {kRealtime, precision, 8, 56320.0};
     assert(processor->setupProcessing(setup) == kResultOk);
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
     Points phase, waveform;
@@ -791,6 +797,8 @@ void checkPhase(IComponent* component, IAudioProcessor* processor, IEditControll
     data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
     const double peak = .5 * std::sqrt(3.0);
     auto check = [&](std::initializer_list<double> expected) {
+        // レートを16倍にした分、ノート周波数も16倍にして位相の期待値を保つ。
+        for (auto& event : events.values) if (event.type == Event::kNoteOnEvent) event.noteOn.tuning = 4800.0f;
         data.numSamples = static_cast<int32>(expected.size());
         assert(processor->process(data) == kResultOk);
         size_t i = 0;
@@ -868,7 +876,7 @@ void checkVolume(IComponent* component, IAudioProcessor* processor, IEditControl
 template <typename Sample>
 void checkCutoffEnvelope(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
     const std::array<double, 6> initial {10, 0, 100, .7, 100, 0};
-    const std::array<double, 6> settings {4, 2, 4, .25, 4, 1200};
+    const std::array<double, 6> settings {4.0 / 48, 2.0 / 48, 4.0 / 48, .25, 4.0 / 48, 1200};
     std::array<Points, 9> points;
     Changes changes;
     for (size_t i = 0; i < cutoffEnvelopeIds.size(); ++i) {
@@ -887,7 +895,7 @@ void checkCutoffEnvelope(IComponent* component, IAudioProcessor* processor, IEdi
     for (int i = 6; i < 9; ++i) changes.queues.push_back(&points[i]);
     ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
     assert(processor->process(data) == kResultOk);
-    ProcessSetup setup {kRealtime, precision, 32, 1000.0};
+    ProcessSetup setup {kRealtime, precision, 32, 48000.0};
     assert(processor->setupProcessing(setup) == kResultOk);
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
     assert(component->setActive(true) == kResultOk && processor->setProcessing(true) == kResultOk);
@@ -910,10 +918,10 @@ void checkCutoffEnvelope(IComponent* component, IAudioProcessor* processor, IEdi
     for (int n = 0; n < 24; ++n) {
         const bool gate = n < 8 || (n >= 10 && n < 19);
         const double source = gate ? (phase < .5 ? .5 : -.5) : 0;
-        if (gate) phase = std::fmod(phase + .44, 1.0);
+        if (gate) phase = std::fmod(phase + 440.0 / setup.sampleRate, 1.0);
         const double amount = n <= 3 ? 1200 : (n <= 7 ? 1200 - (n - 3) * 600 : -1200 + (n - 8) * 400);
         const double hz = 440 * std::pow(2.0, (-1200 + amount * levels[n]) / 1200);
-        const double expected = reference.process(source, 2, hz, 1.0, 1000);
+        const double expected = reference.process(source, 2, hz, 1.0, setup.sampleRate);
         assert(std::abs(buffer[n] - expected) < 1e-5);
     }
     assert(processor->setProcessing(false) == kResultOk && component->setActive(false) == kResultOk);
