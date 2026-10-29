@@ -192,11 +192,6 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         _ => (0.0..=5000.0).contains(&plain),
     }
 }
-/// 直接入力の実単位を検証し、スライダーの刻みに丸めずVST3正規化値へ換算する。
-pub fn parse_numeric(index: usize, text: &str) -> Option<f64> {
-    let plain = text.trim().parse::<f64>().ok()?;
-    valid_plain(index, plain).then(|| to_normalized(index, plain))
-}
 pub fn canonical(index: usize, value: f64) -> f64 {
     if index == 0 {
         normalized(from_normalized(value).expect("validated normalized value"))
@@ -593,65 +588,6 @@ mod tests {
         seek,
         tell,
     };
-
-    #[test]
-    fn numeric_entry_preserves_values_between_slider_ticks() {
-        for (index, text, plain) in [
-            (1, "12.345", 12.345),
-            (2, "0.125", 0.125),
-            (3, "123.456", 123.456),
-            (4, "0.4567", 0.4567),
-            (5, "0.0625", 0.0625),
-            (6, "7", 7.0),
-            (7, "25.125", 25.125),
-            (8, "32", 32.0),
-            (10, "-1234.125", -1234.125),
-            (11, "1.2345", 1.2345),
-            (13, "-12.345", -12.345),
-            (14, "12.345", 12.345),
-            (15, "0.125", 0.125),
-            (16, "123.456", 123.456),
-            (17, "0.4567", 0.4567),
-            (18, "0.0625", 0.0625),
-            (19, "-1234.125", -1234.125),
-        ] {
-            let normalized = parse_numeric(index, text).unwrap();
-            let parameters = SharedParameters::new();
-            parameters.set(index, normalized);
-            assert!((to_plain(index, parameters.get(index)) - plain).abs() < 2e-12);
-        }
-        for (index, min, max) in [
-            (1, 0.0, 5000.0),
-            (2, 0.0, 5000.0),
-            (3, 0.0, 5000.0),
-            (4, 0.0, 1.0),
-            (5, 0.0, 5000.0),
-            (6, 1.0, 7.0),
-            (7, 0.0, 100.0),
-            (8, 1.0, 32.0),
-            (10, -2400.0, 9600.0),
-            (11, 0.5, 10.0),
-            (13, -48.0, 12.0),
-            (14, 0.0, 5000.0),
-            (15, 0.0, 5000.0),
-            (16, 0.0, 5000.0),
-            (17, 0.0, 1.0),
-            (18, 0.0, 5000.0),
-            (19, -4800.0, 4800.0),
-        ] {
-            for value in [min, max] {
-                assert!(parse_numeric(index, &value.to_string()).is_some());
-            }
-            for value in [min - 1.0, max + 1.0] {
-                assert!(parse_numeric(index, &value.to_string()).is_none());
-            }
-            for text in ["", "-", "NaN", "inf", "abc"] {
-                assert!(parse_numeric(index, text).is_none());
-            }
-        }
-        assert!(parse_numeric(6, "2.5").is_none());
-        assert!(parse_numeric(8, "2.5").is_none());
-    }
 
     #[test]
     fn controls_cover_all_steps_and_defaults() {

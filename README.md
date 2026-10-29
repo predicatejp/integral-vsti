@@ -91,9 +91,8 @@ Stateはデータ保持専用とし、所有コンポーネントのメソッド
 | Cutoff | ノート周波数から−2400〜9600 cent（−2〜＋8 oct） | ＋4800 cent（＋4 oct） | `0x46435554` |
 | Resonance | Q=0.5〜10 | 1 | `0x46524553` |
 
-GUIではFilterをドロップダウン、CutoffとResonanceを整数スライダーで操作します。
+GUIではFilterをドロップダウン、CutoffとResonanceを整数ノブで操作します。
 Cutoffは0〜1200 tickを10 cent刻みへ換算し、Resonanceは0〜950 tickをQ=0.5〜10（0.01刻み）へ換算します。
-CutoffとResonanceは右の数値欄でも入力でき、範囲内の小数値を保持します。
 Filterは`stepCount=6`のリスト、Cutoffは`stepCount=0`の連続値として公開し、どちらも変更点で切り替えます。
 Resonanceは連続値で、ホストの変更点間を正規化値で線形補間します。
 
@@ -134,22 +133,22 @@ sustainではAmount×Sustainの変化量を保ち、releaseで基本のCutoffへ
 再ノートオンでは現在のエンベロープ値を開始点として、attack時間全体を使って1へ移行します。
 音量のreleaseが先に終わっても、カットオフ用のreleaseはフィルタの残響に適用されます。
 
-時間スライダーは音量用と同じ対数軸、Sustainは線形です。
-Amountは10 cent刻みの整数スライダーで、各数値欄から直接入力もできます。
+時間ノブは音量用と同じ対数軸、Sustainは線形です。
+Amountは10 cent刻みの整数ノブで操作します。
 6パラメーターは連続値として公開し、VST3の変更点間を正規化値で線形補間します。
 
 ## マスターボリューム
 
 Volumeは全Voiceのフィルタ出力を加算した後の音量です（ParamID `0x4d564f4c`）。
-範囲は−48〜＋12 dB、初期値は0 dBです。整数スライダーの0〜600 tickを
-`dB = tick / 10 − 48` で換算し、0.1 dB刻みで設定します。右の数値欄からも直接入力できます。
+範囲は−48〜＋12 dB、初期値は0 dBです。整数ノブの0〜600 tickを
+`dB = tick / 10 − 48` で換算し、0.1 dB刻みで設定します。
 出力へ掛ける振幅倍率は `10^(dB / 20)` で、値が変わったときだけ計算して保持します。
 VST3では連続値として公開し、オートメーションの変更点間はdB値で線形補間します。
 
 ## ポリフォニー
 
 **Polyphony** は1〜32（初期値1）、ParamIDは `0x504F4C59`、`stepCount=31` / `kCanAutomate` です。
-GUIでは1刻みの整数スライダーで設定します。変更点では補間せず、ノートより先に適用します。
+GUIでは1刻みの整数ノブで設定します。変更点では補間せず、ノートより先に適用します。
 
 `Synthesizer.next_oscillator_id` は初期値0です。有効なNote OnをそのIDへ割り当てた後、
 `(ID + 1) % Polyphony` へ進めます。空き枠の探索はせず、発音中・release中の枠もこの順に再使用します。
@@ -186,7 +185,7 @@ Detune=0では保持した先頭ボイスの位相だけで1ボイス相当の�
 
 Unisonは `stepCount=6`、Detuneは `stepCount=0`、ともに `kCanAutomate` で公開します。
 Unisonは変更点で切り替え、DetuneはAHDSRと同様に正規化空間で線形補間します。
-GUIではUnisonを1ボイス刻み、Detuneを1 cent刻みの整数スライダーで操作します。
+GUIではUnisonを1ボイス刻み、Detuneを1 cent刻みの整数ノブで操作します。
 ホストからはDetuneの端数も受け付けます。
 
 ## 音量エンベロープ
@@ -209,12 +208,12 @@ GUIではUnisonを1ボイス刻み、Detuneを1 cent刻みの整数スライダ�
 開始振幅や新しいベロシティにかかわらず、attackの終了は再ノートオンからattack時間後です。
 初期設定のsustain時、最大ベロシティでの理想実効値は `0.5 × 0.7 = 0.35` です。
 
-時間スライダーの設定値は整数tick（0〜371）です。tick=0が0ms、tick=1が1msで、
+時間ノブの設定値は整数tick（0〜371）です。tick=0が0ms、tick=1が1msで、
 tick=1〜370は `ms = 10^((tick−1)/100)`、最大端点のtick=371は5000msに換算します。
 正の対数領域では100 tick進むと10倍になります。
 VST3の正規化値は実単位から連続値へ換算し、0〜1msの区間は線形に対応させます。
 Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算します。
-スライダー右側に現在値（時間はms）を表示します。
+ノブ操作中は中央直上に現在値（時間はms）を表示します。
 
 5パラメーターは `stepCount=0` / `kCanAutomate` で公開します。
 変更キューの連続値は、前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間し、
@@ -254,15 +253,20 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 
 ## GUI
 
-ホストのプラグイン画面に、ライトテーマのパラメーターリストを表示します。
-左からパラメーター名、操作欄、現在値を配置し、縦方向に並べます。
-Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeとカットオフ用AHDSR・Amountはスライダーです。
+ホストのプラグイン画面に、ライトテーマで処理順に左からOscillator・Filter・Masterを配置します。
+Amplitude envelopeはOscillatorの下、Cutoff envelopeはFilterの下へ配置します。上段の高さ、各段とエンベロープの幅、グループ間隔を揃えています。
+OscillatorにはWaveform・Phase・Unison・Detune、MasterにはPolyphony・Volumeを配置します。
+ノブは直径44pxで横に並べ、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
+Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Polyphony / Cutoff / Resonance / Volumeとカットオフ用AHDSR・Amountはノブです。
+ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
+操作中はカーソルを隠して移動のたびに基準位置へ戻し、ノブの中央直上に「正式名称」「現在値」を中央揃えの2行で表示します。
+Unison・Polyphonyは整数、連続パラメーターは小数点以下3桁と単位を表示します。
+ボタン解放・Esc・フォーカス喪失・画面終了で調整を終了します。Escでも調整済みの値は保持します。
+終了時にプラグインがキーボードフォーカスを保持していれば、ホストの親ウィンドウへ戻します。操作中に別のウィンドウへ移ったフォーカスは維持します。
+時間・音量などへの換算は整数tickから行い、各パラメーターの刻み幅は上記の仕様に従います。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
 サイズは1024×768物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
-各スライダー右の数値欄をクリックして直接入力できます。Enterまたは別の欄へのフォーカス移動で確定し、Escで取り消します。
-時間はms、Detune・Cutoff・Cutoff Amountはcent、ResonanceはQ、VolumeはdBで入力します。UnisonとPolyphonyは範囲内の整数、その他は範囲内の小数値も受け付けます。
-直接入力した値はスライダーの刻みに丸めず、音源へ反映して保存します。範囲外や不正な文字列は確定時に元の表示へ戻します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
 対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。
@@ -270,7 +274,10 @@ Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する
 描画環境を初期化できない場合は画面の取り付けに失敗し、ホストのパラメーター操作と音声処理は引き続き使用できます。
 
 GUIの操作はUI専用の32件キューからホストのUIスレッドへ配送し、
-`IComponentHandler::beginEdit / performEdit / endEdit` を順に通知します。キュー満杯時は新しい編集を破棄します。
+`IComponentHandler::beginEdit / performEdit / endEdit` を順に通知します。
+ノブはドラッグ全体で一つの編集とし、32件のうち1件を終了通知用に予約します。
+値変更のキューが満杯なら途中の更新を破棄し、終了時に最終値を通知します。
+カーソルの復帰はホストへの編集終了通知より先に行います。
 DSPへの適用は従来どおりホストの変更キュー経由です。ホストからの値更新や状態復元は表示へ反映し、編集通知を送り返しません。
 Windowsはbaseviewの子ウィンドウのタイマー、LinuxはVST3のIRunLoopから編集を配送します。
 画面を閉じるとタイマーと描画資源を解放し、音声処理は継続します。
@@ -366,7 +373,7 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 `C:\Program Files\Common Files\VST3` に配置します。システム共通フォルダへの配置には管理者権限が必要です。
 
 ホストで再スキャンし、音源一覧の **Sample VSTi** を読み込みます。
-ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonance・Volume・カットオフ用AHDSR・Amountの17スライダーとFilter・Phaseのドロップダウンを操作できます。
+ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonance・Volume・カットオフ用AHDSR・Amountの17ノブとFilter・Phaseのドロップダウンを操作できます。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
 ## 検証
@@ -396,6 +403,7 @@ set VST3_SDK_DIR=C:\path\to\vst3-sdk
 python scripts/check-abi.py
 ```
 
+LinuxのGUI検証には入力注入用の`libXtst.so.6`とカーソル検証用の`libXfixes.so.3`も必要です。
 GUIの表示・クリックも検証する場合は `python scripts/check-abi.py --gui` を使用します。
 LinuxではABIテストのコンパイルに `libx11-dev` が必要です。画面のない環境では次のように実行できます。
 
@@ -406,7 +414,7 @@ LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a python3 scripts/check-abi.py --gui
 
 WindowsのGUI検証にはOpenGL対応ドライバーが必要です。CIでは固定版のMesaをABIテスト実行ファイルの隣にだけ配置し、
 ソフトウェア描画で検証します。このDLLは配布ZIPへ含めません。
-GUIテストは表示・クリック・UIスレッドでの標準編集通知・保存復元・閉じて再表示する操作を確認します。
+GUIテストは表示・クリック・ノブの上下ドラッグ・カーソルの非表示と復帰・UIスレッドでの標準編集通知・保存復元・フォーカス喪失・操作中の終了と再表示を確認します。
 
 この検証はSDKのインターフェースで共有ライブラリをロードし、バージョン・ID・戻り値、100回のインスタンス生成・解放、
 複数のブロック長、32/64ビットの発音・消音、音程変更・再発音での位相継承、
@@ -537,7 +545,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/lib.rs`: モジュールの公開関数とファクトリー。
 - `src/plugin.rs`: インスタンス、バス、イベント・パラメーター処理、音声出力、Controller。
 - `src/gui.rs`: VST3画面の直接実装とホストへの編集通知。
-- `src/editor.rs`: 波形選択リストのマウス入力とegui/OpenGL描画。
+- `src/editor.rs`: カテゴリ別ノブ・選択リストのマウス入力とegui/OpenGL描画。
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した4波形オシレータ。

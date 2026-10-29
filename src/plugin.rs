@@ -577,30 +577,62 @@ pub unsafe fn edit_parameter(this: This, index: usize, value: f64) -> TResult {
     if index >= IDS.len() || !(0.0..=1.0).contains(&value) {
         return INVALID_ARGUMENT;
     }
-    let id = IDS[index];
     let value = parameters::canonical(index, value);
     // SAFETY: GUIの所有参照がthisを保持。ホストコールバック前にRefCellの借用を終了する。
     let plugin = unsafe { instance(this) };
-    let Some(handler) = plugin.component_handler.borrow().clone() else {
+    if plugin.component_handler.borrow().is_none() {
         return FALSE;
-    };
+    }
     // 編集配送前に再描画されると同じ値が複数回キューへ入るため、適用済みなら通知しない。
     if plugin.controller_parameters.get(index) == value {
         return OK;
     }
-    let p = handler.as_ptr();
-    // SAFETY: ローカル参照が再入時のhandler置換から保護する。
-    let table = unsafe { &**p.cast::<*const ComponentHandlerVTable>() };
-    if unsafe { (table.begin_edit)(p, id) } != OK {
+    // SAFETY: UIスレッドの生存中のcontrollerと、その所有するhandler。
+    let Some(handler) = (unsafe { begin_parameter_edit(this, index) }) else {
         return FALSE;
-    }
-    plugin.controller_parameters.set(index, value);
-    let result = unsafe { (table.perform_edit)(p, id, value) };
-    // SAFETY: 成功したbeginEditと必ず対にする。音声処理へはホスト経由で届く。
+    };
+    let result = unsafe { perform_parameter_edit(this, &handler, index, value) };
     unsafe {
-        (table.end_edit)(p, id);
+        end_parameter_edit(&handler, index);
     }
     result
+}
+
+/// SAFETY: 生存中のcontroller、範囲内のindexをホストUIスレッドから渡す。
+pub(crate) unsafe fn begin_parameter_edit(this: This, index: usize) -> Option<HostRef> {
+    let plugin = unsafe { instance(this) };
+    let handler = plugin.component_handler.borrow().clone()?;
+    let p = handler.as_ptr();
+    // SAFETY: ローカル所有参照が再入によるhandler交換から保護する。
+    let table = unsafe { &**p.cast::<*const ComponentHandlerVTable>() };
+    (unsafe { (table.begin_edit)(p, IDS[index]) } == OK).then_some(handler)
+}
+
+/// SAFETY: UIスレッドから、beginEditが成功したhandlerと対応するindexを渡す。
+pub(crate) unsafe fn perform_parameter_edit(
+    this: This,
+    handler: &HostRef,
+    index: usize,
+    value: f64,
+) -> TResult {
+    let value = parameters::canonical(index, value);
+    let plugin = unsafe { instance(this) };
+    if plugin.controller_parameters.get(index) == value {
+        return OK;
+    }
+    plugin.controller_parameters.set(index, value);
+    let p = handler.as_ptr();
+    let table = unsafe { &**p.cast::<*const ComponentHandlerVTable>() };
+    unsafe { (table.perform_edit)(p, IDS[index], value) }
+}
+
+/// SAFETY: UIスレッドから、開始済みの編集について一度だけ呼ぶ。
+pub(crate) unsafe fn end_parameter_edit(handler: &HostRef, index: usize) {
+    let p = handler.as_ptr();
+    let table = unsafe { &**p.cast::<*const ComponentHandlerVTable>() };
+    unsafe {
+        (table.end_edit)(p, IDS[index]);
+    }
 }
 
 unsafe extern "system" fn set_bus_arrangements(
