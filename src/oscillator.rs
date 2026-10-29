@@ -9,15 +9,22 @@ use std::{collections::hash_map::RandomState, hash::BuildHasher};
 #[path = "oscillator_tables.rs"]
 mod tables;
 
-/// 等間隔テーブルの隣接点を線形補間する。positionは0以上、最終要素の位置以下。
-fn interpolate(position: f64, table: &[f64]) -> f64 {
-    let index = (position as usize).min(table.len() - 2);
-    table[index] + (table[index + 1] - table[index]) * (position - index as f64)
+/// 等間隔テーブルの隣接点を線形補間する。
+/// SAFETY: positionは有限の0〜1024。tableは2〜1025要素で、positionは最終位置以下。
+unsafe fn interpolate(position: f64, table: &[f64]) -> f64 {
+    debug_assert!((2..=1025).contains(&table.len()));
+    debug_assert!((0.0..=(table.len() - 1) as f64).contains(&position));
+    // SAFETY: 呼び出し元が保証する有限の0〜1024は、小数部を切り捨てるとi32に収まる。
+    let index = unsafe { position.to_int_unchecked::<i32>() } as u32;
+    let index = index.min((table.len() - 2) as u32);
+    let at = index as usize;
+    table[at] + (table[at + 1] - table[at]) * (position - f64::from(index))
 }
 
 /// −100〜100 centの倍率。ホストの連続値やユニゾン配置の小数centも保持する。
 fn detune_ratio(cents: f64) -> f64 {
-    interpolate(cents + 100.0, &tables::DETUNE)
+    // SAFETY: 検証済みのDetuneとユニゾン配置からcentsは有限の−100〜100。表は201要素。
+    unsafe { interpolate(cents + 100.0, &tables::DETUNE) }
 }
 
 /// 1/4周期1024区間と対称性による正弦波。入力位相は[0, 1)。実効値補正は行わない。
@@ -27,7 +34,8 @@ fn sine_sample(phase: f64) -> f64 {
     let fraction = position - f64::from(quadrant);
     // 偶数象限はfraction、奇数象限は1-fractionへ折り返す。
     let folded = (f64::from(quadrant & 1) - fraction).abs();
-    let value = interpolate(folded * 1024.0, &tables::SINE);
+    // SAFETY: 位相は有限の0〜1（更新時の丸めによる1も含む）。折り返し位置は0〜1024。
+    let value = unsafe { interpolate(folded * 1024.0, &tables::SINE) };
     value * (1.0 - f64::from(quadrant & 2))
 }
 
@@ -292,6 +300,29 @@ impl Oscillator {
 mod tests {
     use super::*;
     use crate::envelope::DEFAULT_ENVELOPE;
+
+    #[test]
+    fn interpolation_preserves_integer_boundaries_and_fractional_positions() {
+        for table in [&tables::SINE[..], &tables::DETUNE[..]] {
+            let end = (table.len() - 1) as f64;
+            for i in 0..table.len() {
+                let point = i as f64;
+                for position in [
+                    point.next_down().max(0.0),
+                    point,
+                    point.next_up().min(end),
+                    (point + 0.5).min(end),
+                ] {
+                    let index = (position as usize).min(table.len() - 2);
+                    let expected = table[index]
+                        + (table[index + 1] - table[index]) * (position - index as f64);
+                    // SAFETY: 201/1025要素の表に対し、有限の0〜最終位置を渡す。
+                    let actual = unsafe { interpolate(position, table) };
+                    assert_eq!(actual.to_bits(), expected.to_bits(), "{position}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn phase_wraps_at_and_above_the_sample_rate() {

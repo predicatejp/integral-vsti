@@ -48,6 +48,7 @@
 - 対応OS・アーキテクチャ: Linux x86_64（GNU環境）とWindows x86_64（MSVC環境）。
 - 音源方式・主要機能: 1〜32個の独立オシレータによる多声音音源。サイン波・三角波・矩形波・ノコギリ波に対応。既定はサイン波。音量・カットオフ用の独立した線形AHDSRエンベロープ。同一ノートの1〜7ボイスユニゾン。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
+- サンプルレートは44.1 kHz以上の有限値を受理し、範囲外はVST3の`setupProcessing`で拒否する。フィルタも同じ下限を検証し、カットオフは内部で20〜20,000 Hzにクランプする。
 - 現在の操作・保存: VST3のWaveform（4択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount。eguiで20パラメーターを操作し、IBStreamで保存・復元。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。

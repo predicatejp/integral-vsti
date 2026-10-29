@@ -4,6 +4,9 @@
 //! TPT SVFの3出力と、その外側での出力選択・直列接続。
 //! 数式の参考: <https://www.cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf>
 
+/// VST3処理設定とフィルタで受理するサンプルレートの下限（Hz）。
+pub const MIN_SAMPLE_RATE: f64 = 44_100.0;
+
 /// SVFの外側で選ぶ応答と直列段数。各段に同じカットオフ・Qを適用する。
 #[derive(Clone, Copy, Debug)]
 pub enum FilterType {
@@ -112,7 +115,7 @@ impl Svf {
             return cached;
         }
         // 入力設定を書き換えず、係数計算時だけ20〜20,000 Hzへクランプする。
-        // 極端に低いレートでもNyquist未満という上限を優先する。
+        // レートは44.1 kHz以上なので、20 kHzは常にNyquist未満となる。
         let cutoff_hz = parameters.cutoff_hz.clamp(20.0, 20_000.0);
         // Qだけの変更ではプリワープ係数を再利用し、減衰係数と分母だけ更新する。
         let g = match self.state.coefficients {
@@ -121,7 +124,7 @@ impl Svf {
             {
                 cached.g
             }
-            _ => (std::f64::consts::PI * (cutoff_hz / sample_rate).min(0.49)).tan(),
+            _ => (std::f64::consts::PI * (cutoff_hz / sample_rate)).tan(),
         };
         let damping = 1.0 / parameters.resonance_q;
         let coefficients = SvfCoefficients {
@@ -155,7 +158,10 @@ impl Svf {
 }
 
 fn valid_input(sample: f64, parameters: &FilterParameters, sample_rate: f64) -> bool {
-    sample.is_finite() & parameters.is_valid() & sample_rate.is_finite() & (sample_rate > 0.0)
+    sample.is_finite()
+        & parameters.is_valid()
+        & sample_rate.is_finite()
+        & (sample_rate >= MIN_SAMPLE_RATE)
 }
 
 /// SVFの外側で出力を選択し、必要な段数だけ直列接続するコンポーネント。
@@ -405,7 +411,7 @@ mod tests {
 
     #[test]
     fn extremes_and_modulation_remain_finite() {
-        for rate in [1000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+        for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
             for filter_type in TYPES {
                 let mut state = Filter::new();
                 for n in 0..256 {
@@ -430,7 +436,7 @@ mod tests {
 
     #[test]
     fn frequencies_are_clamped_inside_filter_without_changing_input() {
-        for rate in [1.0_f64, 1000.0, 22_050.0, 44_100.0, 96_000.0] {
+        for rate in [44_100.0_f64, 48_000.0, 96_000.0, 192_000.0] {
             for filter_type in TYPES {
                 for requested in [
                     -f64::MAX,
@@ -451,7 +457,7 @@ mod tests {
                     };
                     assert!(parameters.is_valid());
                     let boundary = FilterParameters {
-                        cutoff_hz: requested.clamp(20.0, 20_000.0).min(rate * 0.49),
+                        cutoff_hz: requested.clamp(20.0, 20_000.0),
                         ..TEST_PARAMETERS
                     };
                     let mut limited = Filter::new();
@@ -480,6 +486,10 @@ mod tests {
         let silent = |output: SvfOutput| {
             assert_eq!([output.low, output.band, output.high], [0.0; 3]);
         };
+        for rate in [1.0, 22_050.0, 32_000.0, MIN_SAMPLE_RATE.next_down()] {
+            silent(state.process_sample(1.0, &TEST_PARAMETERS, rate));
+            assert_eq!(state.state.integrators, previous);
+        }
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0] {
             silent(state.process_sample(1.0, &TEST_PARAMETERS, bad));
             silent(state.process_sample(
