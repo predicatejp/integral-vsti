@@ -152,13 +152,13 @@ fn main() {
             let input = input(waveform, unison, detune);
             let mut oscillator = Oscillator::new();
             for _ in 0..rate as usize {
-                oscillator.generate_sample(&input, rate);
+                oscillator.generate_sample(&input, rate, &[[1.0; 2]; 7]);
             }
             measure(
                 &format!("oscillator/{waveform:?}/u{unison}/d{detune}"),
                 "sample",
                 selection,
-                |_| oscillator.generate_sample(black_box(&input), black_box(rate)),
+                |_| oscillator.generate_sample(black_box(&input), black_box(rate), &[[1.0; 2]; 7]),
             );
         }
     }
@@ -170,7 +170,7 @@ fn main() {
         selection,
         |i| {
             modulated_input.detune_cents = 5.0 + (i % 1000) as f64 * 0.075;
-            modulated.generate_sample(black_box(&modulated_input), black_box(rate))
+            modulated.generate_sample(black_box(&modulated_input), black_box(rate), &[[1.0; 2]; 7])
         },
     );
     let mut idle = Oscillator::new();
@@ -178,7 +178,7 @@ fn main() {
     idle_input.gate = false;
     idle_input.note_generation = 0;
     measure("oscillator/idle/u7", "sample", selection, |_| {
-        idle.generate_sample(black_box(&idle_input), black_box(rate))
+        idle.generate_sample(black_box(&idle_input), black_box(rate), &[[1.0; 2]; 7])
     });
     let mut p = FilterParameters {
         cutoff_hz: 880.0,
@@ -255,13 +255,13 @@ fn main() {
             voice.set_filter(kind, 1200.0, p.resonance_q);
             voice.note_on(note(0), 0.0, 1.0);
             for _ in 0..rate as usize {
-                voice.generate_sample(rate);
+                voice.generate_sample(rate, &[[1.0; 2]; 7]);
             }
             measure(
                 &format!("voice/u{unison}/{kind:?}"),
                 "sample",
                 selection,
-                |_| black_box(&mut voice).generate_sample(black_box(rate)),
+                |_| black_box(&mut voice).generate_sample(black_box(rate), &[[1.0; 2]; 7]),
             );
         }
     }
