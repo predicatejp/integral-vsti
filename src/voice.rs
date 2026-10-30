@@ -60,6 +60,8 @@ impl Voice {
                     waveform: Waveform::Sine,
                     phase_mode: PhaseMode::Keep,
                     unison_voices: 1,
+                    width: 0.0,
+                    pan: 0.0,
                     detune_cents: 0.0,
                     frequency_hz: 440.0,
                     amplitude: 0.0,
@@ -157,10 +159,16 @@ impl Voice {
         self.state.oscillator_input.phase_mode = phase_mode;
     }
 
-    /// Voice内の処理パイプライン。生成した信号をSynthesizerが加算する。
-    pub fn generate_sample(&mut self, sample_rate: f64) -> f64 {
+    /// 全ユニゾンへ共通の広がりと定位を設定する。
+    pub fn set_panning(&mut self, width: f64, pan: f64) {
+        self.state.oscillator_input.width = width;
+        self.state.oscillator_input.pan = pan;
+    }
+
+    /// Voice内のステレオ処理パイプライン。生成した信号をSynthesizerが加算する。
+    pub fn generate_sample(&mut self, sample_rate: f64) -> [f64; 2] {
         if !(sample_rate.is_finite() & (sample_rate > 0.0)) {
-            return 0.0;
+            return [0.0; 2];
         }
         let input = &self.state.oscillator_input;
         let level = self.state.cutoff_envelope.generate_sample(
@@ -239,8 +247,8 @@ mod tests {
         bypassed.set_filter(FilterType::LowPass2, 1200.0, 2.0);
         for _ in 0..128 {
             assert_eq!(
-                bypassed.generate_sample(48000.0),
-                reference.generate_sample(48000.0)
+                bypassed.generate_sample(48000.0)[0],
+                reference.generate_sample(48000.0)[0]
             );
         }
     }
@@ -286,21 +294,21 @@ mod tests {
                     }
                     let input = voice.state.oscillator_input;
                     let expected = filter.process_sample(
-                        oscillator.generate_sample(&input, 1000.0),
+                        [oscillator.generate_sample(&input, 1000.0)[0]; 2],
                         kind,
                         &FilterParameters {
                             cutoff_hz: 220.0 * 2.0_f64.powf((-1200.0 + amount * level) / 1200.0),
                             resonance_q: 1.0,
                         },
                         1000.0,
-                    );
+                    )[0];
                     assert!(
-                        (voice.generate_sample(1000.0) - expected).abs() < 1e-12,
+                        (voice.generate_sample(1000.0)[0] - expected).abs() < 1e-12,
                         "sample={n}, amount={amount}, type={kind:?}"
                     );
                 }
                 voice.stop();
-                assert_eq!(voice.generate_sample(1000.0), 0.0);
+                assert_eq!(voice.generate_sample(1000.0)[0], 0.0);
                 assert_eq!(voice.state.cutoff_modulation.0, 0.0);
             }
         }
@@ -343,12 +351,12 @@ mod tests {
                 };
                 for _ in 0..64 {
                     let expected = reference.process_sample(
-                        oscillator.generate_sample(&input, 48_000.0),
+                        [oscillator.generate_sample(&input, 48_000.0)[0]; 2],
                         filter_type,
                         &settings,
                         48_000.0,
-                    );
-                    assert!((voice.generate_sample(48_000.0) - expected).abs() < 1e-12);
+                    )[0];
+                    assert!((voice.generate_sample(48_000.0)[0] - expected).abs() < 1e-12);
                 }
                 voice.note_off(Note {
                     id: 1,
@@ -358,15 +366,15 @@ mod tests {
                 input.gate = false;
                 for _ in 0..16 {
                     let expected = reference.process_sample(
-                        oscillator.generate_sample(&input, 48_000.0),
+                        [oscillator.generate_sample(&input, 48_000.0)[0]; 2],
                         filter_type,
                         &settings,
                         48_000.0,
-                    );
-                    assert!((voice.generate_sample(48_000.0) - expected).abs() < 1e-12);
+                    )[0];
+                    assert!((voice.generate_sample(48_000.0)[0] - expected).abs() < 1e-12);
                 }
                 voice.stop();
-                assert_eq!(voice.generate_sample(48_000.0), 0.0);
+                assert_eq!(voice.generate_sample(48_000.0)[0], 0.0);
             }
         }
     }

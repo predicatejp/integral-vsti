@@ -300,7 +300,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(info.id == waveformId && info.stepCount == 3 && info.defaultNormalizedValue == 0.0);
     assert(info.unitId == 0 && info.flags == (ParameterInfo::kCanAutomate | ParameterInfo::kIsList));
     assert(std::u16string(info.title) == u"Waveform");
-    assert(controller->getParameterInfo(20, info) == kInvalidArgument);
+    assert(controller->getParameterInfo(22, info) == kInvalidArgument);
     const std::array<std::u16string, 4> names {u"Sine", u"Triangle", u"Square", u"Sawtooth"};
     for (size_t i = 0; i < names.size(); ++i) {
         const double normalized = static_cast<double>(i) / 3.0;
@@ -319,7 +319,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(controller->setParamNormalized(0, 0.0) == kInvalidArgument);
     StateStream initial;
     assert(component->getState(&initial) == kResultOk);
-    assert(initial.bytes.size() == 164 && initial.bytes[4] == 8 && initial.bytes[8] == 0);
+    assert(initial.bytes.size() == 180 && initial.bytes[4] == 9 && initial.bytes[8] == 0);
     configureEnvelope(processor, true);
     // Controllerへの表示更新だけではProcessorの値は変わらない。
     assert(controller->getParamNormalized(waveformId) == 1.0);
@@ -410,7 +410,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     for (int error = 0; error < 5; ++error) {
         StateStream broken; broken.bytes = saved.bytes;
         if (error == 0) broken.bytes.resize(11);
-        if (error == 1) broken.bytes[4] = 9;
+        if (error == 1) broken.bytes[4] = 10;
         if (error == 2) broken.bytes[8] = 4;
         if (error == 3) broken.bytes[0] = 0;
         if (error == 4) broken.fail = true;
@@ -498,7 +498,7 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
     check({.3, .25, .2, .15}); // offset=-1の0.7からoffset=3の0.3へ線形補間。
     changes.queues.clear(); check({.15, .15});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 164 && saved.bytes[4] == 8);
+    assert(saved.bytes.size() == 180 && saved.bytes[4] == 9);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(std::abs(controller->getParamNormalized(envelopeIds[3]) - .3) < 1e-12);
     // 旧v1を読み込むと波形以外は既定値へ復帰する。
@@ -577,7 +577,7 @@ void checkUnison(IComponent* component, IAudioProcessor* processor, IEditControl
         events.values.clear(); previousCount = n; previousDetune = target;
     }
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 164 && saved.bytes[4] == 8);
+    assert(saved.bytes.size() == 180 && saved.bytes[4] == 9);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(unisonId) == 1.0);
     assert(controller->getParamNormalized(detuneId) == 1.0);
@@ -660,7 +660,7 @@ void checkPolyphony(IComponent* component, IAudioProcessor* processor, IEditCont
     events.values = {note(true, 0, 200, 12, 0, .5f), note(false, 0, 100, 12)};
     check({15.75, 15.75});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 164 && saved.bytes[4] == 8);
+    assert(saved.bytes.size() == 180 && saved.bytes[4] == 9);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(polyphonyId) == 1.0);
     // 次の割り当て位置は2。減少で範囲外の音を止め、増加しても復活させない。
@@ -753,7 +753,7 @@ void checkFilter(IComponent* component, IAudioProcessor* processor, IEditControl
             assert(std::abs(buffer[n] - expected) < 1e-5);
         }
         assert(bus.silenceFlags == 0);
-        StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes.size() == 164);
+        StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes.size() == 180);
         assert(controller->setComponentState(&saved) == kResultOk);
         assert(controller->getParamNormalized(filterIds[0]) == t / 6.0);
         assert(controller->getParamNormalized(filterIds[1]) == 1.0);
@@ -874,6 +874,61 @@ void checkVolume(IComponent* component, IAudioProcessor* processor, IEditControl
 }
 
 template <typename Sample>
+void checkPanning(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
+    constexpr ParamID widthId = 0x57494454, panId = 0x4d50414e;
+    for (int i : {20, 21}) {
+        ParameterInfo info;
+        assert(controller->getParameterInfo(i, info) == kResultOk);
+        assert(info.id == (i == 20 ? widthId : panId) && info.stepCount == 0);
+        assert(std::u16string(info.title) == (i == 20 ? u"Width" : u"Pan"));
+        assert(std::u16string(info.units) == u"%" && info.defaultNormalizedValue == (i == 20 ? 0 : .5));
+    }
+    configureEnvelope(processor, true);
+    Points waveform, unison, detune, width, pan, filter;
+    waveform.values = {{0, 2.0 / 3.0}};
+    unison.id = unisonId; unison.values = {{0, 1.0 / 6.0}};
+    detune.id = detuneId; detune.values = {{0, .25}};
+    width.id = widthId; pan.id = panId;
+    filter.id = filterIds[0]; filter.values = {{0, 0}};
+    Changes changes; changes.queues = {&waveform, &unison, &detune, &width, &pan, &filter};
+    ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
+    assert(processor->process(data) == kResultOk); // 0サンプルで新設定を受理する。
+    waveform.values.clear(); unison.values.clear(); detune.values.clear(); filter.values.clear();
+    ProcessSetup setup {kRealtime, precision, 8, 48000.0};
+    assert(processor->setupProcessing(setup) == kResultOk);
+    assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
+    assert(component->setActive(true) == kResultOk && processor->setProcessing(true) == kResultOk);
+    std::array<Sample, 8> left {}, right {};
+    Sample* channels[] = {left.data(), right.data()};
+    AudioBusBuffers bus; bus.numChannels = 2;
+    if constexpr (std::is_same_v<Sample, float>) bus.channelBuffers32 = channels;
+    else bus.channelBuffers64 = channels;
+    Events events; events.values = {note(true, 0, 1)};
+    data.numSamples = 8; data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
+    width.values = {{3, 1}}; pan.values = {{7, 1}};
+    assert(processor->process(data) == kResultOk);
+    for (int i = 0; i < 8; ++i) {
+        const double w = std::min(1.0, (i + 1) / 4.0), p = (i + 1) / 8.0;
+        double l = 0, r = 0;
+        for (double side : {-1.0, 1.0}) {
+            const double angle = (1 + p + (1 - p) * w * side) * std::acos(-1.0) / 4;
+            l += .5 * std::cos(angle); r += .5 * std::sin(angle);
+        }
+        assert(std::abs(left[i] - l) < 1e-6 && std::abs(right[i] - r) < 1e-6);
+    }
+    assert(bus.silenceFlags == 0);
+    width.values.clear(); pan.values.clear(); events.values.clear();
+    assert(processor->process(data) == kResultOk); // 最終値を次のブロックでも保持。
+    assert(bus.silenceFlags == 1);
+    for (int i = 0; i < 8; ++i) assert(left[i] == 0 && std::abs(right[i] - 1.0) < 1e-6);
+    pan.values = {{0, 0}};
+    assert(processor->process(data) == kResultOk);
+    assert(bus.silenceFlags == 2);
+    for (int i = 0; i < 8; ++i) assert(right[i] == 0 && std::abs(left[i] - 1.0) < 1e-6);
+    assert(processor->setProcessing(false) == kResultOk && component->setActive(false) == kResultOk);
+}
+
+template <typename Sample>
 void checkCutoffEnvelope(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
     const std::array<double, 6> initial {10, 0, 100, .7, 100, 0};
     const std::array<double, 6> settings {4.0 / 48, 2.0 / 48, 4.0 / 48, .25, 4.0 / 48, 1200};
@@ -938,9 +993,9 @@ T* query(FUnknown* object, const TUID iid) {
 }
 
 void checkStateReload(IPluginFactory* factory, const TUID cid) {
-    // 全20設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
-    const std::array<double, 20> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125};
-    std::array<double, 20> expected {};
+    // 全22設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
+    const std::array<double, 22> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125, 62.5, -35.25};
+    std::array<double, 22> expected {};
     StateStream saved;
     for (bool restore : {false, true}) {
         void* object = nullptr;
@@ -950,7 +1005,7 @@ void checkStateReload(IPluginFactory* factory, const TUID cid) {
         auto* controller = query<IEditController>(component, IEditController_iid);
         assert(component->initialize(factory) == kResultOk);
         if (!restore) {
-            std::array<Points, 20> points;
+            std::array<Points, 22> points;
             Changes changes;
             for (size_t i = 0; i < points.size(); ++i) {
                 ParameterInfo info {};
@@ -1106,7 +1161,7 @@ int main(int argc, char** argv) {
         assert(bus.channelCount == 2 && bus.name[0] == u'S');
         SpeakerArrangement output = SpeakerArr::kStereo;
         assert(processor->setBusArrangements(nullptr, 0, &output, 1) == kResultOk);
-        assert(controller->getParameterCount() == 20);
+        assert(controller->getParameterCount() == 22);
         checkViewContract(controller);
         assert(controller->setComponentHandler(nullptr) == kResultOk);
         assert(processor->getLatencySamples() == 0 && processor->getTailSamples() == kInfiniteTail);
@@ -1126,6 +1181,8 @@ int main(int argc, char** argv) {
         if (iteration == 26) checkVolume<double>(component, processor, controller, kSample64);
         if (iteration == 27) checkCutoffEnvelope<float>(component, processor, controller, kSample32);
         if (iteration == 28) checkCutoffEnvelope<double>(component, processor, controller, kSample64);
+        if (iteration == 29) checkPanning<float>(component, processor, controller, kSample32);
+        if (iteration == 30) checkPanning<double>(component, processor, controller, kSample64);
         if (iteration < 12) {
             const double rate = std::array<double, 3> {44100.0, 48000.0, 96000.0}[iteration % 3];
             if (iteration % 2 == 0) checkNotes<float>(component, processor, kSample32, rate, iteration % 3, iteration < 6);

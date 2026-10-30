@@ -10,7 +10,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 20;
+pub const COUNT: usize = 22;
 pub const PHASE_MODES: [PhaseMode; 3] = [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random];
 pub const PHASE_NAMES: [&str; 3] = ["Keep", "Zero", "Random"];
 
@@ -66,6 +66,8 @@ pub const IDS: [u32; COUNT] = [
     0x43535553, // CSUS
     0x4352454c, // CREL
     0x43414d54, // CAMT
+    0x57494454, // WIDT
+    0x4d50414e, // MPAN
 ];
 pub const NAMES: [&str; COUNT] = [
     "Waveform",
@@ -88,6 +90,8 @@ pub const NAMES: [&str; COUNT] = [
     "Cutoff Sustain",
     "Cutoff Release",
     "Cutoff Amount",
+    "Width",
+    "Pan",
 ];
 /// VST3正規化値と時間を換算する連続軸のスケール。UIの整数tick上限とは区別する。
 pub fn time_scale() -> f64 {
@@ -103,7 +107,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(index, 0 | 6 | 8 | 9 | 10 | 12)
 }
-/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=600、cutoff amount 0..=960。
+/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=600、cutoff amount 0..=960、pan 0..=200。
 pub fn slider_to_plain(index: usize, tick: u32) -> f64 {
     if is_time(index) {
         if tick == 0 {
@@ -114,7 +118,8 @@ pub fn slider_to_plain(index: usize, tick: u32) -> f64 {
     } else {
         match index {
             6 | 8 => f64::from(tick) + 1.0,
-            7 | 9 => f64::from(tick),
+            7 | 9 | 20 => f64::from(tick),
+            21 => f64::from(tick) - 100.0,
             10 => f64::from(tick) * 10.0 - 2400.0,
             11 => 0.5 + f64::from(tick) / 100.0,
             13 => f64::from(tick) / 10.0 - 48.0,
@@ -130,7 +135,8 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     match index {
         4 | 17 => return normalized,
         6 => return (normalized * 7.0).floor().min(6.0) + 1.0,
-        7 => return normalized * 100.0,
+        7 | 20 => return normalized * 100.0,
+        21 => return normalized * 200.0 - 100.0,
         8 => return (normalized * 32.0).floor().min(31.0) + 1.0,
         9 => return (normalized * 7.0).floor().min(6.0),
         10 => return normalized * 12000.0 - 2400.0,
@@ -157,7 +163,8 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     match index {
         4 | 17 => return plain,
         6 => return (plain.clamp(1.0, 7.0).round() - 1.0) / 6.0,
-        7 => return plain / 100.0,
+        7 | 20 => return plain / 100.0,
+        21 => return (plain + 100.0) / 200.0,
         8 => return (plain.clamp(1.0, 32.0).round() - 1.0) / 31.0,
         9 => return plain.clamp(0.0, 6.0).round() / 6.0,
         10 => return (plain + 2400.0) / 12000.0,
@@ -181,7 +188,8 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         0 => (0.0..=3.0).contains(&plain),
         4 | 17 => (0.0..=1.0).contains(&plain),
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
-        7 => (0.0..=100.0).contains(&plain),
+        7 | 20 => (0.0..=100.0).contains(&plain),
+        21 => (-100.0..=100.0).contains(&plain),
         8 => (1.0..=32.0).contains(&plain) && plain.fract() == 0.0,
         9 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
         10 => (-2400.0..=9600.0).contains(&plain),
@@ -224,6 +232,8 @@ pub fn defaults() -> [f64; COUNT] {
         p.sustain,
         p.release_ms,
         0.0, // Cutoff Amount: 0 cent
+        0.0, // Width: 0%
+        0.0, // Pan: 中央
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -403,7 +413,8 @@ impl<'a> ParameterPoints<'a> {
 // v1〜v4はフィルタNoneとして旧音色を維持する。空状態は新規設定へ戻す。
 // v7: v6にVolumeのdB値f64を追加（116バイト）。v1〜v6は0 dBを補う。
 // v8: v7にカットオフAHDSRとAmountの実単位f64を追加（164バイト）。旧形式のAmountは0。
-const STATE_HEADER: [u8; 8] = *b"SVST\x08\0\0\0";
+// v9: Width・Panの実単位%を追加（180バイト）。旧形式は両方0%。
+const STATE_HEADER: [u8; 8] = *b"SVST\x09\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -412,7 +423,7 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
     }
     // SAFETY: IBStreamの関数表を借用し、固定長領域の範囲だけを読み取る。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 164];
+    let mut bytes = [0u8; 180];
     let mut position = 0;
     let mut length = 12;
     while position < length {
@@ -446,6 +457,7 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
                 6 => length = 108,
                 7 => length = 116,
                 8 => length = 164,
+                9 => length = 180,
                 _ => return Err(FALSE),
             }
         }
@@ -484,7 +496,7 @@ pub unsafe fn write_state(stream: This, values: [f64; COUNT]) -> TResult {
     }
     // SAFETY: IBStreamは固定長バッファを呼び出し中だけ読む。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 164];
+    let mut bytes = [0u8; 180];
     bytes[..8].copy_from_slice(&STATE_HEADER);
     bytes[8..12].copy_from_slice(&(to_plain(0, values[0]) as u32).to_le_bytes());
     for (i, &value) in values.iter().enumerate().skip(1) {
@@ -520,7 +532,7 @@ mod tests {
         /// このテストだけで使うIBStream関数表。
         vtable: &'static StreamVTable,
         /// 形式の最大長だけを用意したテスト用領域。
-        bytes: [u8; 164],
+        bytes: [u8; 180],
         /// 初期化済みデータの長さ。
         length: usize,
         /// 次の読み書き位置。
@@ -601,7 +613,15 @@ mod tests {
         for i in 0..5 {
             assert!((values[14 + i] - values[1 + i]).abs() < 1e-12);
         }
-        for (index, max) in [(9, 6), (10, 1200), (11, 950), (13, 600), (19, 960)] {
+        for (index, max) in [
+            (9, 6),
+            (10, 1200),
+            (11, 950),
+            (13, 600),
+            (19, 960),
+            (20, 100),
+            (21, 200),
+        ] {
             for tick in 0..=max {
                 let plain = slider_to_plain(index, tick);
                 let normalized = to_normalized(index, plain);
@@ -617,7 +637,7 @@ mod tests {
         for waveform in WAVEFORMS {
             let mut stream = Stream {
                 vtable: &STREAM_TABLE,
-                bytes: [0; 164],
+                bytes: [0; 180],
                 length: 0,
                 position: 0,
             };
@@ -634,6 +654,8 @@ mod tests {
                 values[11] = to_normalized(11, 5.125);
                 values[12] = to_normalized(12, 2.0);
                 values[13] = to_normalized(13, -12.345);
+                values[20] = to_normalized(20, 62.5);
+                values[21] = to_normalized(21, -35.25);
                 for (i, plain) in [25.0, 15.0, 250.0, 0.4567, 350.25, -1234.125]
                     .into_iter()
                     .enumerate()
@@ -646,7 +668,7 @@ mod tests {
                 for (actual, expected) in restored.into_iter().zip(values) {
                     assert!((actual - expected).abs() < 1e-12);
                 }
-                for length in 1..164 {
+                for length in 1..180 {
                     (*stream).length = length;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
@@ -705,6 +727,14 @@ mod tests {
                 }
                 (*stream).bytes[4] = 8;
                 (*stream).length = 164;
+                (*stream).position = 0;
+                let legacy = read_state(stream.cast()).unwrap();
+                for i in 0..20 {
+                    assert!((legacy[i] - values[i]).abs() < 1e-12);
+                }
+                assert_eq!(&legacy[20..], &defaults()[20..]);
+                (*stream).bytes[4] = 9;
+                (*stream).length = 180;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -742,6 +772,12 @@ mod tests {
                     (19, -4800.1),
                     (19, 4800.1),
                     (19, f64::NAN),
+                    (20, -0.1),
+                    (20, 100.1),
+                    (20, f64::NAN),
+                    (21, -100.1),
+                    (21, 100.1),
+                    (21, f64::INFINITY),
                 ] {
                     let offset = 12 + (index - 1) * 8;
                     let original: [u8; 8] =

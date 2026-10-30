@@ -22,7 +22,7 @@ use std::{
 /// ノブの表示名。ホスト公開名とオーバーレイはparameters::NAMESを使う。
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
-    "Vol", "A", "H", "D", "S", "R", "Amt",
+    "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan",
 ];
 
 struct EditorState {
@@ -69,6 +69,7 @@ fn max_tick(index: usize) -> u32 {
             6 => 6,
             8 => 31,
             19 => 960,
+            21 => 200,
             10 => 1200,
             13 => 600,
             11 => 950,
@@ -92,6 +93,7 @@ fn unit(index: usize) -> &'static str {
     } else {
         match index {
             13 => "dB",
+            20 | 21 => "%",
             7 | 10 | 19 => "cent",
             _ => "",
         }
@@ -448,7 +450,7 @@ impl WindowHandler for Editor {
                                 ui,
                                 "Oscillator",
                                 &[0, 12],
-                                &[6, 7],
+                                &[6, 7, 20],
                                 egui::vec2(292.0, 162.0),
                                 &selected,
                             );
@@ -485,8 +487,8 @@ impl WindowHandler for Editor {
                             ui,
                             "Master",
                             &[],
-                            &[8, 13],
-                            egui::vec2(112.0, 162.0),
+                            &[8, 13, 21],
+                            egui::vec2(172.0, 162.0),
                             &selected,
                         );
                     });

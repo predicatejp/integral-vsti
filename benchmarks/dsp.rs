@@ -28,7 +28,7 @@ use voice::{Note, Voice};
 
 static SCOPED_FTZ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn batch(iterations: usize, operation: &mut impl FnMut(usize) -> f64) -> f64 {
+fn batch<T>(iterations: usize, operation: &mut impl FnMut(usize) -> T) -> f64 {
     let start = Instant::now();
     let scoped = SCOPED_FTZ.load(std::sync::atomic::Ordering::Relaxed);
     for start in (0..iterations).step_by(256) {
@@ -40,7 +40,7 @@ fn batch(iterations: usize, operation: &mut impl FnMut(usize) -> f64) -> f64 {
     start.elapsed().as_secs_f64()
 }
 
-fn measure(name: &str, unit: &str, selection: &str, mut operation: impl FnMut(usize) -> f64) {
+fn measure<T>(name: &str, unit: &str, selection: &str, mut operation: impl FnMut(usize) -> T) {
     if !name.starts_with(selection) {
         return;
     }
@@ -65,6 +65,8 @@ fn input(waveform: Waveform, unison: u32, detune: f64) -> OscillatorInput {
         phase_mode: oscillator::PhaseMode::Keep,
         waveform,
         unison_voices: unison,
+        width: 0.0,
+        pan: 0.0,
         detune_cents: detune,
         frequency_hz: 440.0,
         amplitude: 0.5,
@@ -195,7 +197,7 @@ fn main() {
         let mut filter = Filter::new();
         measure(&format!("filter/{kind:?}"), "sample", selection, |i| {
             filter.process_sample(
-                black_box(if i % 2 == 0 { 0.5 } else { -0.5 }),
+                [black_box(if i % 2 == 0 { 0.5 } else { -0.5 }); 2],
                 black_box(kind),
                 black_box(&p),
                 black_box(rate),
@@ -206,7 +208,7 @@ fn main() {
     measure("filter/LowPass2/modulated", "sample", selection, |i| {
         p.cutoff_hz = 880.0 + (i % 128) as f64;
         filter.process_sample(
-            black_box(0.5),
+            [black_box(0.5); 2],
             black_box(FilterType::LowPass2),
             black_box(&p),
             black_box(rate),
@@ -217,9 +219,9 @@ fn main() {
     for tail in [false, true] {
         let mut filter = Filter::new();
         if tail {
-            filter.process_sample(1.0, FilterType::LowPass2, &p, rate);
+            filter.process_sample([1.0; 2], FilterType::LowPass2, &p, rate);
             for _ in 0..(rate * 2.0) as usize {
-                filter.process_sample(0.0, FilterType::LowPass2, &p, rate);
+                filter.process_sample([0.0; 2], FilterType::LowPass2, &p, rate);
             }
         }
         measure(
@@ -232,7 +234,7 @@ fn main() {
             selection,
             |_| {
                 filter.process_sample(
-                    black_box(0.0),
+                    [black_box(0.0); 2],
                     black_box(FilterType::LowPass2),
                     black_box(&p),
                     black_box(rate),
@@ -243,7 +245,13 @@ fn main() {
     for unison in [1, 7] {
         for kind in [FilterType::None, FilterType::LowPass1, FilterType::LowPass2] {
             let mut voice = Voice::new();
-            voice.set_parameters(Waveform::Sawtooth, DEFAULT_ENVELOPE, unison, 30.0, oscillator::PhaseMode::Keep);
+            voice.set_parameters(
+                Waveform::Sawtooth,
+                DEFAULT_ENVELOPE,
+                unison,
+                30.0,
+                oscillator::PhaseMode::Keep,
+            );
             voice.set_filter(kind, 1200.0, p.resonance_q);
             voice.note_on(note(0), 0.0, 1.0);
             for _ in 0..rate as usize {
@@ -267,6 +275,9 @@ fn main() {
                 "released",
                 "sine",
                 "detune",
+                "width",
+                "width-changing",
+                "pan-changing",
             ] {
                 let mut synth = Synthesizer::new();
                 synth.set_sample_rate(rate);
@@ -283,6 +294,9 @@ fn main() {
                 values[7] = parameters::to_normalized(7, 30.0);
                 values[8] = parameters::to_normalized(8, polyphony as f64);
                 values[9] = parameters::to_normalized(9, 2.0);
+                if matches!(mode, "width" | "width-changing" | "pan-changing") {
+                    values[20] = 1.0;
+                }
                 synth.set_parameters(values);
                 if mode != "idle" {
                     for i in 0..polyphony {
@@ -310,6 +324,12 @@ fn main() {
                         }
                         if mode == "detune" {
                             values[7] = (5.0 + (i % 1000) as f64 * 0.075) / 100.0;
+                        }
+                        if mode == "width-changing" {
+                            values[20] = (i % 1000) as f64 / 999.0;
+                        }
+                        if mode == "pan-changing" {
+                            values[21] = (i % 1000) as f64 / 999.0;
                         }
                         if mode != "render" {
                             synth.set_parameters(black_box(values));
