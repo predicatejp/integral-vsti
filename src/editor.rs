@@ -7,7 +7,7 @@ pub(crate) mod edits;
 mod pointer;
 use edits::{Edit, Edits};
 
-use crate::parameters::{self, FILTER_NAMES, NAMES, SharedParameters, WAVEFORM_NAMES};
+use crate::parameters::{self, NAMES, SharedParameters};
 use baseview::{
     Event, EventStatus, HandlerError, MouseButton, MouseEvent, WindowContext, WindowEvent,
     WindowHandler,
@@ -59,45 +59,6 @@ fn move_tick(tick: u32, remainder: f32, dy: f32, max: u32) -> (u32, f32) {
         pixels - steps as f32 * 4.0
     };
     (next, rest)
-}
-
-fn max_tick(index: usize) -> u32 {
-    if parameters::is_time(index) {
-        371
-    } else {
-        match index {
-            6 => 6,
-            8 => 31,
-            19 => 960,
-            21 => 200,
-            10 => 1200,
-            13 => 600,
-            11 => 950,
-            _ => 100,
-        }
-    }
-}
-
-fn value_tick(index: usize, value: f64) -> u32 {
-    let scale = if parameters::is_time(index) {
-        parameters::time_scale()
-    } else {
-        f64::from(max_tick(index))
-    };
-    (value * scale).round() as u32
-}
-
-fn unit(index: usize) -> &'static str {
-    if parameters::is_time(index) {
-        "ms"
-    } else {
-        match index {
-            13 => "dB",
-            20 | 21 => "%",
-            7 | 10 | 19 => "cent",
-            _ => "",
-        }
-    }
 }
 
 pub(super) struct Editor {
@@ -186,13 +147,14 @@ impl Editor {
         let mut state = self.state.borrow_mut();
         state.knobs[index] = rect;
         let drag = state.drag.as_ref().filter(|d| d.index == index);
-        let tick = drag.map_or_else(|| value_tick(index, selected), |d| d.tick);
+        let tick = drag.map_or_else(|| parameters::to_tick(index, selected), |d| d.tick);
         let value = if drag.is_some_and(|d| d.changed) {
-            parameters::slider_to_plain(index, tick)
+            parameters::tick_to_plain(index, tick)
         } else {
             parameters::to_plain(index, selected)
         };
-        let angle = std::f32::consts::PI * (0.75 + 1.5 * tick as f32 / max_tick(index) as f32);
+        let angle =
+            std::f32::consts::PI * (0.75 + 1.5 * tick as f32 / parameters::max_tick(index) as f32);
         let center = rect.center();
         let color = if drag.is_some() {
             ui.visuals().selection.bg_fill
@@ -213,7 +175,7 @@ impl Editor {
             let value_label = if matches!(index, 6 | 8) {
                 format!("{value:.0}")
             } else {
-                format!("{value:.3} {}", unit(index))
+                format!("{value:.3} {}", parameters::unit(index))
             };
             let label = format!("{}\n{}", NAMES[index], value_label.trim_end());
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
@@ -257,7 +219,7 @@ impl Editor {
             #[cfg(target_os = "windows")]
             keyboard_focus: self.keyboard_focus(),
             index,
-            tick: value_tick(index, selected),
+            tick: parameters::to_tick(index, selected),
             remainder: 0.0,
             anchor,
             changed: false,
@@ -282,7 +244,7 @@ impl Editor {
                 drag.tick,
                 drag.remainder,
                 position.y - drag.anchor.y,
-                max_tick(drag.index),
+                parameters::max_tick(drag.index),
             );
             drag.remainder = rest;
             if tick != drag.tick {
@@ -290,7 +252,7 @@ impl Editor {
                 drag.changed = true;
                 self.edits.push(Edit::Value(parameters::to_normalized(
                     drag.index,
-                    parameters::slider_to_plain(drag.index, tick),
+                    parameters::tick_to_plain(drag.index, tick),
                 )));
             }
             drag.anchor
@@ -309,7 +271,7 @@ impl Editor {
             self.edits.push(Edit::End(drag.changed.then(|| {
                 parameters::to_normalized(
                     drag.index,
-                    parameters::slider_to_plain(drag.index, drag.tick),
+                    parameters::tick_to_plain(drag.index, drag.tick),
                 )
             })));
             self.window.request_redraw();
@@ -339,11 +301,7 @@ impl Editor {
                             for &index in choices {
                                 ui.vertical(|ui| {
                                     ui.label(NAMES[index]);
-                                    let names: &[&str] = match index {
-                                        0 => &WAVEFORM_NAMES,
-                                        9 => &FILTER_NAMES,
-                                        _ => &parameters::PHASE_NAMES,
-                                    };
+                                    let names = parameters::choices(index);
                                     let mut choice =
                                         parameters::to_plain(index, selected[index]) as usize;
                                     if egui::ComboBox::from_id_salt(index)
@@ -642,7 +600,7 @@ mod tests {
             if matches!(index, 9 | 12) {
                 continue;
             }
-            let max = max_tick(index);
+            let max = parameters::max_tick(index);
             for tick in 0..max {
                 let (same, remainder) = move_tick(tick, 0.0, -3.0, max);
                 assert_eq!(same, tick);

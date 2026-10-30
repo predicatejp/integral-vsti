@@ -1,6 +1,6 @@
 # sample-vsti
 
-RustでVST3のAPI・ABIを直接実装する、最小の音源プラグインです。
+RustでVST3のAPI・ABIを直接実装する、簡易ソフトウェア音源です。
 最大32個の独立オシレータで、ノートオン・オフに応じて発音・消音します。
 VST3パラメーターからサイン波・三角波・矩形波・ノコギリ波を選択できます。
 VST3用のバインディングやC/C++ラッパーは使用しません。GUIにはeguiを使用します。
@@ -21,8 +21,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
 ProcessorとControllerは、同一インスタンスから取得できます。
-左右に同じ合成波形を出力します。CC、ピッチベンド、
-ノートエクスプレッションは未実装です。
+CC、ピッチベンド、ノートエクスプレッションは未実装です。
 macOS・Windows ARM64・32ビット環境は未対応です。
 
 ## 発音と位相
@@ -33,7 +32,7 @@ macOS・Windows ARM64・32ビット環境は未対応です。
   `BASE_RMS_AMPLITUDE × velocity` とします。velocityが0のNote Onもノートを更新し、attack時間をかけて目標振幅0へ移行します。
 - Note Offは、両イベントにnoteIdがあればIDで照合します。どちらかが `-1` の場合はチャンネルと音高で照合します。
   同じID、またはIDがない同チャンネル・同音高が複数枠にあれば、全一致をreleaseします。上書き済みの旧IDへのNote Offは新しいノートを消しません。
-- `OscillatorInput` は発振器回路の定常入力で、波形・位相モード・ユニゾン数・Detune・Width・Pan・目標周波数・目標実効値・ゲート・エンベロープ設定・ノート/停止の世代番号を持ちます。
+- `OscillatorInput` は発振器回路の定常入力で、波形・位相モード・ユニゾン数・Detune・目標周波数・目標実効値・ゲート・エンベロープ設定・ノート/停止の世代番号を持ちます。
   `OscillatorState` はユニゾンの位相と音量用`Envelope`を保持します。現在値・attack開始値・経過サンプル数・ノートオフ位置は`EnvelopeState`が保持し、イベント処理は入力だけを書き換えます。
 - 各サンプルで「現在の入力と状態からサンプル生成 → 入力を用いて状態更新」を繰り返します。
   エンベロープの計算はサンプル数をミリ秒へ変換して行い、位相と時間の更新はサンプル生成後です。
@@ -150,7 +149,7 @@ VST3では連続値として公開し、オートメーションの変更点間�
 **Polyphony** は1〜32（初期値1）、ParamIDは `0x504F4C59`、`stepCount=31` / `kCanAutomate` です。
 GUIでは1刻みの整数ノブで設定します。変更点では補間せず、ノートより先に適用します。
 
-`Synthesizer.next_oscillator_id` は初期値0です。有効なNote OnをそのIDへ割り当てた後、
+`SynthesizerState.next_oscillator_id` は初期値0です。有効なNote OnをそのIDへ割り当てた後、
 `(ID + 1) % Polyphony` へ進めます。空き枠の探索はせず、発音中・release中の枠もこの順に再使用します。
 Note Offと不正なNote OnではIDを進めません。処理停止でも次のIDは保持します。
 再使用時は現在振幅を引き継ぎ、新しいノートのattackを開始します。位相はPhaseの選択に従います。
@@ -208,12 +207,12 @@ Width=0・Pan=0では従来と同じ左右出力になります。
 
 GUIでは整数tickで1%刻みに操作し、VST3では連続値として公開します。
 オートメーションはAHDSRと同様に正規化空間で線形補間します。
-定位の倍率はSynthesizerが1組だけ保持し、各Voice・Oscillatorへ参照で渡します。実発音数・有効なWidth・Panが変わった場合だけ再計算し、1ボイス時のWidth変更や正のDetune間の変更では再計算しません。波形生成・位相更新は各ユニゾン音につき1回です。
+定位の倍率はSynthesizerStateが`PanningGains`を1組だけ保持し、各Voice・Oscillatorへ定常入力として参照で渡します。実発音数・有効なWidth・Panが変わった場合だけ再計算し、1ボイス時のWidth変更や正のDetune間の変更では再計算しません。波形生成・位相更新は各ユニゾン音につき1回です。
 
 ## 音量エンベロープ
 
-`src/envelope.rs` の `amplitude` は、`EnvelopeParameters`、ノートオンからの経過ミリ秒、
-ノートオフ時刻（同じ時刻基準、未到達は `None`）、開始振幅、目標ピーク振幅を受け取ります。
+`src/envelope.rs` の `value` は、`EnvelopeParameters`、ノートオンからの経過ミリ秒、
+ノートオフ時刻（同じ時刻基準、未到達は `None`）、開始値、目標ピーク値を受け取り、0〜1の正規化値を返します。
 音量用`Envelope`は`EnvelopeState`に現在値・開始値・経過サンプル数を保持し、カットオフ用と同じAHDSRを使います。
 
 | パラメーター | 範囲 | 初期値 | ParamID |
@@ -243,7 +242,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 計算は毎サンプルの設定を用いるため、発音中の時間・sustain変更は進行中の形にも反映します。
 開始振幅は次のノートオンまで固定します。不正・非有限の入力は音声へ伝播させません。
 
-## 波形の選択・オートメーション・保存
+## パラメーターと状態保存
 
 ホストのVST3パラメーター表示で **Waveform** を操作します。画面上の表示形式はホストに依存します。
 `IEditController` で列挙する離散パラメーターで、固定ParamIDは `0x57415645`、
@@ -257,10 +256,15 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 | Sawtooth | 3 | 1 |
 
 正規化値は4つの等幅区間へ量子化し、上端の1はSawtoothに含めます。
-音声処理への変更は `ProcessData.inputParameterChanges` から受け取り、各変更点の `sampleOffset` で切り替えます。
-変更点までは直前の波形を保持し、離散値の補間はしません。同位置ではパラメーターをキュー順に適用した後、
-ノートをイベントリスト順に処理します。変更がないブロックでも最後の選択を維持します。
-波形の即時切り替えでクリックが発生する場合があります。
+
+全パラメーターの変更は `ProcessData.inputParameterChanges` から受け取り、`sampleOffset` に従って反映します。
+
+| パラメーター | 変更点の間の処理 |
+| --- | --- |
+| Waveform・Unison・Polyphony・Filter・Cutoff・Phase | 直前の値を保持し、変更点で切り替える |
+| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・Volume・Width・Pan | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
+
+最後の点以降は値を保持します。同位置ではパラメーターをキュー順に適用した後、ノートをイベントリスト順に処理します。
 
 音声バッファがない場合や処理停止中の0サンプルフラッシュでも、offset 0のパラメーター変更を受け付けます。
 未知のParamID、不正な値、範囲外・後戻りする位置、取得に失敗した変更点は無視します。
@@ -269,7 +273,8 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
 保存形式v9は180バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Panを各f64。little endian）です。
 旧v8（164バイト）以前はWidth=0%、Pan=0%を補います。旧v7（116バイト）以前はカットオフ用AHDSRの初期値とAmount=0を補います。旧v6（108バイト）以前はVolume=0 dBを補います。旧v5（100バイト）以前はPhase=Keepを補います。旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
-復元値は次の音声処理ブロックから適用し、Controllerは `setComponentState` で同期します。
+`setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
+標準の `setComponentState` によるControllerの同期にも対応します。
 位相や発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
 
@@ -279,13 +284,14 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 Amplitude envelopeはOscillatorの下、Cutoff envelopeはFilterの下へ配置します。上段の高さ、各段とエンベロープの幅、グループ間隔を揃えています。
 OscillatorにはWaveform・Phase・Unison・Detune・Width、MasterにはPolyphony・Volume・Panを配置します。
 ノブは直径44pxで横に並べ、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
-Waveform・Filter・Phaseはドロップダウン、Attack / Hold / Decay / Sustain / Release / Unison / Detune / Width / Polyphony / Cutoff / Resonance / Volumeとカットオフ用AHDSR・Amount・Width・Panはノブです。
+Waveform・Filter・Phaseはドロップダウン、その他のパラメーターはノブです。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
 操作中はカーソルを隠して移動のたびに基準位置へ戻し、ノブの中央直上に「正式名称」「現在値」を中央揃えの2行で表示します。
 Unison・Polyphonyは整数、連続パラメーターは小数点以下3桁と単位を表示します。
 ボタン解放・Esc・フォーカス喪失・画面終了で調整を終了します。Escでも調整済みの値は保持します。
 Windowsではノブ操作の開始・終了でキーボードフォーカスを変更せず、ホストの入力先を維持します。既存の16msタイマーでEsc・フォーカス変更・マウスキャプチャの解除を検出して操作を終了します。Linuxでは終了時にプラグインが保持しているフォーカスをホストの親へ戻します。
 時間・音量などへの換算は整数tickから行い、各パラメーターの刻み幅は上記の仕様に従います。
+選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
 サイズは1024×768物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
@@ -362,7 +368,7 @@ Windowsではバイナリの位置が `Contents/x86_64-win/SampleVsti.vst3` に�
 `target/dist/` にもバンドル全体を含むZIPを生成します。Windows版はCRTを静的リンクします。
 
 ビルドスクリプトは最適化ビルドを行い、ホストが読み込めるバンドルを作成します。
-開発用の共有ライブラリだけが必要な場合は `cargo build` を使用します。
+開発用の共有ライブラリだけが必要な場合は `cargo build --locked` を使用します。
 
 ## バージョン情報
 
@@ -395,7 +401,8 @@ Windowsでは展開した `SampleVsti.vst3` フォルダを、ホストの探索
 `C:\Program Files\Common Files\VST3` に配置します。システム共通フォルダへの配置には管理者権限が必要です。
 
 ホストで再スキャンし、音源一覧の **Sample VSTi** を読み込みます。
-ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。プラグインの画面を開くと、Waveformのドロップダウンとエンベロープ・ユニゾン・Polyphony・Cutoff・Resonance・Volume・カットオフ用AHDSR・Amount・Width・Panの19ノブとFilter・Phaseのドロップダウンを操作できます。
+ホストの鍵盤やピアノロールからノートを送り、複数ノートの発音と個別の消音を確認してください。
+音色の操作方法は[GUI](#gui)を参照してください。
 更新時はホストを終了してから、配置済みバンドルを差し替えてください。
 
 ## 検証
@@ -430,7 +437,7 @@ GUIの表示・クリックも検証する場合は `python scripts/check-abi.py
 LinuxではABIテストのコンパイルに `libx11-dev` が必要です。画面のない環境では次のように実行できます。
 
 ```sh
-sudo apt-get install libx11-dev libxkbcommon-x11-0 libgl1-mesa-dri libegl1 xvfb xauth
+sudo apt-get install libx11-dev libxtst6 libxfixes3 libxkbcommon-x11-0 libgl1-mesa-dri libegl1 xvfb xauth
 LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a python3 scripts/check-abi.py --gui
 ```
 
@@ -441,7 +448,7 @@ GUIテストは表示・クリック・ノブの上下ドラッグ・カーソ�
 この検証はSDKのインターフェースで共有ライブラリをロードし、バージョン・ID・戻り値、100回のインスタンス生成・解放、
 複数のブロック長、32/64ビットの発音・消音、音程変更・再発音での位相継承、
 イベントのサンプル位置とノート照合、バッファ境界、同一バッファを指す出力、停止・再開とフラッシュを確認します。
-波形パラメーターの列挙・表示・値変換、変更時刻と位相を含む実際の出力サンプル、
+パラメーターの列挙・表示・値変換、変更時刻と位相を含む実際の出力サンプル、
 停止中のパラメーターフラッシュ、IBStreamの部分読み書き・保存復元・不正データの拒否も検査します。
 音声テストは44.1 / 48 / 96 kHzとリアルタイム・プリフェッチ・オフラインモードを含みます。
 検証用C++コードはプラグインにリンクされません。
@@ -461,11 +468,11 @@ target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3
 ```
 
 Linuxでの確認済み環境: Linux x86_64、Rust 1.95.0 / 1.99.1、GCC 12.2、VST3 SDK 3.8.1
-（インターフェース定義も3.8.1）。Rustテスト40件、ABI検証、Validator 47件が成功しています。
+（インターフェース定義も3.8.1）。Rustテスト、ABI検証、Validatorが成功しています。
 参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
-イベントバス有効化通知への互換性対応後、サイン波はFL Studioで発音の動作報告があります。
-GUIの表示・クリック・復元・再表示はLinuxのXvfbとMesaで検証しています。
-GUI追加後の実際のDAWでの表示・操作、および実GPUでの描画は未確認です。
+FL Studioで発音とGUI操作の動作報告があります。
+GUIの自動検証にはLinuxのXvfbとMesaを使用します。
+DSPの速度測定手順は[benchmarks/README.md](benchmarks/README.md)、比較実験の結果は[Wiki](https://github.com/predicatejp/sample-vsti/wiki)にまとめています。
 
 ## PRのテスト用ZIP
 
@@ -558,7 +565,6 @@ cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path 
 
 GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.toml` で監査します。
 依存を追加する際は、利用条件と通知ファイルを確認して許可リストも更新してください。本体の配布ライセンスはこの設定では決定しません。
-統合前には、集約チェック **CI result** と **PR target** の成功を確認してください。
 
 ## 構成
 
@@ -567,13 +573,18 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/lib.rs`: モジュールの公開関数とファクトリー。
 - `src/plugin.rs`: インスタンス、バス、イベント・パラメーター処理、音声出力、Controller。
 - `src/gui.rs`: VST3画面の直接実装とホストへの編集通知。
-- `src/editor.rs`: カテゴリ別ノブ・選択リストのマウス入力とegui/OpenGL描画。
+- `src/editor.rs`: カテゴリ別ノブ・選択リストの入力とegui/OpenGL描画。`src/editor/edits.rs`は編集通知キュー、`src/editor/pointer.rs`はOS別のカーソル操作。
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
-- `src/parameters.rs`: 波形パラメーターの値変換、VST3変更キューとIBStreamの読み書き。
+- `src/parameters.rs`: 全パラメーターの選択肢・単位・値変換、VST3変更キューとIBStreamの読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した4波形オシレータ。
-- `src/synth.rs`: SynthesizerによるVoiceの循環割り当てと加算出力。
-- `src/voice.rs`: Voiceごとのノート照合と処理パイプライン。内部にユニゾン対応のOscillatorを1個所有。
-- `src/tests.rs`: Rust側のABIレイアウトと参照管理のテスト。
+- `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
+- `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
+- `src/synth.rs`: Voiceの循環割り当て・加算出力と、共通の定位係数・マスター音量の管理。
+- `src/voice.rs`: Voiceごとのノート照合とOscillator → ステレオFilterの処理パイプライン。
+- `src/float_mode.rs`: 音声処理中の非正規化数処理モードの保存・切り替え・復元。
+- `src/oscillator_tables.rs`: Detune倍率と四半周期正弦波の固定テーブル。
+- `src/tests.rs`: Rust側のABIレイアウトと参照管理のテスト。各コンポーネントの回帰テストは各モジュール内に配置。
+- `benchmarks/`: 継続利用するDSPの速度測定。
 - `tests/gui-smoke.h`: 埋め込み画面とマウス操作の検証専用コード。
 - `scripts/bundle-licenses.py`: 対象OSの依存ライブラリと付属フォントの通知収集。
 - `tests/abi-smoke.cpp`: 公式SDKの型を使う独立したABI検証。

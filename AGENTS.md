@@ -64,51 +64,13 @@
 - RustのpanicをABI境界の外へ伝播させない設計とし、失敗時の戻り値と状態の扱いを定めること。
 - VST3 SDKは仕様確認やValidatorによる検証に利用し、プラグイン本体の実装をSDKのC++コードに依存させないこと。
 
-## ディレクトリ構成
+## 構成・開発環境
 
-- `README.md`: プロジェクト概要。環境構築や利用手順もここに記載する。
-- `AGENTS.md`: エージェント向けの作業指針。
-- `build.rs`: Gitコミットと正式リリース指定からホスト向けのバージョンとビルド情報を生成。
-- `src/abi.rs`: Rustで直接定義したABI型・vtable・OS別の識別子表現と戻り値。
-- `src/lib.rs`: モジュール公開関数とファクトリー。
-- `src/plugin.rs`: 音源インスタンスとホストからの呼び出し処理。
-- `src/gui.rs`: IPlugViewの直接実装とUIスレッドへの編集配送。
-- `src/editor.rs`: カテゴリ別ノブ・選択リストのマウス入力とegui/OpenGL描画。
-- `src/host.rs`: UIスレッドに限定したホストインターフェースの所有参照。
-- `src/parameters.rs`: 22パラメーターの値変換、VST3変更キューとIBStream v9（旧v1〜v8/空状態も対応）の読み書き。
-- `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState`、サンプル生成・状態更新。
-- `src/envelope.rs`: 単位に依存しない0〜1のAHDSR計算と、EnvelopeがEnvelopeStateを所有する経過時間・再トリガー管理。音量とカットオフで共用する。
-- `src/filter.rs`: 3出力のTPT SVFと、外側でのタイプ選択・1段／2段・None。具体的なHzとQ（0.5〜10）を受け取る。既定値は内部フィルタに持たせずUI／VST3設定側で定義する。Voiceの最終段へ接続。ノート基準のCutoff（−2400〜9600 cent、初期値＋4800 cent）をHzへ換算して渡す。
-- `src/synth.rs`: SynthesizerがSynthesizerStateを所有し、Voiceの循環割り当て・加算出力をメソッドで処理。
-- `src/voice.rs`: VoiceがVoiceStateを所有し、ノート照合・処理パイプラインをメソッドで処理。定常入力と、専用Stateを持つOscillator・Filterを保持。
-- `src/tests.rs`: Rust側のABIレイアウト・参照管理・イベント処理テスト。
-- `tests/abi-smoke.cpp`: 公式SDKヘッダを用いる検証専用コード。本体にはリンクしない。
-- `scripts/`: ビルドと検証。生成物は `target/` 以下に配置する。
-- `.github/workflows/rust.yml`: Rust・VST3検証のGitHub Actionsワークフロー。
-- `scripts/install-ci-tools.sh` / `scripts/ci-versions.sh`: CIツールの導入とバージョン管理。
-- `deny.toml`: 依存クレートの監査設定。
-
-## 開発環境・コマンド
-
-実行手順と確認済み環境は `README.md` を参照すること。
+ソースの役割は[READMEの構成](README.md#構成)、環境構築・バンドル生成は[ビルド](README.md#ビルド)、
+ローカルでのテスト・ABI・GUI・Validatorの実行は[検証](README.md#検証)、
+追加のRustツールとCIの操作は[Rust CI](README.md#rust-ci)を参照すること。
+これらの手順はREADMEで管理し、変更時も同じ箇所を更新すること。生成物は`target/`以下へ配置する。
 VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体のビルド依存ではない。
-
-| 項目 | 手順・コマンド |
-| --- | --- |
-| 必要なツールとバージョン | Rust 1.95以上。LinuxはCリンカー、WindowsはMSVCとWindows SDK。梱包にはPython 3・Git、検証にはC++17・CMake 3.25以上 |
-| SDK・依存関係のセットアップ | GUI依存はCargo.lockで固定。検証時は公式SDKの展開先を `VST3_SDK_DIR` に指定 |
-| 開発用ビルド | `cargo build --locked` |
-| リリース用ビルド・バンドル生成 | `python3 scripts/build-vst3.py`（Windowsは `python`） |
-| LinuxからWindows版を生成 | READMEのcargo-xwin導入後、`python3 scripts/build-vst3.py --target x86_64-pc-windows-msvc` |
-| 自動テスト | `cargo test --locked`、`python3 scripts/check-abi.py --gui`（LinuxはXvfb可） |
-| フォーマット・静的解析 | `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings` |
-| VST3 SDK Validatorによる検証 | READMEの手順で構築後、`target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3` |
-| テスト用ホストへの導入・起動 | READMEの導入手順を参照。有効化通知への互換性対応後、サイン波はFL Studioで発音報告あり。GUI追加後の実際のDAWでの表示・操作は未確認 |
-| CI用Rustツールの導入 | `sh scripts/install-ci-tools.sh` |
-| MSRVの検証 | `cargo +1.95.0 test --locked`、`cargo +1.95.0 build --locked --release` |
-| Miri | `. scripts/ci-versions.sh` の後に `cargo +"$CI_NIGHTLY" miri test --locked --lib` |
-| 依存関係監査 | `cargo +stable deny --locked check` |
-| カバレッジ | READMEのLCOV生成手順を参照 |
 
 CIは`workflow_dispatch`による明示的な手動起動だけで実行する。push・タグ・PR・定期実行による自動起動を追加しないこと。
 PRの検証は対象の先頭ブランチを選び、`pr_number`へPR番号を指定する。正式版はリリースタグを選んで手動起動する。
@@ -165,12 +127,13 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - Widthは0〜100%（初期値0）、Panは−100〜＋100%（初期値0）。GUIは1%刻みの整数tickとし、VST3は連続値とする。`W=Width/100`、`P=Pan/100`、ユニゾン位置`s=2k/(N−1)−1`（1ボイスは0）から`p=P+(1−|P|)*W*s`を求める。equal-powerの左右倍率は`√2*cos((p+1)*π/4)`と`√2*sin((p+1)*π/4)`。定位係数はSynthesizerStateに1組だけ保持し、VoiceとOscillatorへ参照で渡す。実発音数・有効なWidth・Panの変更時に、既存の四半周期正弦波表を線形補間して計算する。倍率の最大絶対誤差は4.17×10⁻⁷、二乗和の最大絶対偏差は1.18×10⁻⁶以内とする。中央は左右1、端点の無音側は厳密に0とする。Detune=0では1ボイス相当を維持し、Widthを適用しない。各Voiceのフィルタは左右独立の履歴と共通係数を持ち、左右別に合成する。
 - 音量補正は各オシレータ内のユニゾンに限定する。ポリフォニー出力は各オシレータの単純加算とし、音数による正規化やクリッピングを追加しない。全Voiceのフィルタ出力を加算した後、Volume（−48〜＋12 dB、初期値0 dB）を適用する。振幅倍率は`10^(dB / 20)`とし、Volume変更時だけ計算してSynthesizerStateに保持する。
 
+- フィルタはVoiceの最終段に置き、TPT SVFのlow・band・high出力と、外側のタイプ選択・1段／2段・Noneを分離する。内部フィルタへ具体的なHzとQ（0.5〜10）を渡し、既定値はUI／VST3設定側に置く。ノート基準のCutoff（−2400〜9600 cent）をHzへ換算する。
 - カットオフ用AHDSRは各Voiceが音量用と独立したEnvelopeを持つ。初期AHDSRは音量用と同じ、Amountは−4800〜＋4800 cent（初期値0）。`Cutoff + Amount × 正規化値`をノート基準Hzへ換算してフィルタへ渡す。再ノートオンでは現在値からattack時間全体で1へ移行し、ノートオフで独自のreleaseを進める。停止は両エンベロープを即時0にする。
 
 - ノートイベントは `sampleOffset` に従って処理すること。ブロック先頭・末尾、同時刻のイベント、同音高の重複を扱うこと。
 - `noteId` がある場合の対応付けと、未提供の値 `-1` の場合のチャンネル・音高による扱いを定め、ノートオフやボイスの再利用で別の音を誤って終了させないこと。
 - CCやピッチベンドを実装する場合は、`IMidiMapping` など対象とするVST3仕様の規定経路を使うこと。出力用の `LegacyMIDICCOutEvent` を通常の入力経路として扱わないこと。
-- パラメーターの列挙位置と安定した `ParamID` を区別し、正規化値 `[0, 1]`、実単位、離散値の変換を一貫させること。
+- パラメーターの列挙位置と安定した `ParamID` を区別し、正規化値 `[0, 1]`、実単位、離散値の変換を一貫させること。選択肢・単位・整数tickの換算は`src/parameters.rs`に集約し、GUIとVST3 Controllerで共用すること。
 - オートメーションは変更点の時刻と区間の意味を扱うこと。連続値の補間、離散値の切り替え、前ブロックからの値の保持を定め、最終点だけで全ブロックを処理しないこと。
 - 同じサンプル位置のパラメーター変更とノートイベントの処理順序を定義し、両者に共通の入力順序情報があるとは仮定しないこと。
 - Waveform・Unison・Polyphony・Filter・Cutoff・Phaseの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・Volume・Width・Panの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。

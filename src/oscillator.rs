@@ -140,10 +140,6 @@ pub struct OscillatorInput {
     pub unison_voices: u32,
     /// 中心音程から両端までの幅（0..=100 cent）。1ボイス時には適用しない。
     pub detune_cents: f64,
-    /// ユニゾンの広がり（0〜1）。Detune=0と1ボイスでは無効。
-    pub width: f64,
-    /// 全オシレータ共通の定位中心（−1〜1）。
-    pub pan: f64,
     /// 目標周波数（Hz）。有限の0以上の値。入力を変更しても位相は初期化しない。
     pub frequency_hz: f64,
     /// 理想波形の目標実効値（0..=1）。ピーク値は波形に依存する。0でもgateがtrueなら位相は進む。
@@ -172,13 +168,12 @@ impl OscillatorInput {
     }
 
     pub fn is_valid(&self) -> bool {
-        self.frequency_hz.is_finite()
+        // 非負の有限値という条件を上下限でまとめ、分類判定を重ねない。
+        (self.frequency_hz <= f64::MAX)
             & (self.frequency_hz >= 0.0)
             & (0.0..=1.0).contains(&self.amplitude)
             & (1..=7).contains(&self.unison_voices)
             & (0.0..=100.0).contains(&self.detune_cents)
-            & (0.0..=1.0).contains(&self.width)
-            & (-1.0..=1.0).contains(&self.pan)
             & self.envelope.is_valid()
     }
 }
@@ -235,14 +230,14 @@ impl Oscillator {
 
     /// 現在の入力・状態でサンプルを生成し、その後で次のサンプルに向けて状態を更新する。
     /// sample_rateは処理環境のサンプルレート（Hz）。不正な入力・レートでは無音を返し、状態を保持する。
-    /// gainsは同じUnison・Detune・Width・Panから設定変更時に算出した共通係数。
+    /// gainsはSynthesizerが実発音数・Width・Panから算出した共通の定常入力。
     pub fn generate_sample(
         &mut self,
         input: &OscillatorInput,
         sample_rate: f64,
         gains: &PanningGains,
     ) -> [f64; 2] {
-        if !(input.is_valid() & sample_rate.is_finite() & (sample_rate > 0.0)) {
+        if !(input.is_valid() & (sample_rate <= f64::MAX) & (sample_rate > 0.0)) {
             return [0.0; 2];
         }
         // ノート境界と位相モードを反映して生成した後、次サンプルへ進める。
@@ -408,11 +403,9 @@ mod tests {
         for n in 1..=7 {
             for detune in [0.0, 25.0] {
                 for width in [0.0, 0.37, 1.0] {
-                    for pan in [-1.0, -0.63, 0.0, 0.28, 1.0] {
+                    for pan in [-1.0_f64, -0.63, 0.0, 0.28, 1.0] {
                         input.unison_voices = n;
                         input.detune_cents = detune;
-                        input.width = width;
-                        input.pan = pan;
                         oscillator.state.phases = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75];
                         let before = oscillator.state.phases;
                         let count = if detune == 0.0 { 1 } else { n as usize };
@@ -456,23 +449,6 @@ mod tests {
                     }
                 }
             }
-        }
-        for bad in [f64::NAN, f64::INFINITY, -1.1, 1.1] {
-            input.pan = bad;
-            let before = oscillator.state.phases;
-            assert_eq!(
-                oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7]),
-                [0.0; 2]
-            );
-            assert_eq!(oscillator.state.phases, before);
-        }
-        input.pan = 0.0;
-        for bad in [f64::NAN, -0.1, 1.1] {
-            input.width = bad;
-            assert_eq!(
-                oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7]),
-                [0.0; 2]
-            );
         }
     }
 
@@ -599,8 +575,6 @@ mod tests {
             waveform: Waveform::Sine,
             phase_mode: PhaseMode::Keep,
             unison_voices: 1,
-            width: 0.0,
-            pan: 0.0,
             detune_cents: 0.0,
             frequency_hz: 1.0,
             amplitude: 0.5,
@@ -893,8 +867,6 @@ mod tests {
         for voices in 1..=7 {
             let mut input = OscillatorInput {
                 unison_voices: voices,
-                width: 0.0,
-                pan: 0.0,
                 detune_cents: 100.0,
                 frequency_hz: 440.0,
                 ..test_input()
@@ -952,8 +924,6 @@ mod tests {
                     let input = OscillatorInput {
                         waveform,
                         unison_voices: voices,
-                        width: 0.0,
-                        pan: 0.0,
                         detune_cents: detune,
                         frequency_hz: 440.0,
                         ..test_input()
@@ -986,7 +956,7 @@ mod tests {
             ..test_input()
         };
         state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]); // 位相1/4を保持しておく。
-        for frequency_hz in [f64::NAN, f64::INFINITY, -1.0] {
+        for frequency_hz in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
             let invalid = OscillatorInput {
                 frequency_hz,
                 ..input
@@ -1025,7 +995,7 @@ mod tests {
                 0.0
             );
         }
-        for rate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        for rate in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert_eq!(state.generate_sample(&input, rate, &[[1.0; 2]; 7])[0], 0.0);
         }
         assert!((state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0] - 0.5).abs() < 1e-14);
@@ -1036,7 +1006,7 @@ mod tests {
             gate: true,
             ..test_input()
         };
-        for rate in [f64::MIN_POSITIVE, 44100.0, 96000.0] {
+        for rate in [f64::MIN_POSITIVE, 44100.0, 96000.0, f64::MAX] {
             for _ in 0..16 {
                 assert!(state.generate_sample(&extreme, rate, &[[1.0; 2]; 7])[0].is_finite());
             }

@@ -65,8 +65,6 @@ fn input(waveform: Waveform, unison: u32, detune: f64) -> OscillatorInput {
         phase_mode: oscillator::PhaseMode::Keep,
         waveform,
         unison_voices: unison,
-        width: 0.0,
-        pan: 0.0,
         detune_cents: detune,
         frequency_hz: 440.0,
         amplitude: 0.5,

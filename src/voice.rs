@@ -60,8 +60,6 @@ impl Voice {
                     waveform: Waveform::Sine,
                     phase_mode: PhaseMode::Keep,
                     unison_voices: 1,
-                    width: 0.0,
-                    pan: 0.0,
                     detune_cents: 0.0,
                     frequency_hz: 440.0,
                     amplitude: 0.0,
@@ -157,12 +155,6 @@ impl Voice {
         self.state.oscillator_input.unison_voices = unison;
         self.state.oscillator_input.detune_cents = detune;
         self.state.oscillator_input.phase_mode = phase_mode;
-    }
-
-    /// 全ユニゾンへ共通の広がりと定位を設定する。
-    pub fn set_panning(&mut self, width: f64, pan: f64) {
-        self.state.oscillator_input.width = width;
-        self.state.oscillator_input.pan = pan;
     }
 
     /// Voice内のステレオ処理パイプライン。生成した信号をSynthesizerが加算する。
