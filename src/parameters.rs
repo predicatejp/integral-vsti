@@ -11,6 +11,25 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const COUNT: usize = 22;
+/// 音色設定と別に公開するプログラム選択ID（PROG）。
+pub const PROGRAM_ID: u32 = 0x5052_4f47;
+/// 変更キュー配列では音色設定の末尾にProgramを置く。保存する値には含めない。
+pub const PROGRAM_INDEX: usize = COUNT;
+pub const PROGRAM_NAME: &str = "Sine";
+
+/// 内蔵Sineの全設定。編集値から独立した固定の音色定義。
+pub fn sine_preset() -> [f64; COUNT] {
+    let plain = [
+        0.0, // Sine
+        0.0, 0.0, 0.0, 1.0, 0.0, // 音量AHDSR: ノートで即時オン・オフ
+        1.0, 0.0, 1.0, // Unison=1, Detune=0, Polyphony=1
+        0.0, 4800.0, 1.0, // Filter=None, Cutoff=4800 cent, Q=1
+        0.0, 0.0, // Phase=Keep, Volume=0 dB
+        0.0, 0.0, 0.0, 1.0, 0.0, // Cutoff AHDSR
+        0.0, 0.0, 0.0, // Amount=0, Width=0, Pan=中央
+    ];
+    std::array::from_fn(|i| to_normalized(i, plain[i]))
+}
 pub const PHASE_MODES: [PhaseMode; 3] = [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random];
 pub const PHASE_NAMES: [&str; 3] = ["Keep", "Zero", "Random"];
 
@@ -158,7 +177,7 @@ pub fn is_time(index: usize) -> bool {
 }
 /// 変更点まで直前の値を保持するパラメーター。Cutoffは連続値だが補間しない。
 pub fn holds_between_points(index: usize) -> bool {
-    matches!(index, 0 | 6 | 8 | 9 | 10 | 12)
+    matches!(index, 0 | 6 | 8 | 9 | 10 | 12 | PROGRAM_INDEX)
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=600、cutoff amount 0..=960、pan 0..=200。
 pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
@@ -254,7 +273,9 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
     }
 }
 pub fn canonical(index: usize, value: f64) -> f64 {
-    if index == 0 {
+    if index == PROGRAM_INDEX {
+        0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
+    } else if index == 0 {
         normalized(from_normalized(value).expect("validated normalized value"))
     } else if matches!(index, 6 | 8 | 9 | 12) {
         to_normalized(index, to_plain(index, value))
@@ -377,8 +398,14 @@ pub struct ParameterPoints<'a> {
 }
 
 impl<'a> ParameterPoints<'a> {
+    /// parameterは音色設定の番号またはPROGRAM_INDEX。
     /// SAFETY: dataの入れ子のインターフェースはホスト所有で、dataの借用期間中有効。
     pub unsafe fn new(data: &'a ProcessData, parameter: usize, previous_value: f64) -> Self {
+        let id = if parameter == PROGRAM_INDEX {
+            PROGRAM_ID
+        } else {
+            IDS[parameter]
+        };
         let mut result = Self {
             queue: ptr::null_mut(),
             table: None,
@@ -403,7 +430,7 @@ impl<'a> ParameterPoints<'a> {
                         continue;
                     }
                     let queue_table = &**queue.cast::<*const ParamValueQueueVTable>();
-                    if (queue_table.get_parameter_id)(queue) == IDS[parameter] {
+                    if (queue_table.get_parameter_id)(queue) == id {
                         result.queue = queue;
                         result.table = Some(queue_table);
                         result.count = (queue_table.get_point_count)(queue);
@@ -415,6 +442,18 @@ impl<'a> ParameterPoints<'a> {
         result.advance();
         result.automated = result.next.is_some();
         result
+    }
+
+    /// Programは同じ番号の再選択もロード要求として扱う。
+    pub fn take_program_at(&mut self, offset: i32) -> bool {
+        let changed = self.next.is_some_and(|(at, _)| at <= offset);
+        self.value_at(offset);
+        changed
+    }
+
+    /// プログラム切替点を次の補間の始点とする。同位置の明示的な変更点を優先する。
+    pub fn reset_value(&mut self, offset: i32, value: f64) {
+        self.previous = (offset, value);
     }
 
     pub fn value_at(&mut self, offset: i32) -> f64 {

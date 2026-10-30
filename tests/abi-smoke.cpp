@@ -8,6 +8,7 @@
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstevents.h"
+#include "pluginterfaces/vst/ivstunits.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/vstspeaker.h"
 
@@ -40,6 +41,9 @@ static_assert(sizeof(BusInfo) == 276);
 static_assert(sizeof(ParameterInfo) == 792 && alignof(ParameterInfo) == 8);
 static_assert(offsetof(ParameterInfo, defaultNormalizedValue) == 776);
 static_assert(offsetof(ParameterInfo, flags) == 788);
+static_assert(sizeof(UnitInfo) == 268 && alignof(UnitInfo) == 4);
+static_assert(offsetof(UnitInfo, programListId) == 264);
+static_assert(sizeof(ProgramListInfo) == 264 && offsetof(ProgramListInfo, programCount) == 260);
 static_assert(sizeof(RoutingInfo) == 12);
 static_assert(sizeof(ProcessSetup) == 24);
 static_assert(offsetof(ProcessSetup, sampleRate) == 16);
@@ -300,7 +304,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(info.id == waveformId && info.stepCount == 4 && info.defaultNormalizedValue == 0.0);
     assert(info.unitId == 0 && info.flags == (ParameterInfo::kCanAutomate | ParameterInfo::kIsList));
     assert(std::u16string(info.title) == u"Waveform");
-    assert(controller->getParameterInfo(22, info) == kInvalidArgument);
+    assert(controller->getParameterInfo(23, info) == kInvalidArgument);
     const std::array<std::u16string, 5> names {u"Sine", u"Triangle", u"Square", u"Sawtooth", u"Noise"};
     for (size_t i = 0; i < names.size(); ++i) {
         const double normalized = static_cast<double>(i) / 4.0;
@@ -976,6 +980,8 @@ T* query(FUnknown* object, const TUID iid) {
 }
 
 // Noiseの公開値、サンプル位置での切替、ステレオ出力、停止・保存を標準APIで確認する。
+#include "program-smoke.h"
+
 template <typename Sample>
 void checkNoise(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
     configureEnvelope(processor, true);
@@ -1166,6 +1172,8 @@ int main(int argc, char** argv) {
     factory2->release();
 
     checkStateReload(factory, info.cid);
+    checkPrograms<float>(factory, info.cid, kSample32);
+    checkPrograms<double>(factory, info.cid, kSample64);
     for (int iteration = 0; iteration < 100; ++iteration) {
         void* result = nullptr;
         assert(factory->createInstance(info.cid, IComponent_iid, &result) == kResultOk);
@@ -1188,7 +1196,7 @@ int main(int argc, char** argv) {
         assert(bus.channelCount == 2 && bus.name[0] == u'S');
         SpeakerArrangement output = SpeakerArr::kStereo;
         assert(processor->setBusArrangements(nullptr, 0, &output, 1) == kResultOk);
-        assert(controller->getParameterCount() == 22);
+        assert(controller->getParameterCount() == 23);
         checkViewContract(controller);
         assert(controller->setComponentHandler(nullptr) == kResultOk);
         assert(processor->getLatencySamples() == 0 && processor->getTailSamples() == kInfiniteTail);
