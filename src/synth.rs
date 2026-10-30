@@ -68,12 +68,14 @@ impl Synthesizer {
         let oscillator_changed = values[..8] != previous[..8] || values[12] != previous[12];
         let envelope_changed = values[14..20] != previous[14..20];
         let filter_changed = values[9..12] != previous[9..12];
-        let count = parameters::to_plain(8, values[8]) as usize;
-        for voice in &mut self.state.voices[count..self.state.polyphony.max(count)] {
-            voice.stop();
+        if values[8] != previous[8] {
+            let count = parameters::to_plain(8, values[8]) as usize;
+            for voice in &mut self.state.voices[count..self.state.polyphony.max(count)] {
+                voice.stop();
+            }
+            self.state.polyphony = count;
+            self.state.next_oscillator_id %= count;
         }
-        self.state.polyphony = count;
-        self.state.next_oscillator_id %= count;
         // 変更のないグループの時間換算（pow）なども省く。
         if oscillator_changed {
             let waveform = parameters::from_normalized(values[0]).expect("validated values");
@@ -115,13 +117,6 @@ impl Synthesizer {
                     parameters::to_plain(20, values[20]) / 100.0,
                     parameters::to_plain(21, values[21]) / 100.0,
                 );
-            }
-        }
-        if values[20..] != previous[20..] {
-            let width = parameters::to_plain(20, values[20]) / 100.0;
-            let pan = parameters::to_plain(21, values[21]) / 100.0;
-            for voice in &mut self.state.voices {
-                voice.set_panning(width, pan);
             }
         }
         if filter_changed {
@@ -276,10 +271,6 @@ mod tests {
                     reference.set_cutoff_envelope(
                         parameters::envelope(&values, 14),
                         parameters::to_plain(19, values[19]),
-                    );
-                    reference.set_panning(
-                        parameters::to_plain(20, values[20]) / 100.0,
-                        parameters::to_plain(21, values[21]) / 100.0,
                     );
                     reference.note_on(note(0, 0, 69), 0.0, 1.0);
                     for id in 0..count {

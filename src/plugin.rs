@@ -3,9 +3,7 @@
 
 use crate::abi::*;
 use crate::host::HostRef;
-use crate::parameters::{
-    self, FILTER_NAMES, IDS, NAMES, ParameterPoints, SharedParameters, WAVEFORM_NAMES,
-};
+use crate::parameters::{self, IDS, NAMES, ParameterPoints, SharedParameters};
 use crate::synth::Synthesizer;
 use crate::voice::Note;
 use std::cell::{RefCell, UnsafeCell};
@@ -424,28 +422,19 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
             id: IDS[i],
             title: utf16(NAMES[i]),
             short_title: utf16(NAMES[i]),
-            units: utf16(if parameters::is_time(i) {
-                "ms"
-            } else if matches!(i, 20 | 21) {
-                "%"
-            } else if i == 13 {
-                "dB"
-            } else if matches!(i, 7 | 10 | 19) {
-                "cent"
+            units: utf16(parameters::unit(i)),
+            step_count: if parameters::choices(i).is_empty() {
+                match i {
+                    6 => 6,
+                    8 => 31,
+                    _ => 0,
+                }
             } else {
-                ""
-            }),
-            step_count: match i {
-                0 => 3,
-                6 => 6,
-                8 => 31,
-                9 => 6,
-                12 => 2,
-                _ => 0,
+                (parameters::choices(i).len() - 1) as i32
             },
             default_normalized_value: parameters::defaults()[i],
             unit_id: 0,
-            flags: if matches!(i, 0 | 9 | 12) {
+            flags: if !parameters::choices(i).is_empty() {
                 1 | (1 << 3)
             } else {
                 1
@@ -461,12 +450,9 @@ unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *m
     if out.is_null() || !(0.0..=1.0).contains(&value) {
         return INVALID_ARGUMENT;
     }
-    let text = if i == 0 {
-        WAVEFORM_NAMES[parameters::to_plain(i, value) as usize].to_owned()
-    } else if i == 9 {
-        FILTER_NAMES[parameters::to_plain(i, value) as usize].to_owned()
-    } else if i == 12 {
-        parameters::PHASE_NAMES[parameters::to_plain(i, value) as usize].to_owned()
+    let names = parameters::choices(i);
+    let text = if !names.is_empty() {
+        names[parameters::to_plain(i, value) as usize].to_owned()
     } else if matches!(i, 6 | 8) {
         format!("{:.0}", parameters::to_plain(i, value))
     } else {
@@ -503,14 +489,8 @@ unsafe extern "system" fn parameter_value(
     let Ok(text) = String::from_utf16(&buffer) else {
         return INVALID_ARGUMENT;
     };
-    let plain = if matches!(i, 0 | 9 | 12) {
-        let names: &[&str] = if i == 0 {
-            &WAVEFORM_NAMES
-        } else if i == 9 {
-            &FILTER_NAMES
-        } else {
-            &parameters::PHASE_NAMES
-        };
+    let names = parameters::choices(i);
+    let plain = if !names.is_empty() {
         names
             .iter()
             .position(|&name| name == text)

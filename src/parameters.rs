@@ -93,6 +93,58 @@ pub const NAMES: [&str; COUNT] = [
     "Width",
     "Pan",
 ];
+/// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
+pub fn choices(index: usize) -> &'static [&'static str] {
+    match index {
+        0 => &WAVEFORM_NAMES,
+        9 => &FILTER_NAMES,
+        12 => &PHASE_NAMES,
+        _ => &[],
+    }
+}
+
+/// ノブの整数tick上限。選択リストはchoicesの列挙番号を使う。
+pub fn max_tick(index: usize) -> u32 {
+    if is_time(index) {
+        371
+    } else {
+        match index {
+            6 => 6,
+            8 => 31,
+            19 => 960,
+            21 => 200,
+            10 => 1200,
+            13 => 600,
+            11 => 950,
+            _ => 100,
+        }
+    }
+}
+
+/// ホストの正規化値をGUIの整数tickへ換算する。表示更新だけでは再通知しない。
+pub fn to_tick(index: usize, value: f64) -> u32 {
+    let scale = if is_time(index) {
+        time_scale()
+    } else {
+        f64::from(max_tick(index))
+    };
+    (value * scale).round() as u32
+}
+
+/// GUIとホストへ公開する実単位。
+pub fn unit(index: usize) -> &'static str {
+    if is_time(index) {
+        "ms"
+    } else {
+        match index {
+            13 => "dB",
+            20 | 21 => "%",
+            7 | 10 | 19 => "cent",
+            _ => "",
+        }
+    }
+}
+
 /// VST3正規化値と時間を換算する連続軸のスケール。UIの整数tick上限とは区別する。
 pub fn time_scale() -> f64 {
     1.0 + 100.0 * 5000.0_f64.log10()
@@ -108,7 +160,7 @@ pub fn holds_between_points(index: usize) -> bool {
     matches!(index, 0 | 6 | 8 | 9 | 10 | 12)
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=600、cutoff amount 0..=960、pan 0..=200。
-pub fn slider_to_plain(index: usize, tick: u32) -> f64 {
+pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
     if is_time(index) {
         if tick == 0 {
             0.0
@@ -623,11 +675,15 @@ mod tests {
             (21, 200),
         ] {
             for tick in 0..=max {
-                let plain = slider_to_plain(index, tick);
+                let plain = tick_to_plain(index, tick);
                 let normalized = to_normalized(index, plain);
                 assert!(valid_plain(index, plain));
                 assert!((to_plain(index, normalized) - plain).abs() < 2e-12);
                 assert_eq!((normalized * f64::from(max)).round() as u32, tick);
+                if choices(index).is_empty() {
+                    assert_eq!(max_tick(index), max);
+                    assert_eq!(to_tick(index, normalized), tick);
+                }
             }
         }
     }
@@ -826,14 +882,14 @@ mod tests {
     #[test]
     fn unison_and_detune_integer_controls_round_trip() {
         for tick in 0..=6 {
-            let plain = slider_to_plain(6, tick);
+            let plain = tick_to_plain(6, tick);
             let normalized = to_normalized(6, plain);
             assert_eq!(plain, f64::from(tick + 1));
             assert_eq!(to_plain(6, normalized), plain);
             assert!((canonical(6, normalized) - normalized).abs() < 1e-12);
         }
         for tick in 0..=100 {
-            let plain = slider_to_plain(7, tick);
+            let plain = tick_to_plain(7, tick);
             assert!((to_plain(7, to_normalized(7, plain)) - f64::from(tick)).abs() < 1e-12);
         }
     }
@@ -841,7 +897,7 @@ mod tests {
     #[test]
     fn polyphony_integer_control_round_trips_all_values() {
         for tick in 0..=31 {
-            let plain = slider_to_plain(8, tick);
+            let plain = tick_to_plain(8, tick);
             let normalized = to_normalized(8, plain);
             assert_eq!(plain, f64::from(tick + 1));
             assert_eq!(to_plain(8, normalized), plain);
@@ -867,7 +923,8 @@ mod tests {
             let mut previous = -1.0;
             for tick in 0..=time_scale().floor() as u32 {
                 let normalized = f64::from(tick) / time_scale();
-                let ms = slider_to_plain(i, tick);
+                let ms = tick_to_plain(i, tick);
+                assert_eq!(to_tick(i, to_normalized(i, ms)), tick);
                 assert!(ms > previous && ms < 5000.0);
                 assert!((to_normalized(i, ms) - normalized).abs() < 1e-12);
                 assert!(ms == 0.0 || (to_plain(i, to_normalized(i, ms)) / ms - 1.0).abs() < 1e-12);
@@ -877,18 +934,20 @@ mod tests {
                 }
                 previous = ms;
             }
-            assert_eq!(slider_to_plain(i, 0), 0.0);
+            assert_eq!(tick_to_plain(i, 0), 0.0);
             for (tick, ms) in [(1, 1.0), (101, 10.0), (201, 100.0), (301, 1000.0)] {
-                assert!((slider_to_plain(i, tick) / ms - 1.0).abs() < 1e-12);
+                assert!((tick_to_plain(i, tick) / ms - 1.0).abs() < 1e-12);
             }
-            assert_eq!(slider_to_plain(i, 371), 5000.0);
+            assert_eq!(tick_to_plain(i, 371), 5000.0);
+            assert_eq!(max_tick(i), 371);
+            assert_eq!(to_tick(i, 1.0), 371);
             // ホストの連続オートメーションは0〜1ms区間も線形で扱う。
             assert!((to_plain(i, to_normalized(i, 0.5)) - 0.5).abs() < 1e-12);
         }
         assert_eq!(to_plain(4, 0.35), 0.35);
         assert_eq!(to_normalized(4, 0.35), 0.35);
         for tick in 0..=100 {
-            let value = slider_to_plain(4, tick);
+            let value = tick_to_plain(4, tick);
             assert_eq!((to_normalized(4, value) * 100.0).round() as u32, tick);
         }
     }
