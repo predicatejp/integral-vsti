@@ -366,7 +366,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
         parent.click(x, y); pump(); assert(handler.sequence.empty());
-        parent.click(x, y + 30 + item * 25);
+        parent.click(x, y + 30 + item * 28);
         waitFor([&] { return handler.sequence.size() >= 3; }, "grouped choice");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
@@ -381,7 +381,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         pump();
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
-        choose(0, 3);
+        choose(0, 4);
         assert(handler.editedId == waveformId && handler.value == 1.0);
         choose(0, 0);
         assert(handler.editedId == waveformId && handler.value == 0.0);
@@ -392,7 +392,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes[8] == 0);
         saved.bytes[8] = 2;
         assert(component->setState(&saved) == kResultOk);
-        assert(controller->getParamNormalized(waveformId) == 2.0 / 3.0);
+        assert(controller->getParamNormalized(waveformId) == 0.5);
         pump(); assert(handler.sequence.empty());
         // 全19ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());

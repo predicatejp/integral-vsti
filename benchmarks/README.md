@@ -51,3 +51,5 @@ target/generate-oscillator-tables > src/oscillator_tables.rs
 実験用プログラムはこのディレクトリには含めません。
 
 Width/Panの計測は`synth/p32/u7/width`（Width=100%固定）、`width-changing`（1000サンプルで0〜100%）、`pan-changing`（Width=100%、1000サンプルでPanを−100〜＋100%）です。1/8/32ポリフォニー・1/7ユニゾンの各組み合わせで同じケースを実行できます。
+
+Noiseは`oscillator/Noise/`と`synth/p32/u7/noise`などで測定します。後者は32音・7ユニゾン・Detune=30 cent・LP2です。乱数の初期化は測定区間の前に行います。

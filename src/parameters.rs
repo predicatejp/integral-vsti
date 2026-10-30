@@ -17,13 +17,14 @@ pub const PHASE_NAMES: [&str; 3] = ["Keep", "Zero", "Random"];
 /// ホストのオートメーションとの対応を維持する固定ID（"WAVE"）。
 pub const WAVEFORM_ID: u32 = 0x5741_5645;
 /// 値・保存形式・表示順の対応。既存の番号を変更しない。
-pub const WAVEFORMS: [Waveform; 4] = [
+pub const WAVEFORMS: [Waveform; 5] = [
     Waveform::Sine,
     Waveform::Triangle,
     Waveform::Square,
     Waveform::Sawtooth,
+    Waveform::Noise,
 ];
-pub const WAVEFORM_NAMES: [&str; 4] = ["Sine", "Triangle", "Square", "Sawtooth"];
+pub const WAVEFORM_NAMES: [&str; 5] = ["Sine", "Triangle", "Square", "Sawtooth", "Noise"];
 /// フィルタ設定の順序。状態保存・オートメーションとの対応を固定する。
 pub const FILTER_TYPES: [FilterType; 7] = [
     FilterType::None,
@@ -210,7 +211,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
 }
 pub fn to_normalized(index: usize, plain: f64) -> f64 {
     if index == 0 {
-        return plain.clamp(0.0, 3.0).round() / 3.0;
+        return plain.clamp(0.0, 4.0).round() / 4.0;
     }
     match index {
         4 | 17 => return plain,
@@ -237,7 +238,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
 }
 pub fn valid_plain(index: usize, plain: f64) -> bool {
     match index {
-        0 => (0.0..=3.0).contains(&plain),
+        0 => (0.0..=4.0).contains(&plain),
         4 | 17 => (0.0..=1.0).contains(&plain),
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
         7 | 20 => (0.0..=100.0).contains(&plain),
@@ -333,18 +334,19 @@ pub fn waveform_index(waveform: Waveform) -> u32 {
         Waveform::Triangle => 1,
         Waveform::Square => 2,
         Waveform::Sawtooth => 3,
+        Waveform::Noise => 4,
     }
 }
 
 pub fn normalized(waveform: Waveform) -> f64 {
-    f64::from(waveform_index(waveform)) / 3.0
+    f64::from(waveform_index(waveform)) / 4.0
 }
 
 pub fn from_normalized(value: f64) -> Option<Waveform> {
-    // 4つの等幅区間へ量子化する。上端1だけは最後の値に含める。
+    // 5つの等幅区間へ量子化する。上端1だけは最後の値に含める。
     (0.0..=1.0)
         .contains(&value)
-        .then(|| WAVEFORMS[((value * 4.0) as usize).min(3)])
+        .then(|| WAVEFORMS[((value * 5.0) as usize).min(4)])
 }
 
 /// 1回のprocess中だけホストから借用する、1パラメーターの変更点のカーソル。
@@ -460,13 +462,8 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v5: v4の76バイトにフィルタ3値の実単位f64を追加（100バイト、little endian）。
-// v6: v5にPhaseの実単位f64を追加（108バイト）。v1〜v5はPhase=Keepを補う。
-// v1〜v4はフィルタNoneとして旧音色を維持する。空状態は新規設定へ戻す。
-// v7: v6にVolumeのdB値f64を追加（116バイト）。v1〜v6は0 dBを補う。
-// v8: v7にカットオフAHDSRとAmountの実単位f64を追加（164バイト）。旧形式のAmountは0。
-// v9: Width・Panの実単位%を追加（180バイト）。旧形式は両方0%。
-const STATE_HEADER: [u8; 8] = *b"SVST\x09\0\0\0";
+// v10: 固定180バイト。波形番号u32と、その他の実単位f64を保持する。
+const STATE_HEADER: [u8; 8] = *b"SVST\x0a\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -477,10 +474,9 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
     let mut bytes = [0u8; 180];
     let mut position = 0;
-    let mut length = 12;
-    while position < length {
+    while position < bytes.len() {
         let mut read = 0;
-        let remaining = length - position;
+        let remaining = bytes.len() - position;
         let status = unsafe {
             (table.read)(
                 stream,
@@ -489,54 +485,27 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
                 &mut read,
             )
         };
-        if position == 0 && read == 0 && matches!(status, OK | FALSE) {
-            return Ok(defaults());
-        }
         if status != OK || read <= 0 || read as usize > remaining {
             return Err(FALSE);
         }
         position += read as usize;
-        if position == 12 {
-            if bytes[..4] != *b"SVST" {
-                return Err(FALSE);
-            }
-            match u32::from_le_bytes(bytes[4..8].try_into().unwrap()) {
-                1 => {}
-                2 => length = 52,
-                3 => length = 68,
-                4 => length = 76,
-                5 => length = 100,
-                6 => length = 108,
-                7 => length = 116,
-                8 => length = 164,
-                9 => length = 180,
-                _ => return Err(FALSE),
-            }
-        }
     }
-    let waveform = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    if waveform > 3 {
+    if bytes[..8] != STATE_HEADER {
         return Err(FALSE);
     }
-    let mut values = defaults();
-    values[0] = f64::from(waveform) / 3.0;
-    if length < 100 {
-        values[9] = 0.0;
+    let waveform = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    if waveform > 4 {
+        return Err(FALSE);
     }
-    if length >= 52 {
-        for (i, value) in values
-            .iter_mut()
-            .enumerate()
-            .take(1 + (length - 12) / 8)
-            .skip(1)
-        {
-            let offset = 12 + (i - 1) * 8;
-            let plain = f64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-            if !valid_plain(i, plain) {
-                return Err(FALSE);
-            }
-            *value = to_normalized(i, plain);
+    let mut values = [0.0; COUNT];
+    values[0] = f64::from(waveform) / 4.0;
+    for (i, value) in values.iter_mut().enumerate().skip(1) {
+        let offset = 12 + (i - 1) * 8;
+        let plain = f64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+        if !valid_plain(i, plain) {
+            return Err(FALSE);
         }
+        *value = to_normalized(i, plain);
     }
     Ok(values)
 }
@@ -724,73 +693,18 @@ mod tests {
                 for (actual, expected) in restored.into_iter().zip(values) {
                     assert!((actual - expected).abs() < 1e-12);
                 }
-                for length in 1..180 {
+                for length in 0..180 {
                     (*stream).length = length;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                // v2は既存値を保持し、追加パラメーターを補う。
-                (*stream).bytes[4] = 2;
-                (*stream).length = 52;
-                (*stream).position = 0;
-                let legacy = read_state(stream.cast()).unwrap();
-                for i in 0..6 {
-                    assert!((legacy[i] - values[i]).abs() < 1e-12);
-                }
-                assert_eq!(&legacy[6..9], &defaults()[6..9]);
-                assert_eq!(legacy[9], 0.0);
-                (*stream).bytes[4] = 3;
-                (*stream).length = 68;
-                (*stream).position = 0;
-                let legacy = read_state(stream.cast()).unwrap();
-                for i in 0..8 {
-                    assert!((legacy[i] - values[i]).abs() < 1e-12);
-                }
-                assert_eq!(legacy[8], defaults()[8]);
-                (*stream).bytes[4] = 4;
-                (*stream).length = 76;
-                (*stream).position = 0;
-                let legacy = read_state(stream.cast()).unwrap();
-                assert_eq!(legacy[9], 0.0);
-                for i in 0..9 {
-                    assert!((legacy[i] - values[i]).abs() < 1e-12);
-                }
-                (*stream).bytes[4] = 5;
-                (*stream).length = 100;
-                (*stream).position = 0;
-                let legacy = read_state(stream.cast()).unwrap();
-                for i in 0..12 {
-                    assert!((legacy[i] - values[i]).abs() < 1e-12);
-                }
-                assert_eq!(legacy[12], 0.0);
-                (*stream).bytes[4] = 6;
-                (*stream).length = 108;
-                (*stream).position = 0;
-                let legacy = read_state(stream.cast()).unwrap();
-                for i in 0..13 {
-                    assert!((legacy[i] - values[i]).abs() < 1e-12);
-                }
-                assert_eq!(to_plain(13, legacy[13]), 0.0);
-                (*stream).bytes[4] = 7;
-                (*stream).length = 116;
-                (*stream).position = 0;
-                let legacy = read_state(stream.cast()).unwrap();
-                for i in 0..14 {
-                    assert!((legacy[i] - values[i]).abs() < 1e-12);
-                }
-                for (actual, expected) in legacy[14..].iter().zip(&defaults()[14..]) {
-                    assert!((actual - expected).abs() < 1e-12);
-                }
-                (*stream).bytes[4] = 8;
-                (*stream).length = 164;
-                (*stream).position = 0;
-                let legacy = read_state(stream.cast()).unwrap();
-                for i in 0..20 {
-                    assert!((legacy[i] - values[i]).abs() < 1e-12);
-                }
-                assert_eq!(&legacy[20..], &defaults()[20..]);
-                (*stream).bytes[4] = 9;
                 (*stream).length = 180;
+                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11] {
+                    (*stream).bytes[4] = version;
+                    (*stream).position = 0;
+                    assert_eq!(read_state(stream.cast()), Err(FALSE));
+                }
+                (*stream).bytes[4] = 10;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -843,18 +757,6 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                     (&mut (*stream).bytes)[offset..offset + 8].copy_from_slice(&original);
                 }
-                (*stream).length = 0;
-                (*stream).position = 0;
-                for (actual, expected) in read_state(stream.cast())
-                    .unwrap()
-                    .into_iter()
-                    .zip(defaults())
-                {
-                    assert!((actual - expected).abs() < 1e-12);
-                }
-                (*stream).length = 12;
-                (*stream).bytes[4] = 5;
-                assert_eq!(read_state(stream.cast()), Err(FALSE));
             }
         }
     }
@@ -866,11 +768,12 @@ mod tests {
             assert_eq!(from_normalized(normalized(waveform)), Some(waveform));
         }
         for (value, expected) in [
-            (0.249, Waveform::Sine),
-            (0.25, Waveform::Triangle),
-            (0.5, Waveform::Square),
-            (0.75, Waveform::Sawtooth),
-            (1.0, Waveform::Sawtooth),
+            (0.199, Waveform::Sine),
+            (0.2, Waveform::Triangle),
+            (0.4, Waveform::Square),
+            (0.6, Waveform::Sawtooth),
+            (0.8, Waveform::Noise),
+            (1.0, Waveform::Noise),
         ] {
             assert_eq!(from_normalized(value), Some(expected));
         }

@@ -272,6 +272,7 @@ fn main() {
                 "idle",
                 "released",
                 "sine",
+                "noise",
                 "detune",
                 "width",
                 "width-changing",
@@ -284,6 +285,8 @@ fn main() {
                     0,
                     if matches!(mode, "sine" | "detune") {
                         0.0
+                    } else if mode == "noise" {
+                        4.0
                     } else {
                         3.0
                     },
