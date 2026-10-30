@@ -6,12 +6,15 @@ use crate::host::HostRef;
 use crate::parameters::{self, IDS, NAMES, ParameterPoints, SharedParameters};
 use crate::synth::Synthesizer;
 use crate::voice::Note;
+
 use std::cell::{RefCell, UnsafeCell};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+
+mod programs;
 
 // vtableポインターを先頭に置く。ownerはホストに見えない内部データ。
 #[repr(C)]
@@ -31,6 +34,8 @@ struct Plugin {
     controller: Interface,
     /// 必要なホストの時間情報を返すIProcessContextRequirementsの公開口。
     context_requirements: Interface,
+    /// ルートユニットと内蔵プログラム一覧を提供するIUnitInfo。
+    unit_info: Interface,
     /// 全インターフェースで共有する所有参照数。0になったときPlugin全体を破棄する。
     refs: AtomicU32,
     /// initializeが成功してからterminateまでtrueとなる初期化状態。
@@ -124,6 +129,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
             | PROCESSOR_IID
             | CONTROLLER_IID
             | CONTEXT_REQUIREMENTS_IID
+            | UNIT_INFO_IID
     ) {
         return NO_INTERFACE;
     }
@@ -142,6 +148,10 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         },
         context_requirements: Interface {
             vtable: ptr::from_ref(&CONTEXT_REQUIREMENTS).cast(),
+            owner: ptr::null_mut(),
+        },
+        unit_info: Interface {
+            vtable: ptr::from_ref(&programs::UNIT_INFO).cast(),
             owner: ptr::null_mut(),
         },
         refs: AtomicU32::new(1),
@@ -165,6 +175,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         (*owner).processor.owner = owner;
         (*owner).controller.owner = owner;
         (*owner).context_requirements.owner = owner;
+        (*owner).unit_info.owner = owner;
         out.write(interface(&*owner, iid));
     }
     OK
@@ -176,6 +187,7 @@ fn interface(plugin: &Plugin, iid: &Tuid) -> This {
         PROCESSOR_IID => &plugin.processor,
         CONTROLLER_IID => &plugin.controller,
         CONTEXT_REQUIREMENTS_IID => &plugin.context_requirements,
+        UNIT_INFO_IID => &plugin.unit_info,
         _ => return ptr::null_mut(),
     };
     ptr::from_ref(target).cast_mut().cast()
@@ -409,9 +421,25 @@ unsafe extern "system" fn set_controller_component_state(this: This, stream: Thi
     }
 }
 unsafe extern "system" fn parameter_count(_: This) -> i32 {
-    IDS.len() as i32
+    (IDS.len() + 1) as i32
 }
 unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut ParameterInfo) -> TResult {
+    if index == parameters::PROGRAM_INDEX as i32 && !out.is_null() {
+        // SAFETY: outはホストのParameterInfo書き込み領域。
+        unsafe {
+            out.write(ParameterInfo {
+                id: parameters::PROGRAM_ID,
+                title: utf16("Program"),
+                short_title: utf16("Program"),
+                units: [0; 128],
+                step_count: 0, // 1音色なのでprogramCount - 1 = 0。
+                default_normalized_value: 0.0,
+                unit_id: 0,
+                flags: (1 << 3) | (1 << 15), // kIsList | kIsProgramChange
+            });
+        }
+        return OK;
+    }
     if !(0..IDS.len() as i32).contains(&index) || out.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -444,6 +472,10 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
     OK
 }
 unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *mut u16) -> TResult {
+    if id == parameters::PROGRAM_ID && (0.0..=1.0).contains(&value) {
+        // SAFETY: outはnullまたはホストのString128。
+        return unsafe { programs::program_name(ptr::null_mut(), 0, 0, out) };
+    }
     let Some(i) = parameters::index(id) else {
         return INVALID_ARGUMENT;
     };
@@ -471,9 +503,6 @@ unsafe extern "system" fn parameter_value(
     text: *mut u16,
     out: *mut f64,
 ) -> TResult {
-    let Some(i) = parameters::index(id) else {
-        return INVALID_ARGUMENT;
-    };
     if text.is_null() || out.is_null() {
         return INVALID_ARGUMENT;
     }
@@ -487,6 +516,14 @@ unsafe extern "system" fn parameter_value(
         buffer.push(ch);
     }
     let Ok(text) = String::from_utf16(&buffer) else {
+        return INVALID_ARGUMENT;
+    };
+    if id == parameters::PROGRAM_ID && text == parameters::PROGRAM_NAME {
+        // SAFETY: outは検証済みの書き込み領域。
+        unsafe { out.write(0.0) };
+        return OK;
+    }
+    let Some(i) = parameters::index(id) else {
         return INVALID_ARGUMENT;
     };
     let names = parameters::choices(i);
@@ -525,6 +562,23 @@ unsafe extern "system" fn parameter_normalized(this: This, id: u32) -> f64 {
     })
 }
 unsafe extern "system" fn set_parameter(this: This, id: u32, value: f64) -> TResult {
+    if id == parameters::PROGRAM_ID && (0.0..=1.0).contains(&value) {
+        // SAFETY: ホストUIスレッド上のController。DSPにはホストのProgramキューで配送する。
+        let plugin = unsafe { instance(this) };
+        plugin
+            .controller_parameters
+            .store(parameters::sine_preset());
+        let handler = plugin.component_handler.borrow().clone();
+        if let Some(handler) = handler {
+            let p = handler.as_ptr();
+            // SAFETY: 所有参照を保持し、再入するホスト呼び出し中はRefCellを借用しない。
+            unsafe {
+                let table = &**p.cast::<*const ComponentHandlerVTable>();
+                (table.restart_component)(p, 1 << 2); // kParamValuesChanged
+            }
+        }
+        return OK;
+    }
     let Some(i) = parameters::index(id) else {
         return INVALID_ARGUMENT;
     };
@@ -735,12 +789,18 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
             return NOT_INITIALIZED;
         }
         // SAFETY: 変更キューは呼び出し中有効。停止中のDSP状態には触れない。
-        let mut values = plugin.processor_parameters.snapshot();
+        let mut program = unsafe { ParameterPoints::new(data, parameters::PROGRAM_INDEX, 0.0) };
+        let loaded = program.take_program_at(0);
+        let mut values = if loaded {
+            parameters::sine_preset()
+        } else {
+            plugin.processor_parameters.snapshot()
+        };
         for (i, value) in values.iter_mut().enumerate() {
             // SAFETY: キューの借用期間はこのprocess内だけ。
             let mut changes = unsafe { ParameterPoints::new(data, i, *value) };
             *value = changes.value_at(0);
-            if changes.automated {
+            if loaded || changes.automated {
                 plugin.processor_parameters.set(i, *value);
             }
         }
@@ -782,9 +842,11 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let synth = unsafe { &mut *plugin.synth.get() };
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
-    // SAFETY: 22本のカーソルはこのprocess中だけホストのキューを借用する。
-    let mut changes: [ParameterPoints<'_>; parameters::COUNT] =
-        std::array::from_fn(|i| unsafe { ParameterPoints::new(data, i, values[i]) });
+    // SAFETY: 音色設定とProgramのカーソルはこのprocess中だけホストのキューを借用する。
+    let mut changes: [ParameterPoints<'_>; parameters::COUNT + 1] =
+        std::array::from_fn(|i| unsafe {
+            ParameterPoints::new(data, i, values.get(i).copied().unwrap_or(0.0))
+        });
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
         synth.stop();
@@ -870,7 +932,7 @@ unsafe fn generate_samples(
     data: &ProcessData,
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
-    changes: &mut [ParameterPoints<'_>; parameters::COUNT],
+    changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
 ) -> u64 {
     // バッファの有無と精度は区間ごとに選び、サンプルループ内では分岐しない。
     let nonzero = match channels {
@@ -902,11 +964,11 @@ unsafe fn generate_samples(
     nonzero
 }
 
-/// 変更キューのない区間では、22本のカーソル走査と設定比較をサンプルごとに行わない。
+/// 変更キューのない区間では、カーソル走査と設定比較をサンプルごとに行わない。
 fn generate_output_samples(
     plugin: &Plugin,
     synth: &mut Synthesizer,
-    changes: &mut [ParameterPoints<'_>; parameters::COUNT],
+    changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
     range: std::ops::Range<i32>,
     mut write: impl FnMut(usize, [f64; 2]) -> u64,
 ) -> u64 {
@@ -927,12 +989,22 @@ fn generate_output_samples(
 fn apply_parameters(
     plugin: &Plugin,
     synth: &mut Synthesizer,
-    changes: &mut [ParameterPoints<'_>; parameters::COUNT],
+    changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
     offset: i32,
 ) {
+    let loaded = changes[parameters::PROGRAM_INDEX].take_program_at(offset);
+    if loaded {
+        let values = parameters::sine_preset();
+        for (change, value) in changes.iter_mut().zip(values) {
+            change.reset_value(offset, value);
+        }
+    }
     let values = std::array::from_fn(|i| changes[i].value_at(offset));
-    if synth.set_parameters(values) {
-        for (i, change) in changes.iter().enumerate() {
+    let changed = synth.set_parameters(values);
+    if loaded {
+        plugin.processor_parameters.store(values);
+    } else if changed {
+        for (i, change) in changes[..parameters::COUNT].iter().enumerate() {
             if change.automated {
                 plugin.processor_parameters.set(i, values[i]);
             }

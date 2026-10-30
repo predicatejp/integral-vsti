@@ -14,6 +14,12 @@ fn x86_64_layout() {
     assert_eq!(size_of::<ClassInfo>(), 116);
     assert_eq!(size_of::<ClassInfo2>(), 440);
     assert_eq!(size_of::<BusInfo>(), 276);
+    assert_eq!(size_of::<UnitInfo>(), 268);
+    assert_eq!(align_of::<UnitInfo>(), 4);
+    assert_eq!(offset_of!(UnitInfo, program_list_id), 264);
+    assert_eq!(size_of::<ProgramListInfo>(), 264);
+    assert_eq!(offset_of!(ProgramListInfo, program_count), 260);
+    assert_eq!(size_of::<UnitInfoVTable>(), 15 * 8);
     assert_eq!(size_of::<ParameterInfo>(), 792);
     assert_eq!(align_of::<ParameterInfo>(), 8);
     assert_eq!(offset_of!(ParameterInfo, default_normalized_value), 776);

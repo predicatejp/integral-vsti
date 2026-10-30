@@ -294,6 +294,31 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
 
+## 内蔵プリセット
+
+DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定22個に加え、
+`Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
+一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
+
+| Sineの設定 | 値 |
+| --- | --- |
+| Waveform / Phase | Sine / Keep |
+| Unison / Detune / Polyphony | 1 / 0 cent / 1 |
+| 音量AHDSR | A/H/D/R=0 ms、S=1 |
+| Filter / Cutoff / Resonance | None / +4800 cent / Q=1 |
+| カットオフAHDSR / Amount | A/H/D/R=0 ms、S=1 / 0 cent |
+| Width / Pan / Volume | 0% / 中央 / 0 dB |
+
+ノートオン・オフで即時に発音・消音し、最大ベロシティ時の実効値は片チャンネル当たり0.5です。
+選択すると全設定を読み直し、同じ「Sine」の再選択でも編集した値を元に戻します。
+ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
+音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
+連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
+編集内容は実際の22設定として保存し、復元時にも編集後の値を保持します。
+
+仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
+
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマで処理順に左からOscillator・Filter・Masterを配置します。
@@ -587,6 +612,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `build.rs`: Gitコミットと正式版指定からバージョン・ビルド情報を生成。
 - `src/abi.rs`: 必要なABI型、OS別のID表現・戻り値、vtable定義。
 - `src/lib.rs`: モジュールの公開関数とファクトリー。
+- `src/plugin/programs.rs`: VST3のルートユニットと内蔵プログラム一覧。
 - `src/plugin.rs`: インスタンス、バス、イベント・パラメーター処理、音声出力、Controller。
 - `src/gui.rs`: VST3画面の直接実装とホストへの編集通知。
 - `src/editor.rs`: カテゴリ別ノブ・選択リストの入力とegui/OpenGL描画。`src/editor/edits.rs`は編集通知キュー、`src/editor/pointer.rs`はOS別のカーソル操作。

@@ -51,6 +51,7 @@ pub const FACTORY2_IID: Tuid = tuid(0x0007b650_f24b4c0b_a464edb9_f00b2abb);
 pub const COMPONENT_IID: Tuid = tuid(0xe831ff31_f2d54301_928ebbee_25697802);
 pub const PROCESSOR_IID: Tuid = tuid(0x42043f99_b7da453c_a569e79d_9aaec33d);
 pub const CONTROLLER_IID: Tuid = tuid(0xdcd7bbe3_7742448d_a874aacc_979c759e);
+pub const UNIT_INFO_IID: Tuid = tuid(0x3d4bd6b5_913a4fd2_a886e768_a5eb92c1);
 pub const CONTEXT_REQUIREMENTS_IID: Tuid = tuid(0x2a654303_ef764e3d_95b5fe83_730ef6d0);
 pub const VIEW_IID: Tuid = tuid(0x5bc32507_d06049ea_a6151b52_2b755b29);
 #[cfg(target_os = "linux")]
@@ -194,6 +195,59 @@ pub struct ControllerVTable {
 }
 
 #[repr(C)]
+pub struct UnitInfo {
+    /// ユニットID。ルートは0。
+    pub id: i32,
+    /// 親ユニットID。ルートは-1。
+    pub parent_unit_id: i32,
+    /// ユニット名。
+    pub name: [u16; 128],
+    /// ユニットが使用するプログラム一覧のID。
+    pub program_list_id: i32,
+}
+
+#[repr(C)]
+pub struct ProgramListInfo {
+    /// プログラム一覧のID。
+    pub id: i32,
+    /// プログラム一覧の名前。
+    pub name: [u16; 128],
+    /// 一覧に含まれるプログラム数。
+    pub program_count: i32,
+}
+
+#[repr(C)]
+pub struct UnitInfoVTable {
+    /// 全公開インターフェースと共有するFUnknown。
+    pub unknown: UnknownVTable,
+    /// ユニットの数を返す。
+    pub get_unit_count: unsafe extern "system" fn(This) -> i32,
+    /// 列挙位置からユニット情報を取得する。
+    pub get_unit_info: unsafe extern "system" fn(This, i32, *mut UnitInfo) -> TResult,
+    /// プログラム一覧の数を返す。
+    pub get_program_list_count: unsafe extern "system" fn(This) -> i32,
+    /// 列挙位置からプログラム一覧の情報を取得する。
+    pub get_program_list_info:
+        unsafe extern "system" fn(This, i32, *mut ProgramListInfo) -> TResult,
+    /// 一覧IDとプログラム番号から名前を取得する。
+    pub get_program_name: unsafe extern "system" fn(This, i32, i32, *mut u16) -> TResult,
+    /// プログラムの属性文字列を取得する。
+    pub get_program_info: unsafe extern "system" fn(This, i32, i32, *const u8, *mut u16) -> TResult,
+    /// プログラムがピッチ名を持つかを返す。
+    pub has_program_pitch_names: unsafe extern "system" fn(This, i32, i32) -> TResult,
+    /// 指定ピッチの名前を取得する。
+    pub get_program_pitch_name: unsafe extern "system" fn(This, i32, i32, i16, *mut u16) -> TResult,
+    /// 選択中のユニットIDを返す。
+    pub get_selected_unit: unsafe extern "system" fn(This) -> i32,
+    /// ユニットIDを選択する。
+    pub select_unit: unsafe extern "system" fn(This, i32) -> TResult,
+    /// バス・チャンネルからユニットIDを取得する。
+    pub get_unit_by_bus: unsafe extern "system" fn(This, i32, i32, i32, i32, *mut i32) -> TResult,
+    /// ユニットまたはプログラム固有の状態データを受け取る。
+    pub set_unit_program_data: unsafe extern "system" fn(This, i32, i32, This) -> TResult,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewRect {
     /// 左端の物理ピクセル座標。
@@ -246,7 +300,7 @@ pub struct ComponentHandlerVTable {
     pub perform_edit: unsafe extern "system" fn(This, u32, f64) -> TResult,
     /// UIでのパラメーター編集終了。
     pub end_edit: unsafe extern "system" fn(This, u32) -> TResult,
-    /// ホストへ再構成を要求する。本実装は呼び出さない。
+    /// ホストへ変更を通知する。プログラム選択後はパラメーター値の再取得を要求する。
     pub restart_component: unsafe extern "system" fn(This, i32) -> TResult,
 }
 
