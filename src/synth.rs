@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use crate::oscillator::{PanningGains, panning_gains};
 use crate::parameters;
 use crate::voice::{Note, Voice};
 
@@ -17,6 +18,8 @@ pub struct SynthesizerState {
     parameters: [f64; parameters::COUNT],
     /// 全Voiceのフィルタ出力を加算した後に掛ける振幅倍率。Volume変更時だけ再計算する。
     master_gain: f64,
+    /// 全Voice共通の定位係数。実発音数・有効なWidth・Panの変更時だけ更新する。
+    panning_gains: PanningGains,
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
@@ -35,6 +38,7 @@ impl Synthesizer {
                 sample_rate: 44100.0,
                 parameters: parameters::defaults(),
                 master_gain: 1.0,
+                panning_gains: [[1.0; 2]; 7],
             },
         }
     }
@@ -88,6 +92,31 @@ impl Synthesizer {
                 voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
             }
         }
+        if values[20..] != previous[20..]
+            || values[6] != previous[6]
+            || (values[7] == 0.0) != (previous[7] == 0.0)
+        {
+            let count = if values[7] == 0.0 {
+                1
+            } else {
+                parameters::to_plain(6, values[6]) as usize
+            };
+            let old_count = if previous[7] == 0.0 {
+                1
+            } else {
+                parameters::to_plain(6, previous[6]) as usize
+            };
+            if count != old_count
+                || values[21] != previous[21]
+                || (count > 1 && values[20] != previous[20])
+            {
+                self.state.panning_gains = panning_gains(
+                    count,
+                    parameters::to_plain(20, values[20]) / 100.0,
+                    parameters::to_plain(21, values[21]) / 100.0,
+                );
+            }
+        }
         if values[20..] != previous[20..] {
             let width = parameters::to_plain(20, values[20]) / 100.0;
             let pan = parameters::to_plain(21, values[21]) / 100.0;
@@ -131,7 +160,7 @@ impl Synthesizer {
     pub fn generate_sample(&mut self) -> [f64; 2] {
         let mut sum = [0.0; 2];
         for voice in &mut self.state.voices[..self.state.polyphony] {
-            let sample = voice.generate_sample(self.state.sample_rate);
+            let sample = voice.generate_sample(self.state.sample_rate, &self.state.panning_gains);
             sum[0] += sample[0];
             sum[1] += sample[1];
         }
@@ -156,6 +185,66 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn shared_panning_follows_unison_detune_and_inactive_settings() {
+        for polyphony in [1, 4] {
+            let mut synth = polyphonic(polyphony);
+            let mut values = synth.state.parameters;
+            // 設定配送中も全音の矩形波が正側に留まる低音を使う。
+            for id in 0..polyphony {
+                synth.note_on(note(id as i32, 0, 0), 0.0, 1.0);
+            }
+            for unison in 1..=7 {
+                for detune in [25.0, 0.0, 25.0] {
+                    for width in [0.0, 0.73, 1.0] {
+                        for pan in [-1.0, -0.37, 0.0, 1.0] {
+                            values[6] = parameters::to_normalized(6, unison as f64);
+                            values[7] = parameters::to_normalized(7, detune);
+                            values[20] = parameters::to_normalized(20, width * 100.0);
+                            values[21] = parameters::to_normalized(21, pan * 100.0);
+                            synth.set_parameters(values);
+                            let count = if detune == 0.0 { 1 } else { unison };
+                            let mut expected = [0.0; 2];
+                            for k in 0..count {
+                                let spread = if count == 1 {
+                                    0.0
+                                } else {
+                                    2.0 * k as f64 / (count - 1) as f64 - 1.0
+                                };
+                                let position = pan + (1.0 - pan.abs()) * width * spread;
+                                let angle = (position + 1.0) * std::f64::consts::FRAC_PI_4;
+                                let gain = 0.5 * std::f64::consts::SQRT_2 * polyphony as f64
+                                    / (count as f64).sqrt();
+                                expected[0] += gain * angle.cos();
+                                expected[1] += gain * angle.sin();
+                            }
+                            let actual = synth.generate_sample();
+                            for ch in 0..2 {
+                                assert!(
+                                    (actual[ch] - expected[ch]).abs() < polyphony as f64 * 1e-6
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            synth.stop();
+            values[20] = 0.43;
+            values[21] = 0.31;
+            synth.set_parameters(values);
+            assert_eq!(synth.generate_sample(), [0.0; 2]);
+            // 保存復元と同じ、発音前の設定配送が新しい全枠へ適用される。
+            let mut restored = Synthesizer::new();
+            restored.set_sample_rate(48000.0);
+            restored.set_parameters(values);
+            for id in 0..polyphony {
+                synth.note_on(note(id as i32, 0, 0), 0.0, 1.0);
+                restored.note_on(note(id as i32, 0, 0), 0.0, 1.0);
+            }
+            assert_eq!(synth.generate_sample(), restored.generate_sample());
+        }
     }
 
     #[test]
@@ -198,7 +287,7 @@ mod tests {
                     }
                     let gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
                     for _ in 0..96 {
-                        let sample = reference.generate_sample(48000.0);
+                        let sample = reference.generate_sample(48000.0, &synth.state.panning_gains);
                         let expected = sample.map(|s| (0..count).map(|_| s).sum::<f64>() * gain);
                         assert_eq!(synth.generate_sample(), expected, "parameter {index}");
                     }

@@ -3,7 +3,7 @@
 
 use crate::envelope::{DEFAULT_ENVELOPE, Envelope, EnvelopeParameters};
 use crate::filter::{Filter, FilterParameters, FilterType};
-use crate::oscillator::{Oscillator, OscillatorInput, PhaseMode, Waveform};
+use crate::oscillator::{Oscillator, OscillatorInput, PanningGains, PhaseMode, Waveform};
 use crate::parameters;
 
 /// 全波形共通のvelocityが1のときの基準実効値（RMS）。
@@ -166,7 +166,7 @@ impl Voice {
     }
 
     /// Voice内のステレオ処理パイプライン。生成した信号をSynthesizerが加算する。
-    pub fn generate_sample(&mut self, sample_rate: f64) -> [f64; 2] {
+    pub fn generate_sample(&mut self, sample_rate: f64, gains: &PanningGains) -> [f64; 2] {
         if !(sample_rate.is_finite() & (sample_rate > 0.0)) {
             return [0.0; 2];
         }
@@ -186,10 +186,10 @@ impl Voice {
         {
             self.state.cutoff_modulation = (cents, 2.0_f64.powf(cents / 1200.0));
         }
-        let sample = self
-            .state
-            .oscillator
-            .generate_sample(&self.state.oscillator_input, sample_rate);
+        let sample =
+            self.state
+                .oscillator
+                .generate_sample(&self.state.oscillator_input, sample_rate, gains);
         let output = self.state.filter.process_sample(
             sample,
             self.state.filter_type,
@@ -239,16 +239,16 @@ mod tests {
                 bypassed.note_on(note, 0.0, 1.0);
                 reference.note_on(note, 0.0, 1.0);
             }
-            bypassed.generate_sample(48000.0);
-            reference.generate_sample(48000.0);
+            bypassed.generate_sample(48000.0, &[[1.0; 2]; 7]);
+            reference.generate_sample(48000.0, &[[1.0; 2]; 7]);
         }
         // 有効中に進めた参照側も、バイパス解除時と同じ無履歴から比較する。
         reference.state.filter.reset();
         bypassed.set_filter(FilterType::LowPass2, 1200.0, 2.0);
         for _ in 0..128 {
             assert_eq!(
-                bypassed.generate_sample(48000.0)[0],
-                reference.generate_sample(48000.0)[0]
+                bypassed.generate_sample(48000.0, &[[1.0; 2]; 7])[0],
+                reference.generate_sample(48000.0, &[[1.0; 2]; 7])[0]
             );
         }
     }
@@ -294,7 +294,7 @@ mod tests {
                     }
                     let input = voice.state.oscillator_input;
                     let expected = filter.process_sample(
-                        [oscillator.generate_sample(&input, 1000.0)[0]; 2],
+                        [oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7])[0]; 2],
                         kind,
                         &FilterParameters {
                             cutoff_hz: 220.0 * 2.0_f64.powf((-1200.0 + amount * level) / 1200.0),
@@ -303,12 +303,12 @@ mod tests {
                         1000.0,
                     )[0];
                     assert!(
-                        (voice.generate_sample(1000.0)[0] - expected).abs() < 1e-12,
+                        (voice.generate_sample(1000.0, &[[1.0; 2]; 7])[0] - expected).abs() < 1e-12,
                         "sample={n}, amount={amount}, type={kind:?}"
                     );
                 }
                 voice.stop();
-                assert_eq!(voice.generate_sample(1000.0)[0], 0.0);
+                assert_eq!(voice.generate_sample(1000.0, &[[1.0; 2]; 7])[0], 0.0);
                 assert_eq!(voice.state.cutoff_modulation.0, 0.0);
             }
         }
@@ -351,12 +351,15 @@ mod tests {
                 };
                 for _ in 0..64 {
                     let expected = reference.process_sample(
-                        [oscillator.generate_sample(&input, 48_000.0)[0]; 2],
+                        [oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])[0]; 2],
                         filter_type,
                         &settings,
                         48_000.0,
                     )[0];
-                    assert!((voice.generate_sample(48_000.0)[0] - expected).abs() < 1e-12);
+                    assert!(
+                        (voice.generate_sample(48_000.0, &[[1.0; 2]; 7])[0] - expected).abs()
+                            < 1e-12
+                    );
                 }
                 voice.note_off(Note {
                     id: 1,
@@ -366,15 +369,18 @@ mod tests {
                 input.gate = false;
                 for _ in 0..16 {
                     let expected = reference.process_sample(
-                        [oscillator.generate_sample(&input, 48_000.0)[0]; 2],
+                        [oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])[0]; 2],
                         filter_type,
                         &settings,
                         48_000.0,
                     )[0];
-                    assert!((voice.generate_sample(48_000.0)[0] - expected).abs() < 1e-12);
+                    assert!(
+                        (voice.generate_sample(48_000.0, &[[1.0; 2]; 7])[0] - expected).abs()
+                            < 1e-12
+                    );
                 }
                 voice.stop();
-                assert_eq!(voice.generate_sample(48_000.0)[0], 0.0);
+                assert_eq!(voice.generate_sample(48_000.0, &[[1.0; 2]; 7])[0], 0.0);
             }
         }
     }
