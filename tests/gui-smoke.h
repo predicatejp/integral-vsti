@@ -287,7 +287,7 @@ public:
     uint32 PLUGIN_API release() override { assert(refs > 1); return --refs; }
     tresult PLUGIN_API beginEdit(ParamID id) override {
         assert(std::this_thread::get_id() == uiThread);
-        assert(std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -358,10 +358,10 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     // グループ内のノブ中心と選択リスト。画面上の実入力で全設定を検証する。
-    const std::array<std::pair<int, int>, 20> controls {{
+    const std::array<std::pair<int, int>, 22> controls {{
         {82, 119}, {43, 303}, {103, 303}, {163, 303}, {223, 303}, {283, 303},
         {43, 166}, {103, 166}, {739, 114}, {400, 119}, {361, 166}, {421, 166},
-        {220, 119}, {799, 114}, {361, 303}, {421, 303}, {481, 303}, {541, 303}, {601, 303}, {661, 303}
+        {220, 119}, {799, 114}, {361, 303}, {421, 303}, {481, 303}, {541, 303}, {601, 303}, {661, 303}, {163, 166}, {859, 114}
     }};
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
@@ -394,9 +394,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(component->setState(&saved) == kResultOk);
         assert(controller->getParamNormalized(waveformId) == 2.0 / 3.0);
         pump(); assert(handler.sequence.empty());
-        // 全17ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
+        // 全19ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());
-        for (int i = 1; i < 20; ++i) {
+        for (int i = 1; i < 22; ++i) {
             if (i == 9 || i == 12) continue;
             ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
@@ -417,7 +417,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
             const double plain = time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
-                                 i == 11 ? .51 : i == 13 ? -47.9 : i == 19 ? -4790.0 : .01;
+                                 i == 11 ? .51 : i == 13 ? -47.9 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : .01;
             assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
             assert(parent.pointerAt(x, y));
             point.id = info.id; point.values = {{0, handler.value}};

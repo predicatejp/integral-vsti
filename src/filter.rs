@@ -166,8 +166,8 @@ fn valid_input(sample: f64, parameters: &FilterParameters, sample_rate: f64) -> 
 
 /// SVFの外側で出力を選択し、必要な段数だけ直列接続するコンポーネント。
 pub struct FilterState {
-    /// 独立した2段のSVF。未使用の段は消去し、再使用時に古い残響を出さない。
-    stages: [Svf; 2],
+    /// [左右][段]のSVF。左右の履歴を独立させ、未使用の段は消去する。
+    stages: [[Svf; 2]; 2],
 }
 
 /// Filterの処理を担当し、専用のStateを所有するコンポーネント。
@@ -180,14 +180,14 @@ impl Filter {
     pub fn new() -> Self {
         Self {
             state: FilterState {
-                stages: [Svf::default(), Svf::default()],
+                stages: std::array::from_fn(|_| [Svf::default(), Svf::default()]),
             },
         }
     }
 
     /// 処理停止・再初期化用。残響を即座に消去する。
     pub fn reset(&mut self) {
-        for stage in &mut self.state.stages {
+        for stage in self.state.stages.iter_mut().flatten() {
             stage.state.integrators = [0.0; 2];
         }
     }
@@ -195,42 +195,46 @@ impl Filter {
     #[inline]
     pub fn process_sample(
         &mut self,
-        sample: f64,
+        samples: [f64; 2],
         filter_type: FilterType,
         parameters: &FilterParameters,
         sample_rate: f64,
-    ) -> f64 {
+    ) -> [f64; 2] {
         if matches!(filter_type, FilterType::None) {
             self.reset();
-            return sample;
+            return samples;
         }
-        if !valid_input(sample, parameters, sample_rate) {
-            return 0.0;
+        if !(valid_input(samples[0], parameters, sample_rate) & samples[1].is_finite()) {
+            return [0.0; 2];
         }
-        // None以外は応答ごとに1段・2段の順で並ぶ。
         let kind = filter_type as usize - 1;
         let count = 1 + (kind & 1);
         let output_index = kind / 2;
-        // 1段なら0、2段なら全bitが1のマスクで、第2段の履歴を消去／保持する。
         let keep_second = 0_u64.wrapping_sub((count - 1) as u64);
-        for value in &mut self.state.stages[1].state.integrators {
-            *value = f64::from_bits(value.to_bits() & keep_second);
+        for channel in &mut self.state.stages {
+            for value in &mut channel[1].state.integrators {
+                *value = f64::from_bits(value.to_bits() & keep_second);
+            }
         }
-        if sample == 0.0
-            && self.state.stages[..count]
-                .iter()
-                .all(|s| s.state.integrators == [0.0; 2])
+        if samples == [0.0; 2]
+            && self.state.stages.iter().all(|channel| {
+                channel[..count]
+                    .iter()
+                    .all(|s| s.state.integrators == [0.0; 2])
+            })
         {
-            return 0.0;
+            return [0.0; 2];
         }
-        // 同設定の2段で係数計算を共有し、積分器は各段に保持する。
-        let coefficients = self.state.stages[0].prepare_coefficients(parameters, sample_rate);
-        let mut sample = sample;
-        for stage in &mut self.state.stages[..count] {
-            let output = stage.process_prepared_sample(sample, coefficients);
-            sample = [output.low, output.high, output.band][output_index];
+        // 左右・両段で係数を共用し、積分器の履歴だけ独立させる。
+        let coefficients = self.state.stages[0][0].prepare_coefficients(parameters, sample_rate);
+        let mut output = samples;
+        for (sample, channel) in output.iter_mut().zip(&mut self.state.stages) {
+            for stage in &mut channel[..count] {
+                let result = stage.process_prepared_sample(*sample, coefficients);
+                *sample = [result.low, result.high, result.band][output_index];
+            }
         }
-        sample
+        output
     }
 }
 
@@ -253,6 +257,44 @@ mod tests {
         FilterType::BandPass1,
         FilterType::BandPass2,
     ];
+
+    #[test]
+    fn stereo_channels_share_coefficients_but_not_history() {
+        for kind in TYPES {
+            let count = 1 + ((kind as usize - 1) & 1);
+            let index = (kind as usize - 1) / 2;
+            let mut filter = Filter::new();
+            let mut reference: [[Svf; 2]; 2] =
+                std::array::from_fn(|_| std::array::from_fn(|_| Svf::default()));
+            for n in 0..128 {
+                let parameters = FilterParameters {
+                    cutoff_hz: 100.0 + n as f64 * 100.0,
+                    resonance_q: 0.5 + (n % 7) as f64,
+                };
+                let samples = [
+                    if n == 0 { 1.0 } else { 0.0 },
+                    if n == 32 { -0.5 } else { 0.0 },
+                ];
+                let actual = filter.process_sample(samples, kind, &parameters, 48000.0);
+                for ch in 0..2 {
+                    let mut expected = samples[ch];
+                    for stage in &mut reference[ch][..count] {
+                        let out = stage.process_sample(expected, &parameters, 48000.0);
+                        expected = [out.low, out.high, out.band][index];
+                    }
+                    assert!((actual[ch] - expected).abs() < 1e-12);
+                }
+                if n < 32 {
+                    assert_eq!(actual[1], 0.0);
+                }
+            }
+            filter.reset();
+            assert_eq!(
+                filter.process_sample([0.0; 2], kind, &TEST_PARAMETERS, 48000.0),
+                [0.0; 2]
+            );
+        }
+    }
 
     #[test]
     fn cached_coefficients_match_direct_calculation_during_modulation() {
@@ -295,7 +337,7 @@ mod tests {
                         _ => high,
                     };
                 }
-                let actual = filter.process_sample(input, kind, &parameters, rate);
+                let actual = filter.process_sample([input; 2], kind, &parameters, rate)[0];
                 // Miriはtanなどの演算に許容範囲の非決定的誤差を加えるため、
                 // 独立に計算した係数の末尾ビットまでの一致は通常CPUで検証する。
                 #[cfg(miri)]
@@ -310,20 +352,20 @@ mod tests {
     fn silence_keeps_tails_and_clears_unused_stages() {
         let mut filter = Filter::new();
         // 第1段が無音でも、第2段に残った信号は処理する。
-        filter.state.stages[1].state.integrators = [1e-100, 2e-100];
+        filter.state.stages[0][1].state.integrators = [1e-100, 2e-100];
         assert_ne!(
-            filter.process_sample(0.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
+            filter.process_sample([0.0; 2], FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0)[0],
             0.0
         );
-        assert_ne!(filter.state.stages[1].state.integrators, [0.0; 2]);
-        filter.process_sample(0.0, FilterType::LowPass1, &TEST_PARAMETERS, 48_000.0);
-        assert_eq!(filter.state.stages[1].state.integrators, [0.0; 2]);
+        assert_ne!(filter.state.stages[0][1].state.integrators, [0.0; 2]);
+        filter.process_sample([0.0; 2], FilterType::LowPass1, &TEST_PARAMETERS, 48_000.0);
+        assert_eq!(filter.state.stages[0][1].state.integrators, [0.0; 2]);
         assert_eq!(
-            filter.process_sample(0.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
+            filter.process_sample([0.0; 2], FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0)[0],
             0.0
         );
         assert_ne!(
-            filter.process_sample(1.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
+            filter.process_sample([1.0; 2], FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0)[0],
             0.0
         );
     }
@@ -342,11 +384,11 @@ mod tests {
                     let impulse: Vec<_> = (0..8192)
                         .map(|n| {
                             state.process_sample(
-                                if n == 0 { 1.0 } else { 0.0 },
+                                [if n == 0 { 1.0 } else { 0.0 }; 2],
                                 filter_type,
                                 &parameters,
                                 rate,
-                            )
+                            )[0]
                         })
                         .collect();
                     for hz in [125.0, 500.0, 1000.0, 2000.0, 8000.0] {
@@ -387,24 +429,24 @@ mod tests {
         let mut filter_type = FilterType::LowPass1;
         let mut state = Filter::new();
         assert_eq!(
-            state.process_sample(0.0, filter_type, &parameters, 48_000.0),
+            state.process_sample([0.0; 2], filter_type, &parameters, 48_000.0)[0],
             0.0
         );
-        state.process_sample(1.0, filter_type, &parameters, 48_000.0);
+        state.process_sample([1.0; 2], filter_type, &parameters, 48_000.0);
         parameters.cutoff_hz = 1000.0;
         parameters.resonance_q = 10.0;
         filter_type = FilterType::BandPass2;
         assert_ne!(
-            state.process_sample(0.0, filter_type, &parameters, 48_000.0),
+            state.process_sample([0.0; 2], filter_type, &parameters, 48_000.0)[0],
             0.0
         );
-        assert_ne!(state.state.stages[1].state.integrators, [0.0; 2]);
+        assert_ne!(state.state.stages[0][1].state.integrators, [0.0; 2]);
         filter_type = FilterType::BandPass1;
-        state.process_sample(0.0, filter_type, &parameters, 48_000.0);
-        assert_eq!(state.state.stages[1].state.integrators, [0.0; 2]);
+        state.process_sample([0.0; 2], filter_type, &parameters, 48_000.0);
+        assert_eq!(state.state.stages[0][1].state.integrators, [0.0; 2]);
         state.reset();
         assert_eq!(
-            state.process_sample(0.0, filter_type, &parameters, 48_000.0),
+            state.process_sample([0.0; 2], filter_type, &parameters, 48_000.0)[0],
             0.0
         );
     }
@@ -420,14 +462,13 @@ mod tests {
                         resonance_q: if n % 3 == 0 { 0.5 } else { 10.0 },
                     };
                     assert!(
-                        state
-                            .process_sample(
-                                if n % 7 == 0 { 16.0 } else { 0.0 },
-                                filter_type,
-                                &parameters,
-                                rate
-                            )
-                            .is_finite()
+                        state.process_sample(
+                            [if n % 7 == 0 { 16.0 } else { 0.0 }; 2],
+                            filter_type,
+                            &parameters,
+                            rate
+                        )[0]
+                        .is_finite()
                     );
                 }
             }
@@ -464,9 +505,10 @@ mod tests {
                     let mut explicit = Filter::new();
                     for n in 0..16 {
                         let sample = if n == 0 { 1.0 } else { 0.0 };
-                        let actual = limited.process_sample(sample, filter_type, &parameters, rate);
+                        let actual =
+                            limited.process_sample([sample; 2], filter_type, &parameters, rate)[0];
                         let expected =
-                            explicit.process_sample(sample, filter_type, &boundary, rate);
+                            explicit.process_sample([sample; 2], filter_type, &boundary, rate)[0];
                         assert!(
                             actual.is_finite() && (actual - expected).abs() < 1e-12,
                             "{filter_type:?}, rate={rate}, requested={requested}, sample={n}"
@@ -565,7 +607,7 @@ mod tests {
     #[test]
     fn bypass_is_exact_and_drops_old_tail() {
         let mut state = Filter::new();
-        state.process_sample(1.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0);
+        state.process_sample([1.0; 2], FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0);
         for sample in [
             -2.0,
             -0.0,
@@ -576,24 +618,25 @@ mod tests {
             f64::INFINITY,
             f64::NEG_INFINITY,
         ] {
-            let output = state.process_sample(sample, FilterType::None, &TEST_PARAMETERS, 48_000.0);
-            assert_eq!(output.to_bits(), sample.to_bits());
+            let output =
+                state.process_sample([sample; 2], FilterType::None, &TEST_PARAMETERS, 48_000.0);
+            assert_eq!(output.map(f64::to_bits), [sample.to_bits(); 2]);
         }
         assert_eq!(
-            state.process_sample(0.0, FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0),
+            state.process_sample([0.0; 2], FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0)[0],
             0.0
         );
         // Noneでは使用しない周波数・Q・レートで信号を遮断しない。
         assert_eq!(
             state.process_sample(
-                0.25,
+                [0.25; 2],
                 FilterType::None,
                 &FilterParameters {
                     cutoff_hz: f64::NAN,
                     resonance_q: f64::NAN
                 },
                 f64::NAN
-            ),
+            )[0],
             0.25
         );
     }

@@ -62,7 +62,7 @@ impl Synthesizer {
         self.state.parameters = values;
         // 変更した設定グループだけ配送する。未発音の枠も次のNote Onに備えて更新する。
         let oscillator_changed = values[..8] != previous[..8] || values[12] != previous[12];
-        let envelope_changed = values[14..] != previous[14..];
+        let envelope_changed = values[14..20] != previous[14..20];
         let filter_changed = values[9..12] != previous[9..12];
         let count = parameters::to_plain(8, values[8]) as usize;
         for voice in &mut self.state.voices[count..self.state.polyphony.max(count)] {
@@ -86,6 +86,13 @@ impl Synthesizer {
             let cutoff_amount = parameters::to_plain(19, values[19]);
             for voice in &mut self.state.voices {
                 voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
+            }
+        }
+        if values[20..] != previous[20..] {
+            let width = parameters::to_plain(20, values[20]) / 100.0;
+            let pan = parameters::to_plain(21, values[21]) / 100.0;
+            for voice in &mut self.state.voices {
+                voice.set_panning(width, pan);
             }
         }
         if filter_changed {
@@ -121,12 +128,14 @@ impl Synthesizer {
         }
     }
 
-    pub fn generate_sample(&mut self) -> f64 {
-        self.state.voices[..self.state.polyphony]
-            .iter_mut()
-            .map(|voice| voice.generate_sample(self.state.sample_rate))
-            .sum::<f64>()
-            * self.state.master_gain
+    pub fn generate_sample(&mut self) -> [f64; 2] {
+        let mut sum = [0.0; 2];
+        for voice in &mut self.state.voices[..self.state.polyphony] {
+            let sample = voice.generate_sample(self.state.sample_rate);
+            sum[0] += sample[0];
+            sum[1] += sample[1];
+        }
+        sum.map(|sample| sample * self.state.master_gain)
     }
 }
 
@@ -179,6 +188,10 @@ mod tests {
                         parameters::envelope(&values, 14),
                         parameters::to_plain(19, values[19]),
                     );
+                    reference.set_panning(
+                        parameters::to_plain(20, values[20]) / 100.0,
+                        parameters::to_plain(21, values[21]) / 100.0,
+                    );
                     reference.note_on(note(0, 0, 69), 0.0, 1.0);
                     for id in 0..count {
                         synth.note_on(note(id, 0, 69), 0.0, 1.0);
@@ -186,7 +199,7 @@ mod tests {
                     let gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
                     for _ in 0..96 {
                         let sample = reference.generate_sample(48000.0);
-                        let expected = (0..count).map(|_| sample).sum::<f64>() * gain;
+                        let expected = sample.map(|s| (0..count).map(|_| s).sum::<f64>() * gain);
                         assert_eq!(synth.generate_sample(), expected, "parameter {index}");
                     }
                 }
@@ -258,16 +271,14 @@ mod tests {
                     synth.set_parameters(values);
                     references[1].stop();
                 }
-                let expected: f64 = references
-                    .iter_mut()
-                    .map(Synthesizer::generate_sample)
-                    .sum();
+                let expected: f64 = references.iter_mut().map(|s| s.generate_sample()[0]).sum();
                 assert!(
-                    (synth.generate_sample() - expected * 10.0_f64.powf(db / 20.0)).abs() < 1e-12
+                    (synth.generate_sample()[0] - expected * 10.0_f64.powf(db / 20.0)).abs()
+                        < 1e-12
                 );
             }
             synth.stop();
-            assert_eq!(synth.generate_sample(), 0.0);
+            assert_eq!(synth.generate_sample()[0], 0.0);
         }
     }
 
@@ -281,18 +292,18 @@ mod tests {
             }
             assert_eq!(synth.state.next_oscillator_id, 0);
             // 全枠の初回サンプルは矩形波の正側。音数による音量補正はしない。
-            assert!((synth.generate_sample() - 0.5 * count as f64).abs() < 1e-12);
+            assert!((synth.generate_sample()[0] - 0.5 * count as f64).abs() < 1e-12);
             assert!(synth.note_on(note(100, 0, 100), 0.0, 0.5));
             synth.note_off(note(0, 0, 60)); // 上書き済みのノートでは新しい音を消さない。
             assert!(synth.state.voices[0].state.oscillator_input.gate);
-            assert!((synth.generate_sample() - (0.5 * count as f64 - 0.25)).abs() < 1e-12);
+            assert!((synth.generate_sample()[0] - (0.5 * count as f64 - 0.25)).abs() < 1e-12);
             let next = synth.state.next_oscillator_id;
             synth.note_off(note(100, 0, 100));
             assert_eq!(synth.state.next_oscillator_id, next);
             for id in 1..count {
                 synth.note_off(note(id as i32, 0, 60 + id as i16));
             }
-            assert_eq!(synth.generate_sample(), 0.0);
+            assert_eq!(synth.generate_sample()[0], 0.0);
             assert!(!synth.note_on(note(200, 16, 60), 0.0, 1.0));
             assert!(!synth.note_on(note(200, 0, 60), f32::MAX, 1.0));
             assert_eq!(synth.state.next_oscillator_id, next);
@@ -342,11 +353,8 @@ mod tests {
                     single.stop();
                 }
             }
-            let expected: f64 = references
-                .iter_mut()
-                .map(Synthesizer::generate_sample)
-                .sum();
-            assert!((synth.generate_sample() - expected).abs() < 1e-12);
+            let expected: f64 = references.iter_mut().map(|s| s.generate_sample()[0]).sum();
+            assert!((synth.generate_sample()[0] - expected).abs() < 1e-12);
         }
     }
 
@@ -356,18 +364,18 @@ mod tests {
         for id in 0..3 {
             synth.note_on(note(id, 0, 60), 0.0, 1.0);
         }
-        assert_eq!(synth.generate_sample(), 1.5);
+        assert_eq!(synth.generate_sample()[0], 1.5);
         let mut values = synth.state.parameters;
         values[8] = parameters::to_normalized(8, 2.0);
         synth.set_parameters(values);
         assert_eq!(synth.state.next_oscillator_id, 1); // 3 % 2
-        assert_eq!(synth.generate_sample(), 1.0);
+        assert_eq!(synth.generate_sample()[0], 1.0);
         values[8] = parameters::to_normalized(8, 4.0);
         synth.set_parameters(values);
-        assert_eq!(synth.generate_sample(), 1.0); // 除外したノートは復活しない。
+        assert_eq!(synth.generate_sample()[0], 1.0); // 除外したノートは復活しない。
         synth.note_on(note(4, 0, 60), 0.0, 1.0); // 1番を上書き。
         synth.note_on(note(5, 0, 60), 0.0, 1.0); // 2番を再使用。
-        assert_eq!(synth.generate_sample(), 1.5);
+        assert_eq!(synth.generate_sample()[0], 1.5);
         // サンプル処理を挟まず減少→増加→再割り当てしても古い振幅を引き継がない。
         values[8] = 0.0;
         synth.set_parameters(values);
@@ -376,9 +384,9 @@ mod tests {
         synth.set_parameters(values);
         synth.note_on(note(6, 0, 60), 0.0, 1.0);
         synth.note_on(note(7, 0, 60), 0.0, 1.0);
-        assert_eq!(synth.generate_sample(), 0.5);
+        assert_eq!(synth.generate_sample()[0], 0.5);
         synth.stop();
-        assert_eq!(synth.generate_sample(), 0.0);
+        assert_eq!(synth.generate_sample()[0], 0.0);
     }
 
     #[test]
@@ -392,15 +400,15 @@ mod tests {
         ] {
             synth.note_on(n, 0.0, 1.0);
         }
-        assert_eq!(synth.generate_sample(), 2.0);
+        assert_eq!(synth.generate_sample()[0], 2.0);
         synth.note_off(note(1, 0, 60));
-        assert_eq!(synth.generate_sample(), 1.5);
+        assert_eq!(synth.generate_sample()[0], 1.5);
         synth.note_off(note(-1, 2, 60)); // 別チャンネルは無関係。
-        assert_eq!(synth.generate_sample(), 1.5);
+        assert_eq!(synth.generate_sample()[0], 1.5);
         synth.note_off(note(-1, 1, 60)); // IDなし同音の全一致をrelease。
-        assert_eq!(synth.generate_sample(), 0.5);
+        assert_eq!(synth.generate_sample()[0], 0.5);
         synth.note_off(note(2, 0, 60));
-        assert_eq!(synth.generate_sample(), 0.0);
+        assert_eq!(synth.generate_sample()[0], 0.0);
         assert_eq!(synth.state.next_oscillator_id, 0);
     }
 
@@ -446,7 +454,7 @@ mod tests {
                     }
                     let mut energy = 0.0;
                     for _ in 0..samples {
-                        let sample = synth.generate_sample();
+                        let sample = synth.generate_sample()[0];
                         assert!(sample.is_finite() && sample.abs() <= 1.0);
                         energy += sample * sample;
                     }
@@ -461,7 +469,7 @@ mod tests {
                         synth.generate_sample();
                     }
                     for _ in 0..8 {
-                        assert_eq!(synth.generate_sample(), 0.0);
+                        assert_eq!(synth.generate_sample()[0], 0.0);
                     }
                 }
             }
@@ -475,7 +483,7 @@ mod tests {
         synth.state.voices[0].state.oscillator_input.waveform = Waveform::Square;
         synth.note_on(note(1, 0, 69), 0.0, 1.0);
         for i in 0..5 {
-            assert!((synth.generate_sample().abs() - 0.05 * f64::from(i)).abs() < 1e-12);
+            assert!((synth.generate_sample()[0].abs() - 0.05 * f64::from(i)).abs() < 1e-12);
         }
         // attack中の0.25から、異なるベロシティの目標0.4まで10msで移行。
         synth.note_on(note(2, 0, 81), 0.0, 0.8);
@@ -483,26 +491,26 @@ mod tests {
         let peak = 0.5 * f64::from(0.8_f32);
         for i in 0..=10 {
             let expected = 0.25 + (peak - 0.25) * f64::from(i) / 10.0;
-            assert!((synth.generate_sample().abs() - expected).abs() < 1e-12);
+            assert!((synth.generate_sample()[0].abs() - expected).abs() < 1e-12);
         }
         synth.note_off(note(2, 0, 81));
         let start = peak * 0.997; // decayを1ms進めた位置。
         for i in 0..=100 {
             assert!(
-                (synth.generate_sample().abs() - start * (1.0 - f64::from(i) / 100.0)).abs()
+                (synth.generate_sample()[0].abs() - start * (1.0 - f64::from(i) / 100.0)).abs()
                     < 1e-12
             );
         }
-        assert_eq!(synth.generate_sample(), 0.0);
+        assert_eq!(synth.generate_sample()[0], 0.0);
         synth.note_on(note(3, 0, 69), 0.0, 1.0);
-        assert_eq!(synth.generate_sample(), 0.0);
+        assert_eq!(synth.generate_sample()[0], 0.0);
         synth.generate_sample();
         // stopの直後、サンプル処理前にNote Onが来ても古い音量を引き継がない。
         synth.stop();
         synth.note_on(note(4, 0, 69), 0.0, 1.0);
-        assert_eq!(synth.generate_sample(), 0.0);
+        assert_eq!(synth.generate_sample()[0], 0.0);
         synth.stop();
-        assert_eq!(synth.generate_sample(), 0.0);
+        assert_eq!(synth.generate_sample()[0], 0.0);
     }
 
     #[test]
@@ -520,12 +528,12 @@ mod tests {
         synth.note_on(note(10, 0, 128), 0.0, 1.0);
         synth.note_on(note(10, 0, 69), f32::MAX, 1.0);
         synth.note_on(note(10, 0, 69), 0.0, f32::NAN);
-        assert!((synth.generate_sample().abs() - 0.25).abs() < 1e-12);
+        assert!((synth.generate_sample()[0].abs() - 0.25).abs() < 1e-12);
         synth.note_off(note(-1, 2, 69));
-        assert!((synth.generate_sample().abs() - 0.3).abs() < 1e-12);
+        assert!((synth.generate_sample()[0].abs() - 0.3).abs() < 1e-12);
         for _ in 0..100 {
             synth.generate_sample();
         }
-        assert_eq!(synth.generate_sample(), 0.0);
+        assert_eq!(synth.generate_sample()[0], 0.0);
     }
 }

@@ -49,7 +49,7 @@
 - 音源方式・主要機能: 1〜32個の独立オシレータによる多声音音源。サイン波・三角波・矩形波・ノコギリ波に対応。既定はサイン波。音量・カットオフ用の独立した線形AHDSRエンベロープ。同一ノートの1〜7ボイスユニゾン。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
 - サンプルレートは44.1 kHz以上の有限値を受理し、範囲外はVST3の`setupProcessing`で拒否する。フィルタも同じ下限を検証し、カットオフは内部で20〜20,000 Hzにクランプする。
-- 現在の操作・保存: VST3のWaveform（4択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount。eguiで20パラメーターを操作し、IBStreamで保存・復元。
+- 現在の操作・保存: VST3のWaveform（4択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。eguiで22パラメーターを操作し、IBStreamで保存・復元。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。
 バス構成、最大同時発音数、サンプル精度、対応サンプルレート、MIDI機能、独自GUIの有無は、実装時に対応範囲を明記すること。
@@ -75,7 +75,7 @@
 - `src/gui.rs`: IPlugViewの直接実装とUIスレッドへの編集配送。
 - `src/editor.rs`: カテゴリ別ノブ・選択リストのマウス入力とegui/OpenGL描画。
 - `src/host.rs`: UIスレッドに限定したホストインターフェースの所有参照。
-- `src/parameters.rs`: 20パラメーターの値変換、VST3変更キューとIBStream v8（旧v1〜v7/空状態も対応）の読み書き。
+- `src/parameters.rs`: 22パラメーターの値変換、VST3変更キューとIBStream v9（旧v1〜v8/空状態も対応）の読み書き。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState`、サンプル生成・状態更新。
 - `src/envelope.rs`: 単位に依存しない0〜1のAHDSR計算と、EnvelopeがEnvelopeStateを所有する経過時間・再トリガー管理。音量とカットオフで共用する。
 - `src/filter.rs`: 3出力のTPT SVFと、外側でのタイプ選択・1段／2段・None。具体的なHzとQ（0.5〜10）を受け取る。既定値は内部フィルタに持たせずUI／VST3設定側で定義する。Voiceの最終段へ接続。ノート基準のCutoff（−2400〜9600 cent、初期値＋4800 cent）をHzへ換算して渡す。
@@ -162,6 +162,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - `SynthesizerState.next_oscillator_id` は初期値0。有効なNote Onを割り当てた後に `(ID + 1) % Polyphony` へ進める。空き枠探索はせず、同じ枠の再使用では現在振幅を引き継ぎ、位相はPhaseの選択に従う。Note Off・不正なNote On・処理停止では割り当て位置を進めない。旧ノートへの復帰は行わない。
 - Note Offは対応する全枠をreleaseする。同じnoteId、またはID未提供の同チャンネル・同音高が複数あれば全一致に適用する。上書きした旧IDへのNote Offでは新しいノートを消さない。
 - Polyphonyの減少時は範囲外の枠を即時停止し、次のIDを新しい枠数の剰余へ変更する。増加時に停止済みノートを復活させない。最大32枠を初期化時に確保し、処理中は動的に確保・解放しない。
+- Widthは0〜100%（初期値0）、Panは−100〜＋100%（初期値0）。GUIは1%刻みの整数tickとし、VST3は連続値とする。`W=Width/100`、`P=Pan/100`、ユニゾン位置`s=2k/(N−1)−1`（1ボイスは0）から`p=P+(1−|P|)*W*s`を求める。equal-powerの左右倍率は`√2*cos((p+1)*π/4)`と`√2*sin((p+1)*π/4)`。中央は左右1、端点の無音側は厳密に0とする。Detune=0では1ボイス相当を維持し、Widthを適用しない。各Voiceのフィルタは左右独立の履歴と共通係数を持ち、左右別に合成する。
 - 音量補正は各オシレータ内のユニゾンに限定する。ポリフォニー出力は各オシレータの単純加算とし、音数による正規化やクリッピングを追加しない。全Voiceのフィルタ出力を加算した後、Volume（−48〜＋12 dB、初期値0 dB）を適用する。振幅倍率は`10^(dB / 20)`とし、Volume変更時だけ計算してSynthesizerStateに保持する。
 
 - カットオフ用AHDSRは各Voiceが音量用と独立したEnvelopeを持つ。初期AHDSRは音量用と同じ、Amountは−4800〜＋4800 cent（初期値0）。`Cutoff + Amount × 正規化値`をノート基準Hzへ換算してフィルタへ渡す。再ノートオンでは現在値からattack時間全体で1へ移行し、ノートオフで独自のreleaseを進める。停止は両エンベロープを即時0にする。
@@ -172,7 +173,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - パラメーターの列挙位置と安定した `ParamID` を区別し、正規化値 `[0, 1]`、実単位、離散値の変換を一貫させること。
 - オートメーションは変更点の時刻と区間の意味を扱うこと。連続値の補間、離散値の切り替え、前ブロックからの値の保持を定め、最終点だけで全ブロックを処理しないこと。
 - 同じサンプル位置のパラメーター変更とノートイベントの処理順序を定義し、両者に共通の入力順序情報があるとは仮定しないこと。
-- Waveform・Unison・Polyphony・Filter・Cutoff・Phaseの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・Volumeの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。
+- Waveform・Unison・Polyphony・Filter・Cutoff・Phaseの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・Volume・Width・Panの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。
 - GUIからの編集は `beginEdit` / `performEdit` / `endEdit` など規定の通知を使うこと。ホストからの値更新を再通知して循環させず、GUIを開かなくてもDSPへ更新が反映される構成にすること。
 
 ### 状態保存とGUI
@@ -183,7 +184,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - 状態データの読み書き結果、長さ、値の範囲を検証し、破損・途中切れ・未対応バージョンで不正な状態を適用しないこと。
 - 処理中の状態保存・復元とDSPのデータ共有を設計し、音声スレッドをブロックしないこと。設定の復元と、発音中のボイスや残響履歴の完全な復元を同一視しないこと。
 - GUIはegui 0.37.0・egui_glow 0.37.0・baseview 0.4.1のOpenGL描画を使用する。GPUは描画専用とし、DSPでは使用しない。LinuxはX11EmbedWindowIDとIPlugFrameから取得するIRunLoop、WindowsはHWNDを使う。
-- GUIは1024×768物理ピクセルの固定サイズ、ライトテーマとする。標準フォントは18px、見出しは24pxとする。処理順に左からOscillator・Filter・Masterを配置し、Amplitude envelopeはOscillatorの下、Cutoff envelopeはFilterの下に置く。上段の高さ、各段とエンベロープの幅、グループ間隔を揃える。OscillatorはWaveform・Phase・Unison・Detune、MasterはPolyphony・Volumeを操作する。余白はコンパクトに保つ。直径44pxのノブを横に並べ、省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを下に表示する。WaveformとPhaseのドロップダウンとAHDSRの5ノブ、Unison（1ボイス刻み）とDetune（1 cent刻み）、Polyphony（1刻み）の整数ノブをマウスで操作する。Filterの7択とCutoff（0〜1200 tickを10 cent刻みへ換算）、Resonance（0〜950 tickをQ=0.5〜10へ換算）、Volume（0〜600 tickを−48〜＋12 dBへ0.1 dB刻みで換算）も操作する。カットオフ用AHDSRも同じ時間軸・Sustain軸で操作し、Cutoff Amountは0〜960 tickを−4800〜＋4800 centへ10 cent刻みで換算する。CutoffのVST3公開値は連続値、初期値は4800 cent、Resonanceの初期値はQ=1とする。時間軸は0ms専用の左端、次が1ms、以降100tickで10倍。sustainは線形。任意倍率・自由なサイズ変更は未対応。
+- GUIは1024×768物理ピクセルの固定サイズ、ライトテーマとする。標準フォントは18px、見出しは24pxとする。処理順に左からOscillator・Filter・Masterを配置し、Amplitude envelopeはOscillatorの下、Cutoff envelopeはFilterの下に置く。上段の高さ、各段とエンベロープの幅、グループ間隔を揃える。OscillatorはWaveform・Phase・Unison・Detune・Width、MasterはPolyphony・Volume・Panを操作する。余白はコンパクトに保つ。直径44pxのノブを横に並べ、省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを下に表示する。WaveformとPhaseのドロップダウンとAHDSRの5ノブ、Unison（1ボイス刻み）とDetune（1 cent刻み）、Polyphony（1刻み）の整数ノブをマウスで操作する。Filterの7択とCutoff（0〜1200 tickを10 cent刻みへ換算）、Resonance（0〜950 tickをQ=0.5〜10へ換算）、Volume（0〜600 tickを−48〜＋12 dBへ0.1 dB刻みで換算）も操作する。カットオフ用AHDSRも同じ時間軸・Sustain軸で操作し、Cutoff Amountは0〜960 tickを−4800〜＋4800 centへ10 cent刻みで換算する。CutoffのVST3公開値は連続値、初期値は4800 cent、Resonanceの初期値はQ=1とする。時間軸は0ms専用の左端、次が1ms、以降100tickで10倍。sustainは線形。任意倍率・自由なサイズ変更は未対応。
 - GUIの編集通知はホストのUIスレッドに配送し、描画処理中にはホストを呼ばない。UI専用の32件キューは1件をノブの終了通知用に予約する。途中の値変更が満杯で破棄されても、終了時に最終値とendEditを通知する。
 - ノブは4物理pxの上下移動で整数tickを1増減する。調整中はノブ中央直上に「正式名称\n現在値」の2行オーバーレイを中央揃えで表示する。Unison・Polyphonyのオーバーレイは整数、連続パラメーターは小数点以下3桁と単位を表示する。カーソル操作はドラッグ期間に限定し、復帰をホストへのendEdit通知の成否に依存させない。Windowsのノブ操作ではキーボードフォーカスを取得・変更しない。開始時のフォーカスと前面ウィンドウをStateへ記録し、既存タイマーでその変化・Esc・キャプチャ解除を検出して終了する。Linuxでは終了時に子が保持しているフォーカスをホストの親へ戻す。他へ移ったフォーカスは奪わない。
 - 独自GUIを実装する場合は、表示・取り外し・再表示、サイズ変更、スケーリング、フォーカスと入力の扱いを確認すること。GUIを閉じても音源の処理を継続できるようにすること。

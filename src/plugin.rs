@@ -46,9 +46,9 @@ struct Plugin {
     /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
     /// initialize時は互換性のためtrueとし、その後はactivateBusの明示的な指定に従う。
     event_active: AtomicBool,
-    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す20パラメーター。保存時にもatomicで読む。
+    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す22パラメーター。保存時にもatomicで読む。
     processor_parameters: SharedParameters,
-    /// Controllerが表示する20パラメーター。ホストの値通知とComponentの状態復元で更新する。
+    /// Controllerが表示する22パラメーター。ホストの値通知とComponentの状態復元で更新する。
     controller_parameters: Arc<SharedParameters>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
@@ -426,6 +426,8 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
             short_title: utf16(NAMES[i]),
             units: utf16(if parameters::is_time(i) {
                 "ms"
+            } else if matches!(i, 20 | 21) {
+                "%"
             } else if i == 13 {
                 "dB"
             } else if matches!(i, 7 | 10 | 19) {
@@ -800,7 +802,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let synth = unsafe { &mut *plugin.synth.get() };
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
-    // SAFETY: 20本のカーソルはこのprocess中だけホストのキューを借用する。
+    // SAFETY: 22本のカーソルはこのprocess中だけホストのキューを借用する。
     let mut changes: [ParameterPoints<'_>; parameters::COUNT] =
         std::array::from_fn(|i| unsafe { ParameterPoints::new(data, i, values[i]) });
     let event_active = plugin.event_active.load(Ordering::Relaxed);
@@ -808,7 +810,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         synth.stop();
     }
     let mut cursor = 0;
-    let mut nonzero = false;
+    let mut nonzero = 0;
     if event_active && !data.input_events.is_null() {
         // SAFETY: inputEventsはホスト所有のIEventList。vtableの先頭はFUnknown。
         let table = unsafe { &**data.input_events.cast::<*const EventListVTable>() };
@@ -874,7 +876,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     };
     if channels.is_some() {
         // SAFETY: channelsがSomeのときは有効な出力バスが存在する。
-        unsafe { (*data.outputs).silence_flags = if nonzero { 0 } else { STEREO } };
+        unsafe { (*data.outputs).silence_flags = STEREO & !nonzero };
     }
     OK
 }
@@ -889,29 +891,29 @@ unsafe fn generate_samples(
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT],
-) -> bool {
+) -> u64 {
     // バッファの有無と精度は区間ごとに選び、サンプルループ内では分岐しない。
     let nonzero = match channels {
         Some(channels) if data.symbolic_sample_size == SAMPLE32 => {
             generate_output_samples(plugin, synth, changes, range.clone(), |offset, sample| {
-                let sample = sample as f32;
-                for channel in channels {
+                let sample = sample.map(|value| value as f32);
+                for (channel, sample) in channels.into_iter().zip(sample) {
                     // SAFETY: 呼び出し元で検証済み。左右が同じ領域でも順に書き込む。
                     unsafe { channel.cast::<f32>().add(offset).write(sample) };
                 }
-                sample != 0.0
+                u64::from(sample[0] != 0.0) | (u64::from(sample[1] != 0.0) << 1)
             })
         }
         Some(channels) => {
             generate_output_samples(plugin, synth, changes, range.clone(), |offset, sample| {
-                for channel in channels {
+                for (channel, sample) in channels.into_iter().zip(sample) {
                     // SAFETY: 呼び出し元で検証済み。排他的sliceは作らない。
                     unsafe { channel.cast::<f64>().add(offset).write(sample) };
                 }
-                sample != 0.0
+                u64::from(sample[0] != 0.0) | (u64::from(sample[1] != 0.0) << 1)
             })
         }
-        None => generate_output_samples(plugin, synth, changes, range.clone(), |_, _| false),
+        None => generate_output_samples(plugin, synth, changes, range.clone(), |_, _| 0),
     };
     // ノートと同位置のパラメーターを先に適用。0サンプルフラッシュもここを通る。
     if range.end < data.num_samples || data.num_samples == 0 {
@@ -920,15 +922,15 @@ unsafe fn generate_samples(
     nonzero
 }
 
-/// 変更キューのない区間では、20本のカーソル走査と設定比較をサンプルごとに行わない。
+/// 変更キューのない区間では、22本のカーソル走査と設定比較をサンプルごとに行わない。
 fn generate_output_samples(
     plugin: &Plugin,
     synth: &mut Synthesizer,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT],
     range: std::ops::Range<i32>,
-    mut write: impl FnMut(usize, f64) -> bool,
-) -> bool {
-    let mut nonzero = false;
+    mut write: impl FnMut(usize, [f64; 2]) -> u64,
+) -> u64 {
+    let mut nonzero = 0;
     if changes.iter().any(|change| change.automated) {
         for offset in range {
             apply_parameters(plugin, synth, changes, offset);
