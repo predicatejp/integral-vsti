@@ -22,7 +22,8 @@ use std::{
 /// ノブの表示名。ホスト公開名とオーバーレイはparameters::NAMESを使う。
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
-    "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan",
+    "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
+    "Waveform", "Tune", "Vol",
 ];
 
 struct EditorState {
@@ -172,7 +173,9 @@ impl Editor {
             egui::Stroke::new(2.0, egui::Color32::from_rgb(40, 90, 150)),
         );
         if drag.is_some() {
-            let value_label = if matches!(index, 6 | 8) {
+            let value_label = if parameters::is_volume(index) && value == f64::NEG_INFINITY {
+                "−∞ dB".to_owned()
+            } else if matches!(index, 6 | 8) {
                 format!("{value:.0}")
             } else {
                 format!("{value:.3} {}", parameters::unit(index))
@@ -300,7 +303,7 @@ impl Editor {
                         ui.horizontal(|ui| {
                             for &index in choices {
                                 ui.vertical(|ui| {
-                                    ui.label(NAMES[index]);
+                                    ui.label(KNOB_NAMES[index]);
                                     let names = parameters::choices(index);
                                     let mut choice =
                                         parameters::to_plain(index, selected[index]) as usize;
@@ -406,12 +409,25 @@ impl WindowHandler for Editor {
                         ui.vertical(|ui| {
                             self.group(
                                 ui,
-                                "Oscillator",
-                                &[0, 12],
-                                &[6, 7, 20],
+                                "Osc1",
+                                &[0],
+                                &[6, 7, 20, 22],
                                 egui::vec2(292.0, 162.0),
                                 &selected,
                             );
+                            for (title, wave, tune, volume) in
+                                [("Osc2", 23, 24, 25), ("Osc3", 26, 27, 28)]
+                            {
+                                ui.add_space(5.0);
+                                self.group(
+                                    ui,
+                                    title,
+                                    &[wave],
+                                    &[tune, volume],
+                                    egui::vec2(292.0, 0.0),
+                                    &selected,
+                                );
+                            }
                             ui.add_space(5.0);
                             self.group(
                                 ui,
@@ -444,7 +460,7 @@ impl WindowHandler for Editor {
                         self.group(
                             ui,
                             "Master",
-                            &[],
+                            &[12],
                             &[8, 13, 21],
                             egui::vec2(172.0, 162.0),
                             &selected,
@@ -597,7 +613,7 @@ mod tests {
     #[test]
     fn every_knob_tick_is_reachable_in_both_directions() {
         for index in 1..parameters::COUNT {
-            if matches!(index, 9 | 12) {
+            if !parameters::choices(index).is_empty() {
                 continue;
             }
             let max = parameters::max_tick(index);

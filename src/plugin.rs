@@ -485,6 +485,8 @@ unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *m
     let names = parameters::choices(i);
     let text = if !names.is_empty() {
         names[parameters::to_plain(i, value) as usize].to_owned()
+    } else if parameters::is_volume(i) && value == 0.0 {
+        "−∞".to_owned()
     } else if matches!(i, 6 | 8) {
         format!("{:.0}", parameters::to_plain(i, value))
     } else {
@@ -532,6 +534,8 @@ unsafe extern "system" fn parameter_value(
             .iter()
             .position(|&name| name == text)
             .map(|v| v as f64)
+    } else if parameters::is_volume(i) && matches!(text.trim(), "−∞" | "-∞" | "-inf") {
+        Some(f64::NEG_INFINITY)
     } else {
         text.trim().parse::<f64>().ok()
     };

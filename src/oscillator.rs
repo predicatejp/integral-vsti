@@ -3,7 +3,6 @@
 
 //! 発振器回路の定常入力と内部状態を分離した単一のオシレータ。
 
-use crate::envelope::{Envelope, EnvelopeParameters};
 use crate::random::Random;
 
 #[path = "oscillator_tables.rs"]
@@ -131,7 +130,7 @@ pub enum PhaseMode {
 }
 
 /// イベントではなく、サンプルごとに参照する発振器回路の定常入力。
-/// 周波数・振幅は目標値。現在の音量と時間はOscillatorStateが保持する。
+/// 音量AHDSRはVoiceが管理し、activeはその発音期間を示す。
 #[derive(Clone, Copy)]
 pub struct OscillatorInput {
     /// 生成する波形。変更しても内部の位相を初期化しない。
@@ -144,16 +143,12 @@ pub struct OscillatorInput {
     pub detune_cents: f64,
     /// 目標周波数（Hz）。有限の0以上の値。入力を変更しても位相は初期化しない。
     pub frequency_hz: f64,
-    /// 理想波形の目標実効値（0..=1）。ピーク値は波形に依存する。0でもgateがtrueなら位相は進む。
+    /// 理想波形の目標実効値（0..=1）。ピーク値は波形に依存する。0でもactiveがtrueなら位相は進む。
     pub amplitude: f64,
-    /// 発音を指示する定常ゲート。falseでreleaseへ移り、完了後に位相を止める。
-    pub gate: bool,
-    /// 音量の時間変化。sustainは目標実効値に対する倍率。
-    pub envelope: EnvelopeParameters,
-    /// Note Onごとに増える世代番号。同音高・ゲート開のままでも再attackを検出する。
+    /// 音量AHDSRの発音期間。release中もtrue、終了・停止後はfalse。
+    pub active: bool,
+    /// Note Onごとに増える世代番号。同音高の再トリガーでも位相モードを適用する。
     pub note_generation: u64,
-    /// 処理停止ごとに増える番号。次サンプルでreleaseを経ずに音量を消去する。
-    pub reset_generation: u64,
 }
 
 impl OscillatorInput {
@@ -176,7 +171,6 @@ impl OscillatorInput {
             & (0.0..=1.0).contains(&self.amplitude)
             & (1..=7).contains(&self.unison_voices)
             & (0.0..=100.0).contains(&self.detune_cents)
-            & self.envelope.is_valid()
     }
 }
 
@@ -190,12 +184,8 @@ pub struct OscillatorState {
     random: Random,
     /// ノイズ専用xoshiro256+の状態。各ユニゾンに連続する別の値を割り当てる。
     noise: Random,
-    /// 正規化値のAHDSR。入力の目標実効値をピークとして使用する。
-    envelope: Envelope,
     /// サンプル処理へ反映済みのNote On世代番号。
     note_generation: u64,
-    /// サンプル処理へ反映済みの即時停止番号。
-    reset_generation: u64,
     /// 周波数倍率・合成音量の計算に使った（ユニゾン数, Detune）。Noneは未計算。
     unison_input: Option<(u32, f64)>,
     /// 位相増分の計算に使った（基音Hz, サンプルレート）。
@@ -221,9 +211,7 @@ impl Oscillator {
                 phases: [0.0; 7],
                 random: Random::new(),
                 noise: Random::new(),
-                envelope: Envelope::new(),
                 note_generation: 0,
-                reset_generation: 0,
                 unison_input: None,
                 frequency_input: None,
                 frequency_ratios: [1.0; 7],
@@ -247,8 +235,7 @@ impl Oscillator {
         }
         // ノート境界と位相モードを反映して生成した後、次サンプルへ進める。
         // キャッシュを含むState全体のサンプルごとのコピーは行わない。
-        let reset = input.reset_generation != self.state.reset_generation;
-        if input.note_generation != self.state.note_generation && (input.gate || !reset) {
+        if input.note_generation != self.state.note_generation && input.active {
             match input.phase_mode {
                 PhaseMode::Keep => {}
                 PhaseMode::Zero => self.state.phases.fill(0.0),
@@ -260,22 +247,13 @@ impl Oscillator {
             }
         }
         self.state.note_generation = input.note_generation;
-        self.state.reset_generation = input.reset_generation;
-        let amplitude = self.state.envelope.generate_sample(
-            &input.envelope,
-            sample_rate,
-            input.gate,
-            input.note_generation,
-            input.reset_generation,
-            input.amplitude,
-        );
-        // 振幅0のattack中も位相を進め、release完了後は止める。
-        if !self.state.envelope.is_active() {
+        // activeはVoiceの共通AHDSRから渡す。無音のattack中も位相を進める。
+        if !input.active {
             return [0.0; 2];
         }
         self.refresh_frequency(input, sample_rate);
-        let sample = self.generate_waveform_sample(input, amplitude, gains);
-        self.update_sample(input, sample_rate);
+        let sample = self.generate_waveform_sample(input, input.amplitude, gains);
+        self.update_sample(input);
         sample
     }
 
@@ -338,7 +316,7 @@ impl Oscillator {
     }
 
     /// 発音中のサンプル生成後に、定常入力を用いて内部状態を1サンプル分進める。
-    fn update_sample(&mut self, input: &OscillatorInput, sample_rate: f64) {
+    fn update_sample(&mut self, input: &OscillatorInput) {
         // generate_sampleが発音中であることを確認してから呼ぶ。
         for (phase, increment) in self.state.phases[..input.rendered_voices()]
             .iter_mut()
@@ -348,16 +326,12 @@ impl Oscillator {
             let next = *phase + increment;
             *phase = next - f64::from((next >= 1.0) as u8);
         }
-        self.state
-            .envelope
-            .update_sample(&input.envelope, sample_rate, input.amplitude);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::envelope::DEFAULT_ENVELOPE;
 
     const NOISE_SEED: [u64; 4] = [
         0x1234_5678_9abc_def0,
@@ -367,12 +341,9 @@ mod tests {
     ];
 
     #[test]
-    fn noise_controls_preserve_sequence_and_stop_after_release() {
+    fn noise_controls_preserve_sequence_and_stop_when_inactive() {
         let mut input = test_input();
         input.waveform = Waveform::Noise;
-        input.envelope.attack_ms = 0.0;
-        input.envelope.decay_ms = 0.0;
-        input.envelope.release_ms = 1.0;
         let mut initial = sustained();
         initial.state.noise = Random::from_seed(NOISE_SEED);
         for n in 1..=7 {
@@ -421,7 +392,7 @@ mod tests {
         let mut oscillator = initial;
         let gains = panning_gains(1, 1.0, 0.0);
         oscillator.generate_sample(&input, 48000.0, &gains);
-        input.gate = false;
+        input.active = false;
         for _ in 0..49 {
             oscillator.generate_sample(&input, 48000.0, &gains);
         }
@@ -431,12 +402,11 @@ mod tests {
             [0.0; 2]
         );
         assert_eq!(oscillator.state.noise, noise);
-        input.gate = true;
+        input.active = true;
         input.note_generation += 1;
         oscillator.generate_sample(&input, 48000.0, &gains);
         assert_ne!(oscillator.state.noise, noise);
-        input.reset_generation += 1;
-        input.gate = false;
+        input.active = false;
         let noise = oscillator.state.noise;
         assert_eq!(
             oscillator.generate_sample(&input, 48000.0, &gains),
@@ -530,7 +500,6 @@ mod tests {
     fn stereo_panning_matches_equal_power_and_preserves_phase() {
         let mut input = test_input();
         input.frequency_hz = 440.0;
-        input.envelope.attack_ms = 0.0;
         let mut oscillator = Oscillator::new();
         for n in 1..=7 {
             for detune in [0.0, 25.0] {
@@ -638,8 +607,6 @@ mod tests {
         input.frequency_hz = 0.0; // 境界処理後の位相を進めずに観測する。
         input.unison_voices = 7;
         input.detune_cents = 25.0;
-        input.envelope.attack_ms = 0.0;
-        input.envelope.decay_ms = 0.0;
         let held = oscillator.state.phases;
         oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7]);
         assert_eq!(oscillator.state.phases, held);
@@ -672,8 +639,7 @@ mod tests {
         oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7]);
         assert_ne!(oscillator.state.phases, phases);
         // Note Offと処理停止では、新しいランダム位相を引かない。
-        input.gate = false;
-        input.reset_generation += 1;
+        input.active = false;
         let phases = oscillator.state.phases;
         let random = oscillator.state.random;
         assert_eq!(
@@ -692,17 +658,12 @@ mod tests {
             detune_cents: 0.0,
             frequency_hz: 1.0,
             amplitude: 0.5,
-            gate: true,
-            envelope: EnvelopeParameters {
-                sustain: 1.0,
-                ..DEFAULT_ENVELOPE
-            },
+            active: true,
             note_generation: 1,
-            reset_generation: 0,
         }
     }
 
-    // 波形自体のテストではattack/decayが終了した状態から始める。
+    // 位相0のまま、最初のNote On世代を反映してから検証する。
     fn sustained() -> Oscillator {
         let mut oscillator = Oscillator::new();
         let input = OscillatorInput {
@@ -714,53 +675,37 @@ mod tests {
     }
 
     #[test]
-    fn inactive_samples_preserve_phase_but_new_notes_and_silent_attack_advance() {
+    fn inactive_samples_preserve_phase_and_silent_active_samples_advance() {
         let mut oscillator = Oscillator::new();
         let mut input = test_input();
         input.frequency_hz = 100.0;
-        input.gate = false;
-        input.note_generation = 0;
+        input.active = false;
         for _ in 0..16 {
             assert_eq!(
-                oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7])[0],
-                0.0
+                oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7]),
+                [0.0; 2]
             );
         }
-        assert!(!oscillator.state.envelope.is_active());
-        input.gate = true;
+        assert_eq!(oscillator.state.phases, [0.0; 7]);
+        input.active = true;
         input.note_generation += 1;
+        input.amplitude = 0.0;
         assert_eq!(
-            oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7])[0],
-            0.0
+            oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7]),
+            [0.0; 2]
         );
-        assert!(oscillator.state.envelope.is_active());
         assert_eq!(oscillator.state.phases[0], 0.1);
+        input.amplitude = 0.5;
         assert!(oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7])[0] > 0.0);
-        input.gate = false;
-        input.envelope.release_ms = 0.0;
-        assert_eq!(
-            oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7])[0],
-            0.0
-        );
-        let phase = oscillator.state.phases;
+        input.active = false;
+        let phases = oscillator.state.phases;
         for _ in 0..16 {
             assert_eq!(
-                oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7])[0],
-                0.0
+                oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7]),
+                [0.0; 2]
             );
         }
-        assert_eq!(oscillator.state.phases, phase);
-        input.gate = true;
-        input.note_generation += 1;
-        oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7]);
-        assert_ne!(oscillator.state.phases, phase);
-        input.gate = false;
-        input.reset_generation += 1;
-        assert_eq!(
-            oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7])[0],
-            0.0
-        );
-        assert_eq!(oscillator.state.reset_generation, input.reset_generation);
+        assert_eq!(oscillator.state.phases, phases);
     }
 
     #[test]
@@ -872,7 +817,7 @@ mod tests {
                 waveform,
                 frequency_hz: 1.0,
                 amplitude: 0.5,
-                gate: true,
+                active: true,
                 ..test_input()
             };
             for _ in 0..2 {
@@ -916,7 +861,7 @@ mod tests {
             waveform: Waveform::Sine,
             frequency_hz: 1.0,
             amplitude: 0.5,
-            gate: true,
+            active: true,
             ..test_input()
         };
         assert_eq!(state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0], 0.0);
@@ -927,15 +872,12 @@ mod tests {
         );
         input.waveform = Waveform::Square;
         assert_eq!(state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0], -0.5);
-        input.gate = false;
-        input.reset_generation += 1;
+        input.active = false;
         input.waveform = Waveform::Sawtooth;
         assert_eq!(state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0], 0.0);
-        input.gate = true;
-        // 波形/入力だけの検証は、位相を保持して即時attackで復帰させる。
+        input.active = true;
+        // 位相を保持して再び発音期間へ入る。
         input.note_generation += 1;
-        input.envelope.attack_ms = 0.0;
-        input.envelope.decay_ms = 0.0;
         assert!(
             (state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0] - 0.433_012_701_892_219_3).abs()
                 < 1e-14
@@ -949,7 +891,7 @@ mod tests {
             waveform: Waveform::Sine,
             frequency_hz: 1.0,
             amplitude: 0.5 / std::f64::consts::SQRT_2,
-            gate: true,
+            active: true,
             ..test_input()
         };
         assert_eq!(state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0], 0.0); // 更新前の位相0で生成
@@ -958,18 +900,15 @@ mod tests {
         input.frequency_hz = 2.0;
         input.amplitude = 0.25 / std::f64::consts::SQRT_2;
         assert!(state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0].abs() < 1e-14);
-        input.gate = false;
-        input.reset_generation += 1;
+        input.active = false;
         for _ in 0..7 {
             assert_eq!(state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0], 0.0);
         }
-        input.gate = true;
-        // 波形/入力だけの検証は、位相を保持して即時attackで復帰させる。
+        input.active = true;
+        // 位相を保持して再び発音期間へ入る。
         input.note_generation += 1;
-        input.envelope.attack_ms = 0.0;
-        input.envelope.decay_ms = 0.0;
         assert!((state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0] + 0.25).abs() < 1e-14);
-        // 振幅0はゲート閉とは異なり、状態更新を続ける。
+        // 振幅0でもactiveなら状態更新を続ける。
         input.amplitude = 0.0;
         assert_eq!(state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0], 0.0);
         input.amplitude = 0.5 / std::f64::consts::SQRT_2;
@@ -1006,15 +945,13 @@ mod tests {
                 }
             }
             let held_phases = state.state.phases;
-            input.gate = false;
-            input.reset_generation += 1;
+            input.active = false;
             state.generate_sample(&input, 48000.0, &[[1.0; 2]; 7]);
             assert_eq!(state.state.phases, held_phases);
             // 0 centに切り替えると、過去に異なる位相へ進んでいても先頭だけで生成。
             input.detune_cents = 0.0;
-            input.gate = true;
+            input.active = true;
             input.note_generation += 1;
-            input.envelope.attack_ms = 0.0;
             let expected = 0.5 * std::f64::consts::SQRT_2 * sine_sample(held_phases[0]);
             assert!(
                 (state.generate_sample(&input, 48000.0, &[[1.0; 2]; 7])[0] - expected).abs()
@@ -1066,7 +1003,7 @@ mod tests {
             waveform: Waveform::Sine,
             frequency_hz: 1.0,
             amplitude: 0.5 / std::f64::consts::SQRT_2,
-            gate: true,
+            active: true,
             ..test_input()
         };
         state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]); // 位相1/4を保持しておく。
@@ -1117,7 +1054,7 @@ mod tests {
             waveform: Waveform::Sine,
             frequency_hz: f64::MAX,
             amplitude: 1.0,
-            gate: true,
+            active: true,
             ..test_input()
         };
         for rate in [f64::MIN_POSITIVE, 44100.0, 96000.0, f64::MAX] {

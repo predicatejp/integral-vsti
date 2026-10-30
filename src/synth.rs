@@ -20,6 +20,8 @@ pub struct SynthesizerState {
     master_gain: f64,
     /// 全Voice共通の定位係数。実発音数・有効なWidth・Panの変更時だけ更新する。
     panning_gains: PanningGains,
+    /// ユニゾンを使わないOsc2/3の共通Pan係数。
+    mono_gains: [f64; 2],
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
@@ -39,6 +41,7 @@ impl Synthesizer {
                 parameters: parameters::defaults(),
                 master_gain: 1.0,
                 panning_gains: [[1.0; 2]; 7],
+                mono_gains: [1.0; 2],
             },
         }
     }
@@ -94,7 +97,29 @@ impl Synthesizer {
                 voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
             }
         }
-        if values[20..] != previous[20..]
+        if values[21] != previous[21] {
+            self.state.mono_gains =
+                panning_gains(1, 0.0, parameters::to_plain(21, values[21]) / 100.0)[0];
+        }
+        for (osc, volume) in parameters::OSCILLATOR_VOLUMES.into_iter().enumerate() {
+            let wave = [0, 23, 26][osc];
+            let tune = [None, Some(24), Some(27)][osc];
+            if values[volume] != previous[volume]
+                || values[wave] != previous[wave]
+                || tune.is_some_and(|i| values[i] != previous[i])
+            {
+                let waveform =
+                    parameters::from_normalized(values[wave]).expect("validated waveform");
+                let ratio = tune.map_or(1.0, |i| {
+                    2.0_f64.powf(parameters::to_plain(i, values[i]) / 1200.0)
+                });
+                let gain = 10.0_f64.powf(parameters::to_plain(volume, values[volume]) / 20.0);
+                for voice in &mut self.state.voices {
+                    voice.set_oscillator(osc, waveform, ratio, gain);
+                }
+            }
+        }
+        if values[20..22] != previous[20..22]
             || values[6] != previous[6]
             || (values[7] == 0.0) != (previous[7] == 0.0)
         {
@@ -155,7 +180,11 @@ impl Synthesizer {
     pub fn generate_sample(&mut self) -> [f64; 2] {
         let mut sum = [0.0; 2];
         for voice in &mut self.state.voices[..self.state.polyphony] {
-            let sample = voice.generate_sample(self.state.sample_rate, &self.state.panning_gains);
+            let sample = voice.generate_sample(
+                self.state.sample_rate,
+                &self.state.panning_gains,
+                &self.state.mono_gains,
+            );
             sum[0] += sample[0];
             sum[1] += sample[1];
         }
@@ -251,7 +280,11 @@ mod tests {
                     synth.set_sample_rate(48000.0);
                     let mut values = parameters::defaults();
                     // この比較は独立Voiceの周期波を照合する。Noiseは別の統計検証で扱う。
-                    values[index] = if index == 0 { value * 0.75 } else { value };
+                    values[index] = if parameters::is_waveform(index) {
+                        value * 0.75
+                    } else {
+                        value
+                    };
                     synth.set_parameters(values);
                     // 設定を配送した後に使用枠を増やす。
                     values[8] = parameters::to_normalized(8, f64::from(count));
@@ -273,13 +306,31 @@ mod tests {
                         parameters::envelope(&values, 14),
                         parameters::to_plain(19, values[19]),
                     );
+                    for (osc, volume) in parameters::OSCILLATOR_VOLUMES.into_iter().enumerate() {
+                        let wave = [0, 23, 26][osc];
+                        let ratio = if osc == 0 {
+                            1.0
+                        } else {
+                            2.0_f64.powf(parameters::to_plain(wave + 1, values[wave + 1]) / 1200.0)
+                        };
+                        reference.set_oscillator(
+                            osc,
+                            parameters::from_normalized(values[wave]).unwrap(),
+                            ratio,
+                            10.0_f64.powf(parameters::to_plain(volume, values[volume]) / 20.0),
+                        );
+                    }
                     reference.note_on(note(0, 0, 69), 0.0, 1.0);
                     for id in 0..count {
                         synth.note_on(note(id, 0, 69), 0.0, 1.0);
                     }
                     let gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
                     for _ in 0..96 {
-                        let sample = reference.generate_sample(48000.0, &synth.state.panning_gains);
+                        let sample = reference.generate_sample(
+                            48000.0,
+                            &synth.state.panning_gains,
+                            &synth.state.mono_gains,
+                        );
                         let expected = sample.map(|s| (0..count).map(|_| s).sum::<f64>() * gain);
                         assert_eq!(synth.generate_sample(), expected, "parameter {index}");
                     }
@@ -376,7 +427,7 @@ mod tests {
             assert!((synth.generate_sample()[0] - 0.5 * count as f64).abs() < 1e-12);
             assert!(synth.note_on(note(100, 0, 100), 0.0, 0.5));
             synth.note_off(note(0, 0, 60)); // 上書き済みのノートでは新しい音を消さない。
-            assert!(synth.state.voices[0].state.oscillator_input.gate);
+            assert!(synth.state.voices[0].state.gate);
             assert!((synth.generate_sample()[0] - (0.5 * count as f64 - 0.25)).abs() < 1e-12);
             let next = synth.state.next_oscillator_id;
             synth.note_off(note(100, 0, 100));
@@ -510,23 +561,11 @@ mod tests {
             for &(rate, samples) in measurements {
                 for velocity in [0.0, 0.25, 0.5, 1.0] {
                     let mut synth = unfiltered();
-                    synth.state.voices[0].state.oscillator_input.waveform = waveform;
+                    synth.state.voices[0].state.oscillator_inputs[0].waveform = waveform;
                     // 定常RMSの検証なので、立ち上がり・リリースだけ許容最短にする。
-                    synth.state.voices[0]
-                        .state
-                        .oscillator_input
-                        .envelope
-                        .attack_ms = 1.0;
-                    synth.state.voices[0]
-                        .state
-                        .oscillator_input
-                        .envelope
-                        .decay_ms = 1.0;
-                    synth.state.voices[0]
-                        .state
-                        .oscillator_input
-                        .envelope
-                        .release_ms = 1.0;
+                    synth.state.voices[0].state.envelope_parameters.attack_ms = 1.0;
+                    synth.state.voices[0].state.envelope_parameters.decay_ms = 1.0;
+                    synth.state.voices[0].state.envelope_parameters.release_ms = 1.0;
                     synth.set_sample_rate(f64::from(rate));
                     assert!(synth.note_on(note(1, 0, 69), 0.0, velocity));
                     // attack/decayが終わったsustain区間のRMSを測る。
@@ -561,7 +600,7 @@ mod tests {
     fn retrigger_release_and_stop_preserve_amplitude_and_phase() {
         let mut synth = unfiltered();
         synth.set_sample_rate(1000.0); // 1サンプル=1ms。
-        synth.state.voices[0].state.oscillator_input.waveform = Waveform::Square;
+        synth.state.voices[0].state.oscillator_inputs[0].waveform = Waveform::Square;
         synth.note_on(note(1, 0, 69), 0.0, 1.0);
         for i in 0..5 {
             assert!((synth.generate_sample()[0].abs() - 0.05 * f64::from(i)).abs() < 1e-12);
@@ -598,7 +637,7 @@ mod tests {
     fn missing_note_ids_match_channel_and_pitch_and_invalid_notes_are_ignored() {
         let mut synth = unfiltered();
         synth.set_sample_rate(1000.0);
-        synth.state.voices[0].state.oscillator_input.waveform = Waveform::Square;
+        synth.state.voices[0].state.oscillator_inputs[0].waveform = Waveform::Square;
         synth.note_on(note(-1, 2, 69), 0.0, 1.0);
         for _ in 0..5 {
             synth.generate_sample();

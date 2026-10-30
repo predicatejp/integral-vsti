@@ -60,7 +60,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(units->getUnitByBus(kEvent, kInput, 0, 16, id) == kResultFalse);
     assert(units->setUnitProgramData(0, 0, nullptr) == kNotImplemented);
     ParameterInfo info {};
-    assert(controller->getParameterInfo(22, info) == kResultOk && info.id == programId);
+    assert(controller->getParameterInfo(29, info) == kResultOk && info.id == programId);
     assert(info.unitId == unit.id && info.stepCount == list.programCount - 1);
     assert(info.flags == (ParameterInfo::kIsList | ParameterInfo::kIsProgramChange));
     assert(controller->getParamStringByValue(programId, 1.0, name) == kResultOk && std::u16string(name) == u"Sine");
@@ -71,15 +71,16 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(controller->setParamNormalized(programId, std::nan("")) == kInvalidArgument);
     assert(controller->setParamNormalized(programId, -1) == kInvalidArgument);
 
-    const std::array<double, 22> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0};
+    const std::array<double, 29> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity()};
     ProgramHandler handler; handler.controller = controller;
     assert(controller->setComponentHandler(&handler) == kResultOk);
     assert(controller->setParamNormalized(waveformId, 1.0) == kResultOk);
     assert(controller->setParamNormalized(programId, 0.0) == kResultOk);
     assert(handler.calls == 1 && handler.refs == 1);
-    for (int32 i = 0; i < 22; ++i) {
+    for (int32 i = 0; i < 29; ++i) {
         assert(controller->getParameterInfo(i, info) == kResultOk);
-        assert(std::abs(controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id)) - sine[i]) < 1e-10);
+        const auto plain = controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id));
+        assert(plain == sine[i] || std::abs(plain - sine[i]) < 1e-10);
     }
     // 停止中の0サンプルで選択し、実際の音色設定を保存する。
     Points program; program.id = programId; program.values = {{0, 0.0}};
@@ -89,9 +90,10 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     StateStream saved;
     assert(component->getState(&saved) == kResultOk);
     assert(controller->setComponentState(&saved) == kResultOk);
-    for (int32 i = 0; i < 22; ++i) {
+    for (int32 i = 0; i < 29; ++i) {
         assert(controller->getParameterInfo(i, info) == kResultOk);
-        assert(std::abs(controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id)) - sine[i]) < 1e-10);
+        const auto plain = controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id));
+        assert(plain == sine[i] || std::abs(plain - sine[i]) < 1e-10);
     }
 
     ProcessSetup setup {kRealtime, precision, 33, 48000.0};
@@ -127,14 +129,14 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     // Programの切替後はプリセット値から次のVolume点まで補間する。
     Points phase, volume;
     phase.id = 0x50484153; phase.values = {{0, .5}}; // Zero
-    volume.id = 0x4d564f4c; volume.values = {{8, .6}}; // -12 dB
+    volume.id = 0x4d564f4c; volume.values = {{8, 361.0/601}}; // -12 dB
     wave.values = {{0, 0.0}}; program.values = {{4, 0.0}};
     changes.queues = {&program, &wave, &phase, &volume};
     data.numSamples = 9; events.values = {note(true, 0, 3)};
     assert(processor->process(data) == kResultOk);
     for (int i = 0; i < 9; ++i) {
-        const auto norm = i < 4 ? .8 - .2 * (i + 1) / 9 : .8 - .2 * (i - 4) / 4;
-        const auto gain = std::pow(10.0, (-48 + 60 * norm) / 20);
+        const auto db = i < 4 ? -12.0 * (i + 1) / 9 : -12.0 * (i - 4) / 4;
+        const auto gain = std::pow(10.0, db / 20);
         const auto expected = .5 * std::sqrt(2.0) * std::sin(2 * std::acos(-1.0) * i * 440 / 48000.0) * gain;
         assert(std::abs(left[i] - expected) < 3e-7 && left[i] == right[i]);
     }

@@ -70,10 +70,8 @@ fn input(waveform: Waveform, unison: u32, detune: f64) -> OscillatorInput {
         detune_cents: detune,
         frequency_hz: 440.0,
         amplitude: 0.5,
-        gate: true,
-        envelope: DEFAULT_ENVELOPE,
+        active: true,
         note_generation: 1,
-        reset_generation: 0,
     }
 }
 
@@ -175,7 +173,7 @@ fn main() {
     );
     let mut idle = Oscillator::new();
     let mut idle_input = input(Waveform::Sine, 7, 30.0);
-    idle_input.gate = false;
+    idle_input.active = false;
     idle_input.note_generation = 0;
     measure("oscillator/idle/u7", "sample", selection, |_| {
         idle.generate_sample(black_box(&idle_input), black_box(rate), &[[1.0; 2]; 7])
@@ -255,13 +253,13 @@ fn main() {
             voice.set_filter(kind, 1200.0, p.resonance_q);
             voice.note_on(note(0), 0.0, 1.0);
             for _ in 0..rate as usize {
-                voice.generate_sample(rate, &[[1.0; 2]; 7]);
+                voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
             }
             measure(
                 &format!("voice/u{unison}/{kind:?}"),
                 "sample",
                 selection,
-                |_| black_box(&mut voice).generate_sample(black_box(rate), &[[1.0; 2]; 7]),
+                |_| black_box(&mut voice).generate_sample(black_box(rate), &[[1.0; 2]; 7], &[1.0; 2]),
             );
         }
     }
