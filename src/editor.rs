@@ -26,6 +26,33 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "Tune", "Vol",
 ];
 
+/// グループの寸法とノブの並ぶ方向。
+struct GroupLayout {
+    /// 枠内の最小サイズ。
+    size: egui::Vec2,
+    /// Masterではノブを上から下へ並べる。
+    vertical_knobs: bool,
+}
+
+/// 全パラメーターで共通のオーバーレイ寸法（物理px）。
+const OVERLAY_SIZE: egui::Vec2 = egui::vec2(224.0, 60.0);
+
+fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
+    let min = egui::pos2(
+        knob.center().x - OVERLAY_SIZE.x / 2.0,
+        knob.top() - 6.0 - OVERLAY_SIZE.y,
+    );
+    egui::Rect::from_min_size(
+        egui::pos2(
+            min.x
+                .clamp(viewport.left(), viewport.right() - OVERLAY_SIZE.x),
+            min.y
+                .clamp(viewport.top(), viewport.bottom() - OVERLAY_SIZE.y),
+        ),
+        OVERLAY_SIZE,
+    )
+}
+
 struct EditorState {
     /// 現在操作しているノブ。終了時にtakeして二重終了を防ぐ。
     drag: Option<DragState>,
@@ -193,19 +220,13 @@ impl Editor {
             );
             layout.halign = egui::Align::Center;
             let text = painter.layout_job(layout);
-            let bounds = egui::Rect::from_min_size(
-                egui::pos2(
-                    center.x - text.size().x / 2.0,
-                    rect.top() - 6.0 - text.size().y,
-                ),
-                text.size(),
+            let bounds = overlay_rect(rect, ui.ctx().viewport_rect());
+            painter.rect_filled(bounds, 3.0, egui::Color32::from_rgb(255, 250, 220));
+            painter.galley(
+                egui::pos2(bounds.center().x, bounds.center().y - text.size().y / 2.0),
+                text,
+                egui::Color32::BLACK,
             );
-            painter.rect_filled(
-                bounds.expand(4.0),
-                3.0,
-                egui::Color32::from_rgb(255, 250, 220),
-            );
-            painter.galley(bounds.center_top(), text, egui::Color32::BLACK);
         }
     }
 
@@ -281,48 +302,68 @@ impl Editor {
         }
     }
 
+    fn choice(&self, ui: &mut egui::Ui, index: usize, selected: f64) {
+        let names = parameters::choices(index);
+        let mut choice = parameters::to_plain(index, selected) as usize;
+        if egui::ComboBox::from_id_salt(index)
+            .width(130.0)
+            .show_index(ui, &mut choice, names.len(), |i| names[i])
+            .changed()
+        {
+            self.edits.push(Edit::Set(
+                index,
+                parameters::to_normalized(index, choice as f64),
+            ));
+        }
+    }
+
     fn group(
         &self,
         ui: &mut egui::Ui,
         title: &str,
         choices: &[usize],
         knobs: &[usize],
-        size: egui::Vec2,
+        layout: GroupLayout,
         selected: &[f64; parameters::COUNT],
     ) {
         egui::Frame::group(ui.style())
             .inner_margin(8)
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    let knob_width = knobs.len() as f32 * 52.0 + (knobs.len() - 1) as f32 * 8.0;
+                    let knob_count = if layout.vertical_knobs {
+                        1
+                    } else {
+                        knobs.len()
+                    };
+                    let knob_width = knob_count as f32 * 60.0 - 8.0;
                     let choice_width = choices.len() as f32 * 138.0 - 8.0;
-                    ui.set_min_size(size);
-                    ui.set_width(size.x.max(knob_width).max(choice_width));
-                    ui.heading(title);
-                    if !choices.is_empty() {
+                    ui.set_min_size(layout.size);
+                    ui.set_width(layout.size.x.max(knob_width).max(choice_width));
+                    if choices.len() == 1 && parameters::is_waveform(choices[0]) {
                         ui.horizontal(|ui| {
-                            for &index in choices {
-                                ui.vertical(|ui| {
-                                    ui.label(KNOB_NAMES[index]);
-                                    let names = parameters::choices(index);
-                                    let mut choice =
-                                        parameters::to_plain(index, selected[index]) as usize;
-                                    if egui::ComboBox::from_id_salt(index)
-                                        .width(130.0)
-                                        .show_index(ui, &mut choice, names.len(), |i| names[i])
-                                        .changed()
-                                    {
-                                        self.edits.push(Edit::Set(
-                                            index,
-                                            parameters::to_normalized(index, choice as f64),
-                                        ));
-                                    }
-                                });
-                            }
+                            ui.heading(title);
+                            self.choice(ui, choices[0], selected[choices[0]]);
                         });
+                    } else {
+                        ui.heading(title);
+                        if !choices.is_empty() {
+                            ui.horizontal(|ui| {
+                                for &index in choices {
+                                    ui.vertical(|ui| {
+                                        ui.label(KNOB_NAMES[index]);
+                                        self.choice(ui, index, selected[index]);
+                                    });
+                                }
+                            });
+                        }
                     }
                     ui.add_space(6.0);
-                    ui.horizontal(|ui| {
+                    let knob_layout = if layout.vertical_knobs {
+                        egui::Layout::top_down(egui::Align::Center)
+                    } else {
+                        egui::Layout::left_to_right(egui::Align::Min)
+                    };
+                    ui.with_layout(knob_layout, |ui| {
                         for &index in knobs {
                             ui.allocate_ui_with_layout(
                                 egui::vec2(52.0, 74.0),
@@ -412,7 +453,10 @@ impl WindowHandler for Editor {
                                 "Osc1",
                                 &[0],
                                 &[6, 7, 20, 22],
-                                egui::vec2(292.0, 162.0),
+                                GroupLayout {
+                                    size: egui::vec2(292.0, 0.0),
+                                    vertical_knobs: false,
+                                },
                                 &selected,
                             );
                             for (title, wave, tune, volume) in
@@ -424,7 +468,10 @@ impl WindowHandler for Editor {
                                     title,
                                     &[wave],
                                     &[tune, volume],
-                                    egui::vec2(292.0, 0.0),
+                                    GroupLayout {
+                                        size: egui::vec2(292.0, 0.0),
+                                        vertical_knobs: false,
+                                    },
                                     &selected,
                                 );
                             }
@@ -434,7 +481,10 @@ impl WindowHandler for Editor {
                                 "Amplitude envelope",
                                 &[],
                                 &[1, 2, 3, 4, 5],
-                                egui::vec2(292.0, 0.0),
+                                GroupLayout {
+                                    size: egui::vec2(292.0, 0.0),
+                                    vertical_knobs: false,
+                                },
                                 &selected,
                             );
                         });
@@ -444,7 +494,10 @@ impl WindowHandler for Editor {
                                 "Filter",
                                 &[9],
                                 &[10, 11],
-                                egui::vec2(352.0, 162.0),
+                                GroupLayout {
+                                    size: egui::vec2(352.0, 162.0),
+                                    vertical_knobs: false,
+                                },
                                 &selected,
                             );
                             ui.add_space(5.0);
@@ -453,7 +506,10 @@ impl WindowHandler for Editor {
                                 "Cutoff envelope",
                                 &[],
                                 &[14, 15, 16, 17, 18, 19],
-                                egui::vec2(352.0, 0.0),
+                                GroupLayout {
+                                    size: egui::vec2(352.0, 0.0),
+                                    vertical_knobs: false,
+                                },
                                 &selected,
                             );
                         });
@@ -462,7 +518,10 @@ impl WindowHandler for Editor {
                             "Master",
                             &[12],
                             &[8, 13, 21],
-                            egui::vec2(172.0, 162.0),
+                            GroupLayout {
+                                size: egui::vec2(172.0, 0.0),
+                                vertical_knobs: true,
+                            },
                             &selected,
                         );
                     });
@@ -610,6 +669,25 @@ impl Drop for Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn overlay_stays_inside_viewport_at_every_edge() {
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1024.0, 768.0));
+        for x in [0.0, 43.0, 512.0, 1024.0] {
+            for y in [0.0, 114.0, 384.0, 768.0] {
+                let knob = egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(50.0, 50.0));
+                let bounds = overlay_rect(knob, viewport);
+                assert_eq!(bounds.size(), egui::vec2(224.0, 60.0));
+                assert!(viewport.contains_rect(bounds));
+                if (112.0..=912.0).contains(&x) {
+                    assert_eq!(bounds.center().x, x);
+                }
+                if y >= 91.0 {
+                    assert_eq!(bounds.bottom(), knob.top() - 6.0);
+                }
+            }
+        }
+    }
+
     #[test]
     fn every_knob_tick_is_reachable_in_both_directions() {
         for index in 1..parameters::COUNT {

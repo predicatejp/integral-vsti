@@ -359,9 +359,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     };
     // グループ内のノブ中心と選択リスト。画面上の実入力で全設定を検証する。
     const std::array<std::pair<int, int>, 29> controls {{
-        {82, 119}, {43, 681}, {103, 681}, {163, 681}, {223, 681}, {283, 681},
-        {43, 166}, {103, 166}, {739, 166}, {400, 119}, {361, 166}, {421, 166},
-        {780, 119}, {799, 166}, {361, 303}, {421, 303}, {481, 303}, {541, 303}, {601, 303}, {661, 303}, {163, 166}, {859, 166}, {223, 166}, {82, 308}, {43, 355}, {103, 355}, {82, 497}, {43, 544}, {103, 544}
+        {140, 67}, {43, 525}, {103, 525}, {163, 525}, {223, 525}, {283, 525},
+        {43, 114}, {103, 114}, {799, 166}, {400, 119}, {361, 166}, {421, 166},
+        {780, 119}, {799, 243}, {361, 303}, {421, 303}, {481, 303}, {541, 303},
+        {601, 303}, {661, 303}, {163, 114}, {799, 320}, {223, 114},
+        {140, 204}, {43, 251}, {103, 251}, {140, 341}, {43, 388}, {103, 388}
     }};
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
@@ -414,6 +416,20 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
             assert(handler.sequence == (std::vector<int>{0}));
             assert(!parent.cursorVisible());
+            // 全ノブで224×60 pxの同じ枠が画面内に描画される。
+            const int overlayX = std::clamp(x - 112, 0, 800);
+            const int overlayY = std::clamp(y - 91, 0, 708);
+#ifdef _WIN32
+            const uint32 overlayColor = RGB(255, 250, 220);
+#else
+            const uint32 overlayColor = 0xfffadc;
+#endif
+            waitFor([&] {
+                return parent.pixel(overlayX + 4, overlayY + 4) == overlayColor &&
+                       parent.pixel(overlayX + 219, overlayY + 4) == overlayColor &&
+                       parent.pixel(overlayX + 4, overlayY + 55) == overlayColor &&
+                       parent.pixel(overlayX + 219, overlayY + 55) == overlayColor;
+            }, "fixed overlay bounds");
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
 #endif
