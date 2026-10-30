@@ -10,7 +10,17 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 22;
+pub const COUNT: usize = 29;
+/// Osc1・Osc2・Osc3のVolume設定位置。
+pub const OSCILLATOR_VOLUMES: [usize; 3] = [22, 25, 28];
+
+pub fn is_volume(index: usize) -> bool {
+    matches!(index, 13 | 22 | 25 | 28)
+}
+
+pub fn is_waveform(index: usize) -> bool {
+    matches!(index, 0 | 23 | 26)
+}
 /// 音色設定と別に公開するプログラム選択ID（PROG）。
 pub const PROGRAM_ID: u32 = 0x5052_4f47;
 /// 変更キュー配列では音色設定の末尾にProgramを置く。保存する値には含めない。
@@ -21,12 +31,34 @@ pub const PROGRAM_NAME: &str = "Sine";
 pub fn sine_preset() -> [f64; COUNT] {
     let plain = [
         0.0, // Sine
-        0.0, 0.0, 0.0, 1.0, 0.0, // 音量AHDSR: ノートで即時オン・オフ
-        1.0, 0.0, 1.0, // Unison=1, Detune=0, Polyphony=1
-        0.0, 4800.0, 1.0, // Filter=None, Cutoff=4800 cent, Q=1
-        0.0, 0.0, // Phase=Keep, Volume=0 dB
-        0.0, 0.0, 0.0, 1.0, 0.0, // Cutoff AHDSR
-        0.0, 0.0, 0.0, // Amount=0, Width=0, Pan=中央
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0, // 音量AHDSR: ノートで即時オン・オフ
+        1.0,
+        0.0,
+        1.0, // Unison=1, Detune=0, Polyphony=1
+        0.0,
+        4800.0,
+        1.0, // Filter=None, Cutoff=4800 cent, Q=1
+        0.0,
+        0.0, // Phase=Keep, Volume=0 dB
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0, // Cutoff AHDSR
+        0.0,
+        0.0,
+        0.0, // Amount=0, Width=0, Pan=中央
+        0.0, // Osc1 Volume
+        0.0,
+        0.0,
+        f64::NEG_INFINITY, // Osc2: Sine, Tune=0, mute
+        0.0,
+        0.0,
+        f64::NEG_INFINITY, // Osc3: Sine, Tune=0, mute
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -88,9 +120,16 @@ pub const IDS: [u32; COUNT] = [
     0x43414d54, // CAMT
     0x57494454, // WIDT
     0x4d50414e, // MPAN
+    0x4f31564c, // O1VL
+    0x4f325746, // O2WF
+    0x4f32544e, // O2TN
+    0x4f32564c, // O2VL
+    0x4f335746, // O3WF
+    0x4f33544e, // O3TN
+    0x4f33564c, // O3VL
 ];
 pub const NAMES: [&str; COUNT] = [
-    "Waveform",
+    "Osc1 Waveform",
     "Attack",
     "Hold",
     "Decay",
@@ -112,11 +151,18 @@ pub const NAMES: [&str; COUNT] = [
     "Cutoff Amount",
     "Width",
     "Pan",
+    "Osc1 Volume",
+    "Osc2 Waveform",
+    "Osc2 Tune",
+    "Osc2 Volume",
+    "Osc3 Waveform",
+    "Osc3 Tune",
+    "Osc3 Volume",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
     match index {
-        0 => &WAVEFORM_NAMES,
+        0 | 23 | 26 => &WAVEFORM_NAMES,
         9 => &FILTER_NAMES,
         12 => &PHASE_NAMES,
         _ => &[],
@@ -134,7 +180,8 @@ pub fn max_tick(index: usize) -> u32 {
             19 => 960,
             21 => 200,
             10 => 1200,
-            13 => 600,
+            13 | 22 | 25 | 28 => 601,
+            24 | 27 => 4800,
             11 => 950,
             _ => 100,
         }
@@ -157,9 +204,9 @@ pub fn unit(index: usize) -> &'static str {
         "ms"
     } else {
         match index {
-            13 => "dB",
+            13 | 22 | 25 | 28 => "dB",
             20 | 21 => "%",
-            7 | 10 | 19 => "cent",
+            7 | 10 | 19 | 24 | 27 => "cent",
             _ => "",
         }
     }
@@ -177,11 +224,17 @@ pub fn is_time(index: usize) -> bool {
 }
 /// 変更点まで直前の値を保持するパラメーター。Cutoffは連続値だが補間しない。
 pub fn holds_between_points(index: usize) -> bool {
-    matches!(index, 0 | 6 | 8 | 9 | 10 | 12 | PROGRAM_INDEX)
+    matches!(index, 0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | PROGRAM_INDEX)
 }
-/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=600、cutoff amount 0..=960、pan 0..=200。
+/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=601（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=4800。
 pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
-    if is_time(index) {
+    if is_volume(index) {
+        if tick == 0 {
+            f64::NEG_INFINITY
+        } else {
+            -48.0 + f64::from(tick - 1) / 10.0
+        }
+    } else if is_time(index) {
         if tick == 0 {
             0.0
         } else {
@@ -194,14 +247,21 @@ pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
             21 => f64::from(tick) - 100.0,
             10 => f64::from(tick) * 10.0 - 2400.0,
             11 => 0.5 + f64::from(tick) / 100.0,
-            13 => f64::from(tick) / 10.0 - 48.0,
+            24 | 27 => f64::from(tick) - 2400.0,
             19 => f64::from(tick) * 10.0 - 4800.0,
             _ => f64::from(tick) / 100.0,
         }
     }
 }
 pub fn to_plain(index: usize, normalized: f64) -> f64 {
-    if index == 0 {
+    if is_volume(index) {
+        return if normalized == 0.0 {
+            f64::NEG_INFINITY
+        } else {
+            ((normalized * 601.0 - 1.0) / 10.0 - 48.0).max(-48.0)
+        };
+    }
+    if is_waveform(index) {
         return from_normalized(normalized).map_or(0.0, |w| f64::from(waveform_index(w)));
     }
     match index {
@@ -214,7 +274,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         10 => return normalized * 12000.0 - 2400.0,
         11 => return 0.5 + normalized * 9.5,
         12 => return (normalized * 3.0).floor().min(2.0),
-        13 => return normalized * 60.0 - 48.0,
+        24 | 27 => return normalized * 4800.0 - 2400.0,
         19 => return normalized * 9600.0 - 4800.0,
         _ => {}
     }
@@ -229,7 +289,14 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     }
 }
 pub fn to_normalized(index: usize, plain: f64) -> f64 {
-    if index == 0 {
+    if is_volume(index) {
+        return if plain == f64::NEG_INFINITY {
+            0.0
+        } else {
+            ((plain + 48.0) * 10.0 + 1.0) / 601.0
+        };
+    }
+    if is_waveform(index) {
         return plain.clamp(0.0, 4.0).round() / 4.0;
     }
     match index {
@@ -242,7 +309,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         10 => return (plain + 2400.0) / 12000.0,
         11 => return (plain - 0.5) / 9.5,
         12 => return plain.clamp(0.0, 2.0).round() / 2.0,
-        13 => return (plain + 48.0) / 60.0,
+        24 | 27 => return (plain + 2400.0) / 4800.0,
         19 => return (plain + 4800.0) / 9600.0,
         _ => {}
     }
@@ -256,8 +323,11 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     }) / time_scale()
 }
 pub fn valid_plain(index: usize, plain: f64) -> bool {
+    if is_volume(index) {
+        return plain == f64::NEG_INFINITY || (-48.0..=12.0).contains(&plain);
+    }
     match index {
-        0 => (0.0..=4.0).contains(&plain),
+        0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         4 | 17 => (0.0..=1.0).contains(&plain),
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
         7 | 20 => (0.0..=100.0).contains(&plain),
@@ -267,7 +337,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         10 => (-2400.0..=9600.0).contains(&plain),
         11 => (0.5..=10.0).contains(&plain),
         12 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
-        13 => (-48.0..=12.0).contains(&plain),
+        24 | 27 => (-2400.0..=2400.0).contains(&plain),
         19 => (-4800.0..=4800.0).contains(&plain),
         _ => (0.0..=5000.0).contains(&plain),
     }
@@ -275,7 +345,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
 pub fn canonical(index: usize, value: f64) -> f64 {
     if index == PROGRAM_INDEX {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
-    } else if index == 0 {
+    } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
     } else if matches!(index, 6 | 8 | 9 | 12) {
         to_normalized(index, to_plain(index, value))
@@ -308,6 +378,13 @@ pub fn defaults() -> [f64; COUNT] {
         0.0, // Cutoff Amount: 0 cent
         0.0, // Width: 0%
         0.0, // Pan: 中央
+        0.0, // Osc1 Volume
+        0.0,
+        0.0,
+        f64::NEG_INFINITY, // Osc2
+        0.0,
+        0.0,
+        f64::NEG_INFINITY, // Osc3
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -501,8 +578,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v10: 固定180バイト。波形番号u32と、その他の実単位f64を保持する。
-const STATE_HEADER: [u8; 8] = *b"SVST\x0a\0\0\0";
+// v11: 固定236バイト。波形番号u32と、その他の実単位f64を保持する。
+const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
+const STATE_HEADER: [u8; 8] = *b"SVST\x0b\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -511,7 +589,7 @@ pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
     }
     // SAFETY: IBStreamの関数表を借用し、固定長領域の範囲だけを読み取る。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 180];
+    let mut bytes = [0u8; STATE_SIZE];
     let mut position = 0;
     while position < bytes.len() {
         let mut read = 0;
@@ -556,7 +634,7 @@ pub unsafe fn write_state(stream: This, values: [f64; COUNT]) -> TResult {
     }
     // SAFETY: IBStreamは固定長バッファを呼び出し中だけ読む。
     let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; 180];
+    let mut bytes = [0u8; STATE_SIZE];
     bytes[..8].copy_from_slice(&STATE_HEADER);
     bytes[8..12].copy_from_slice(&(to_plain(0, values[0]) as u32).to_le_bytes());
     for (i, &value) in values.iter().enumerate().skip(1) {
@@ -592,7 +670,7 @@ mod tests {
         /// このテストだけで使うIBStream関数表。
         vtable: &'static StreamVTable,
         /// 形式の最大長だけを用意したテスト用領域。
-        bytes: [u8; 180],
+        bytes: [u8; STATE_SIZE],
         /// 初期化済みデータの長さ。
         length: usize,
         /// 次の読み書き位置。
@@ -677,7 +755,12 @@ mod tests {
             (9, 6),
             (10, 1200),
             (11, 950),
-            (13, 600),
+            (13, 601),
+            (22, 601),
+            (25, 601),
+            (28, 601),
+            (24, 4800),
+            (27, 4800),
             (19, 960),
             (20, 100),
             (21, 200),
@@ -686,7 +769,10 @@ mod tests {
                 let plain = tick_to_plain(index, tick);
                 let normalized = to_normalized(index, plain);
                 assert!(valid_plain(index, plain));
-                assert!((to_plain(index, normalized) - plain).abs() < 2e-12);
+                assert!(
+                    to_plain(index, normalized) == plain
+                        || (to_plain(index, normalized) - plain).abs() < 2e-12
+                );
                 assert_eq!((normalized * f64::from(max)).round() as u32, tick);
                 if choices(index).is_empty() {
                     assert_eq!(max_tick(index), max);
@@ -701,7 +787,7 @@ mod tests {
         for waveform in WAVEFORMS {
             let mut stream = Stream {
                 vtable: &STREAM_TABLE,
-                bytes: [0; 180],
+                bytes: [0; STATE_SIZE],
                 length: 0,
                 position: 0,
             };
@@ -732,18 +818,18 @@ mod tests {
                 for (actual, expected) in restored.into_iter().zip(values) {
                     assert!((actual - expected).abs() < 1e-12);
                 }
-                for length in 0..180 {
+                for length in 0..STATE_SIZE {
                     (*stream).length = length;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                (*stream).length = 180;
-                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11] {
+                (*stream).length = STATE_SIZE;
+                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12] {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                (*stream).bytes[4] = 10;
+                (*stream).bytes[4] = 11;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -787,6 +873,13 @@ mod tests {
                     (21, -100.1),
                     (21, 100.1),
                     (21, f64::INFINITY),
+                    (22, -48.1),
+                    (25, f64::INFINITY),
+                    (28, f64::NAN),
+                    (23, 5.0),
+                    (26, 1.5),
+                    (24, -2400.1),
+                    (27, 2400.1),
                 ] {
                     let offset = 12 + (index - 1) * 8;
                     let original: [u8; 8] =
