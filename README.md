@@ -2,7 +2,7 @@
 
 RustでVST3のAPI・ABIを直接実装する、簡易ソフトウェア音源です。
 最大32個の独立オシレータで、ノートオン・オフに応じて発音・消音します。
-VST3パラメーターからサイン波・三角波・矩形波・ノコギリ波を選択できます。
+VST3パラメーターからサイン波・三角波・矩形波・ノコギリ波・ホワイトノイズを選択できます。
 VST3用のバインディングやC/C++ラッパーは使用しません。GUIにはeguiを使用します。
 
 ## 現在の対応範囲
@@ -16,7 +16,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
 | サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
-| ホスト公開パラメーター・独自GUI | Waveform（4択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
+| ホスト公開パラメーター・独自GUI | Waveform（5択）、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・PanをVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
@@ -72,10 +72,24 @@ PhaseはNote On時の位相を選ぶ3択パラメーターです（ParamID `0x50
 | 三角波（Triangle） | `0.5 × √3` ≈ 0.866025 | 0から上昇、1/4周期で正のピーク |
 | 矩形波（Square） | `0.5` | 前半は正、後半は負（デューティ比50%） |
 | ノコギリ波（Sawtooth） | `0.5 × √3` ≈ 0.866025 | 負のピークから直線的に上昇 |
+| ホワイトノイズ（Noise） | `0.5 × √3` ≈ 0.866025 | 毎サンプル別の一様乱数 |
 
-倍率は理想波形の1周期の実効値が0.5となる値です。有限個のサンプルで測定した実効値は、
+周期波の倍率は理想波形の1周期の実効値が0.5となる値です。有限個のサンプルで測定した実効値は、
 周波数・サンプルレート・測定区間によって誤差が生じます。帯域制限・アンチエイリアシングは未実装で、
 特に高音域では折り返し成分が発生します。
+
+## ホワイトノイズ
+
+Noiseはxoshiro256+ 1.0の上位53bitから一様乱数`u ∈ [0,1)`を生成し、
+`(2u−1) × √3 × amplitude`へ換算します。ベロシティ・エンベロープ最大時の理論実効値は0.5です。
+乱数状態はOscillatorStateが所有し、初期化時にSplitMix64でシードを展開します。
+位相用とは別の状態を進めるため、PhaseのKeep・Zero・Randomでノイズ列はリセットされません。
+同じ初期乱数状態・入力・サンプル数なら同じ列を生成し、初期シードはインスタンスごとに取得します。
+
+Detune=0ではノイズ源1個にまとめ、Widthは無効です。Detune>0ではUnison数の別々の乱数値を生成し、
+既存のequal-power定位と`1/√N`の倍率で合成します。Detuneの正の値やノート音程はノイズ列の生成速度に影響しません。
+ノート音程はフィルタの基準周波数に使います。Pan、音量・カットオフ用AHDSR、フィルタは他の波形と共通です。
+ノートオンでは乱数列を継続し、リリース完了・処理停止後は更新を止めます。
 
 ## Voiceごとのフィルタ
 
@@ -246,16 +260,17 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 
 ホストのVST3パラメーター表示で **Waveform** を操作します。画面上の表示形式はホストに依存します。
 `IEditController` で列挙する離散パラメーターで、固定ParamIDは `0x57415645`、
-`stepCount = 3`、フラグは `kCanAutomate | kIsList`、既定値は0です。
+`stepCount = 4`、フラグは `kCanAutomate | kIsList`、既定値は0です。
 
 | 表示名 | 実単位の番号 | 正規化値 |
 | --- | --- | --- |
 | Sine | 0 | 0 |
-| Triangle | 1 | 1/3 |
-| Square | 2 | 2/3 |
-| Sawtooth | 3 | 1 |
+| Triangle | 1 | 1/4 |
+| Square | 2 | 1/2 |
+| Sawtooth | 3 | 3/4 |
+| Noise | 4 | 1 |
 
-正規化値は4つの等幅区間へ量子化し、上端の1はSawtoothに含めます。
+正規化値は5つの等幅区間へ量子化し、上端の1はNoiseに含めます。
 
 全パラメーターの変更は `ProcessData.inputParameterChanges` から受け取り、`sampleOffset` に従って反映します。
 
@@ -271,11 +286,11 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v9は180バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Panを各f64。little endian）です。
-旧v8（164バイト）以前はWidth=0%、Pan=0%を補います。旧v7（116バイト）以前はカットオフ用AHDSRの初期値とAmount=0を補います。旧v6（108バイト）以前はVolume=0 dBを補います。旧v5（100バイト）以前はPhase=Keepを補います。旧v4（76バイト）以前はFilter=Noneとして元の音色を維持し、CutoffとResonanceには初期値を補います。旧v3の68バイトにはさらにPolyphony=1を補います。旧v2の52バイトにはさらにUnison=1とDetune=0を補い、旧v1の12バイトには初期エンベロープも補います。空状態は全パラメーターを初期値へ戻します。未対応バージョン・不正値・途中切れは適用しません。
+保存形式v10は180バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Panを各f64。little endian）です。
+読み込みは現行形式v10のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
-位相や発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
+位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
 
 ## GUI
@@ -576,7 +591,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/editor.rs`: カテゴリ別ノブ・選択リストの入力とegui/OpenGL描画。`src/editor/edits.rs`は編集通知キュー、`src/editor/pointer.rs`はOS別のカーソル操作。
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 全パラメーターの選択肢・単位・値変換、VST3変更キューとIBStreamの読み書き。
-- `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した4波形オシレータ。
+- `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した5波形オシレータ。
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
 - `src/synth.rs`: Voiceの循環割り当て・加算出力と、共通の定位係数・マスター音量の管理。

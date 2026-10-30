@@ -418,7 +418,7 @@ fn check_host_events(activate_events: bool) {
             vtable: &POINT_TABLE,
             id: parameters::WAVEFORM_ID,
             offset: 0,
-            value: 2.0 / 3.0,
+            value: 0.5,
         };
         let mut changes = TestChanges {
             vtable: &CHANGES_TABLE,

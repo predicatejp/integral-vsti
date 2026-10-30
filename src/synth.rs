@@ -250,7 +250,8 @@ mod tests {
                     let mut synth = Synthesizer::new();
                     synth.set_sample_rate(48000.0);
                     let mut values = parameters::defaults();
-                    values[index] = value;
+                    // この比較は独立Voiceの周期波を照合する。Noiseは別の統計検証で扱う。
+                    values[index] = if index == 0 { value * 0.75 } else { value };
                     synth.set_parameters(values);
                     // 設定を配送した後に使用枠を増やす。
                     values[8] = parameters::to_normalized(8, f64::from(count));

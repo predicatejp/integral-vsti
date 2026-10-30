@@ -79,10 +79,17 @@ fn sine_sample(phase: f64) -> f64 {
     value * (1.0 - f64::from(quadrant & 2))
 }
 
-/// 対称な三角波・ノコギリ波の実効値をピーク振幅へ変換する倍率（√3）。
+/// SplitMix64の出力変換。位相生成とノイズ状態の初期化で共用する純粋計算。
+fn splitmix64(mut bits: u64) -> u64 {
+    bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    bits ^ (bits >> 31)
+}
+
+/// 三角波・ノコギリ波・一様ノイズの実効値をピーク振幅へ変換する倍率（√3）。
 const SQRT_3: f64 = 1.732_050_807_568_877_2;
 
-/// 位相から生成する波形。矩形波はデューティ比50%、ノコギリ波は右上がり。
+/// 周期波4種と一様分布のホワイトノイズ。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Waveform {
     /// 位相0から正方向に立ち上がるサイン波。
@@ -93,26 +100,28 @@ pub enum Waveform {
     Square,
     /// 位相0の負のピークから直線的に上昇し、周期境界で折り返すノコギリ波。
     Sawtooth,
+    /// 毎サンプル別の一様乱数を使うホワイトノイズ。
+    Noise,
 }
 
 impl Waveform {
-    /// 理想波形の1周期における実効値をピーク振幅へ変換する倍率。
+    /// 理想波形の実効値をピーク振幅へ変換する倍率。Noiseは分布の二乗平均による。
     fn peak_per_rms(self) -> f64 {
         match self {
             Self::Sine => std::f64::consts::SQRT_2,
-            Self::Triangle | Self::Sawtooth => SQRT_3,
+            Self::Triangle | Self::Sawtooth | Self::Noise => SQRT_3,
             Self::Square => 1.0,
         }
     }
 
-    /// 位相[0, 1)からピーク振幅1の波形を生成する。帯域制限は行わない。
+    /// 周期波の位相またはNoiseの一様乱数[0, 1)からピーク振幅1のサンプルを生成する。
     fn unit_sample(self, phase: f64) -> f64 {
         match self {
             Self::Sine => sine_sample(phase),
             Self::Triangle => 4.0 * ((phase - 0.25).abs() - 0.5).abs() - 1.0,
             // phase=0.5の+0も負側へ含めるため、符号を反転する。
             Self::Square => -1.0_f64.copysign(phase - 0.5),
-            Self::Sawtooth => 2.0 * phase - 1.0,
+            Self::Sawtooth | Self::Noise => 2.0 * phase - 1.0,
         }
     }
 }
@@ -186,6 +195,8 @@ pub struct OscillatorState {
     phases: [f64; 7],
     /// Note On時だけ進めるSplitMix64の内部状態。初期化時に発振器ごとの種を取得する。
     random: u64,
+    /// ノイズ専用xoshiro256+の状態。各ユニゾンに連続する別の値を割り当てる。
+    noise: [u64; 4],
     /// 正規化値のAHDSR。入力の目標実効値をピークとして使用する。
     envelope: Envelope,
     /// サンプル処理へ反映済みのNote On世代番号。
@@ -212,10 +223,17 @@ pub struct Oscillator {
 
 impl Oscillator {
     pub fn new() -> Self {
+        let random = RandomState::new().hash_one(0_u64);
         Self {
             state: OscillatorState {
                 phases: [0.0; 7],
-                random: RandomState::new().hash_one(0_u64),
+                random,
+                // SplitMix64の連続出力は全要素0にならない。乱数列は位相用と独立に進める。
+                noise: std::array::from_fn(|i| {
+                    splitmix64(
+                        random.wrapping_add(0x9e37_79b9_7f4a_7c15_u64.wrapping_mul(i as u64 + 1)),
+                    )
+                }),
                 envelope: Envelope::new(),
                 note_generation: 0,
                 reset_generation: 0,
@@ -278,26 +296,46 @@ impl Oscillator {
     /// 参照元: https://prng.di.unimi.it/splitmix64.c （通知はTHIRD_PARTY_NOTICES.txt）。
     fn random_phase(&mut self) -> f64 {
         self.state.random = self.state.random.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut bits = self.state.random;
-        bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        bits ^= bits >> 31;
+        (splitmix64(self.state.random) >> 11) as f64 * (1.0 / (1_u64 << 53) as f64)
+    }
+
+    /// xoshiro256+ 1.0の上位53bitを[0,1)へ換算し、次の乱数へ進める。
+    /// 参照元: https://prng.di.unimi.it/xoshiro256plus.c （通知はTHIRD_PARTY_NOTICES.txt）。
+    fn generate_noise_sample(&mut self) -> f64 {
+        let s = &mut self.state.noise;
+        let bits = s[0].wrapping_add(s[3]);
+        let t = s[1] << 17;
+        s[2] ^= s[0];
+        s[3] ^= s[1];
+        s[1] ^= s[2];
+        s[0] ^= s[3];
+        s[2] ^= t;
+        s[3] = s[3].rotate_left(45);
         (bits >> 11) as f64 * (1.0 / (1_u64 << 53) as f64)
     }
 
-    /// 現在の状態を読み取るだけで、位相を進めずにサンプルを生成する。
+    /// 位相を保持して波形を生成する。Noiseはユニゾンごとに乱数を一つ進める。
     fn generate_waveform_sample(
-        &self,
+        &mut self,
         input: &OscillatorInput,
         amplitude: f64,
         gains: &PanningGains,
     ) -> [f64; 2] {
         let count = input.rendered_voices();
         let mut sum = [0.0; 2];
-        for (&phase, gains) in self.state.phases[..count].iter().zip(gains) {
-            let sample = input.waveform.unit_sample(phase);
-            sum[0] += sample * gains[0];
-            sum[1] += sample * gains[1];
+        // 乱数生成の判定はユニゾンの内側で繰り返さない。
+        if input.waveform == Waveform::Noise {
+            for gains in &gains[..count] {
+                let sample = Waveform::Noise.unit_sample(self.generate_noise_sample());
+                sum[0] += sample * gains[0];
+                sum[1] += sample * gains[1];
+            }
+        } else {
+            for (&phase, gains) in self.state.phases[..count].iter().zip(gains) {
+                let sample = input.waveform.unit_sample(phase);
+                sum[0] += sample * gains[0];
+                sum[1] += sample * gains[1];
+            }
         }
         sum.map(|sample| {
             amplitude * input.waveform.peak_per_rms() * sample / self.state.unison_divisor
@@ -355,6 +393,156 @@ impl Oscillator {
 mod tests {
     use super::*;
     use crate::envelope::DEFAULT_ENVELOPE;
+
+    const NOISE_SEED: [u64; 4] = [
+        0x1234_5678_9abc_def0,
+        0xfedc_ba98_7654_3210,
+        0x1020_3040_5060_7080,
+        0x8877_6655_4433_2211,
+    ];
+
+    #[test]
+    fn noise_matches_reference_sequence() {
+        let mut oscillator = Oscillator::new();
+        oscillator.state.noise = NOISE_SEED;
+        // 作者のxoshiro256+ 1.0 C実装を同じ初期状態で実行した上位53bit。
+        for expected in [
+            5441996726197760_u64,
+            2484858452741806,
+            5686259996541749,
+            7701203122316008,
+            8048927005211174,
+            5195266920391698,
+            2168565655257186,
+            1019535850546686,
+        ] {
+            assert_eq!(
+                oscillator.generate_noise_sample(),
+                expected as f64 / (1_u64 << 53) as f64
+            );
+        }
+    }
+
+    #[test]
+    fn noise_controls_preserve_sequence_and_stop_after_release() {
+        let mut input = test_input();
+        input.waveform = Waveform::Noise;
+        input.envelope.attack_ms = 0.0;
+        input.envelope.decay_ms = 0.0;
+        input.envelope.release_ms = 1.0;
+        let mut initial = sustained();
+        initial.state.noise = NOISE_SEED;
+        for n in 1..=7 {
+            for detune in [0.0, 1.0, 100.0] {
+                for mode in [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random] {
+                    let mut reference = Oscillator {
+                        state: initial.state,
+                    };
+                    let mut actual = Oscillator {
+                        state: initial.state,
+                    };
+                    let a = OscillatorInput {
+                        unison_voices: n,
+                        detune_cents: detune,
+                        phase_mode: mode,
+                        frequency_hz: 880.0,
+                        ..input
+                    };
+                    let b = OscillatorInput {
+                        unison_voices: if detune == 0.0 { 1 } else { n },
+                        detune_cents: if detune == 0.0 { 0.0 } else { 25.0 },
+                        frequency_hz: 0.0,
+                        ..input
+                    };
+                    let gains = panning_gains(a.rendered_voices(), 1.0, 0.0);
+                    for i in 0..16 {
+                        // 再ノートオンでもPhaseに依存せず、ノイズ列を引き継ぐ。
+                        let generation = 1 + i / 4;
+                        let a = OscillatorInput {
+                            note_generation: generation,
+                            ..a
+                        };
+                        let b = OscillatorInput {
+                            note_generation: generation,
+                            ..b
+                        };
+                        assert_eq!(
+                            actual.generate_sample(&a, 96000.0, &gains),
+                            reference.generate_sample(&b, 44100.0, &gains)
+                        );
+                    }
+                }
+            }
+        }
+        let mut oscillator = initial;
+        let gains = panning_gains(1, 1.0, 0.0);
+        oscillator.generate_sample(&input, 48000.0, &gains);
+        input.gate = false;
+        for _ in 0..49 {
+            oscillator.generate_sample(&input, 48000.0, &gains);
+        }
+        let noise = oscillator.state.noise;
+        assert_eq!(
+            oscillator.generate_sample(&input, 48000.0, &gains),
+            [0.0; 2]
+        );
+        assert_eq!(oscillator.state.noise, noise);
+        input.gate = true;
+        input.note_generation += 1;
+        oscillator.generate_sample(&input, 48000.0, &gains);
+        assert_ne!(oscillator.state.noise, noise);
+        input.reset_generation += 1;
+        input.gate = false;
+        let noise = oscillator.state.noise;
+        assert_eq!(
+            oscillator.generate_sample(&input, 48000.0, &gains),
+            [0.0; 2]
+        );
+        assert_eq!(oscillator.state.noise, noise);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // 固定シードによる長時間の統計検証は通常のCPUで行う。
+    fn noise_rms_mean_and_correlation_follow_unison_panning() {
+        for n in [1, 2, 7] {
+            for width in [0.0, 1.0] {
+                let mut oscillator = sustained();
+                oscillator.state.noise = NOISE_SEED;
+                let input = OscillatorInput {
+                    waveform: Waveform::Noise,
+                    unison_voices: n,
+                    detune_cents: 25.0,
+                    ..test_input()
+                };
+                let gains = panning_gains(n as usize, width, 0.0);
+                let (mut sum, mut energy, mut cross, mut lag) = ([0.0; 2], [0.0; 2], 0.0, 0.0);
+                let mut previous = 0.0;
+                for _ in 0..65536 {
+                    let sample = oscillator.generate_sample(&input, 48000.0, &gains);
+                    for ch in 0..2 {
+                        assert!(sample[ch].is_finite());
+                        sum[ch] += sample[ch];
+                        energy[ch] += sample[ch] * sample[ch];
+                    }
+                    cross += sample[0] * sample[1];
+                    lag += sample[0] * previous;
+                    previous = sample[0];
+                    if width == 0.0 || n == 1 {
+                        assert_eq!(sample[0], sample[1]);
+                    }
+                }
+                for ch in 0..2 {
+                    assert!((sum[ch] / 65536.0).abs() < 0.01);
+                    assert!(((energy[ch] / 65536.0).sqrt() - 0.5).abs() < 0.01);
+                }
+                assert!((lag / energy[0]).abs() < 0.025);
+                let expected =
+                    gains[..n as usize].iter().map(|g| g[0] * g[1]).sum::<f64>() / f64::from(n);
+                let correlation = cross / (energy[0] * energy[1]).sqrt();
+                assert!((correlation - expected).abs() < 0.025);
+            }
+        }
+    }
 
     #[test]
     fn panning_lookup_bounds_and_exact_endpoints() {
