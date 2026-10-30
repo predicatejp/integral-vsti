@@ -116,7 +116,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 
 ### ノートとパラメーター
 
-- オシレータを独立したコンポーネントとし、回路の定常入力を `OscillatorInput`、内部状態を `OscillatorState` として分離すること。Polyphonyは1〜32（初期値1）とし、Voiceごとにノートを割り当てる。VoiceはOsc1/2/3を所有し、Osc1だけが1〜7ユニゾンを生成する。Osc2/3はWaveform・Tune（−2400〜2400 cent、GUIは1 cent刻み、初期値0）・Volを持ち、1発振器ずつ生成する。Phase・Panは3発振器共通、Width・DetuneはOsc1だけに適用する。
+- オシレータを独立したコンポーネントとし、回路の定常入力を `OscillatorInput`、内部状態を `OscillatorState` として分離すること。Polyphonyは1〜32（初期値1）とし、Voiceごとにノートを割り当てる。VoiceはOsc1/2/3を所有し、Osc1だけが1〜7ユニゾンを生成する。Osc2/3はWaveform・Tune（−2400〜2400 cent、GUIは10 cent刻み、初期値0）・Volを持ち、1発振器ずつ生成する。Phase・Panは3発振器共通、Width・DetuneはOsc1だけに適用する。
 - 波形は `OscillatorInput.waveform`、目標実効値は `amplitude` に保持すること。全波形でベロシティ・エンベロープ最大時の理想波形の実効値を0.5とし、ピークへの倍率はオシレータ内で適用すること。現在は帯域制限なし。
 - ノートイベントはVoiceのノート情報・発振器入力を更新し、子Oscillator・Envelopeの内部状態へ直接触れないこと。サンプルごとに「現在の入力と状態からサンプル生成 → 入力を用いてState更新」の順で処理すること。音量用EnvelopeはVoiceが所有し、3発振器を各Volで加算した後に適用する。発振器へはactiveとノート世代を渡す。正規化値・attack開始値・経過サンプル数・ノートオフ位置はEnvelopeStateに保持すること。再ノートオンは現在の実効振幅からattack時間全体で新しい目標へ移行すること。
 - 位相はオシレータ自身の状態として保持すること。Note On時にはPhaseのKeep（維持、初期値）・Zero（全7位相を0）・Random（全7位相を個別の疑似乱数へ変更）を適用すること。モード変更は次のNote Onで反映し、音程変更では位相を引き継ぐ。release完了後と処理停止中は位相を止める。位相とNoiseは共通のRandomコンポーネント（xoshiro256+）を使用し、用途別の状態をOscillatorStateへ保持する。シード取得はオシレータ作成時だけ標準ライブラリのRandomStateで行う。

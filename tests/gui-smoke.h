@@ -425,7 +425,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
             const double plain = time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
-                                 i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -48.0 : (i == 24 || i == 27) ? -2399.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : .01;
+                                 i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -48.0 : (i == 24 || i == 27) ? -2390.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : .01;
             assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
             assert(parent.pointerAt(x, y));
             point.id = info.id; point.values = {{0, handler.value}};

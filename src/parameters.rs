@@ -181,7 +181,7 @@ pub fn max_tick(index: usize) -> u32 {
             21 => 200,
             10 => 1200,
             13 | 22 | 25 | 28 => 601,
-            24 | 27 => 4800,
+            24 | 27 => 480,
             11 => 950,
             _ => 100,
         }
@@ -226,7 +226,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(index, 0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | PROGRAM_INDEX)
 }
-/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=601（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=4800。
+/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=601（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
 pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
     if is_volume(index) {
         if tick == 0 {
@@ -247,7 +247,7 @@ pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
             21 => f64::from(tick) - 100.0,
             10 => f64::from(tick) * 10.0 - 2400.0,
             11 => 0.5 + f64::from(tick) / 100.0,
-            24 | 27 => f64::from(tick) - 2400.0,
+            24 | 27 => f64::from(tick) * 10.0 - 2400.0,
             19 => f64::from(tick) * 10.0 - 4800.0,
             _ => f64::from(tick) / 100.0,
         }
@@ -759,8 +759,8 @@ mod tests {
             (22, 601),
             (25, 601),
             (28, 601),
-            (24, 4800),
-            (27, 4800),
+            (24, 480),
+            (27, 480),
             (19, 960),
             (20, 100),
             (21, 200),
