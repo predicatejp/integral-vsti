@@ -14,6 +14,8 @@ mod float_mode;
 mod oscillator;
 #[path = "../src/parameters.rs"]
 mod parameters;
+#[path = "../src/random.rs"]
+mod random;
 #[path = "../src/synth.rs"]
 mod synth;
 #[path = "../src/voice.rs"]

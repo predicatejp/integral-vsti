@@ -19,6 +19,7 @@ mod host;
 mod oscillator;
 mod parameters;
 mod plugin;
+mod random;
 mod synth;
 mod voice;
 

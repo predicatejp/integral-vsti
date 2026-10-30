@@ -4,7 +4,7 @@
 //! 発振器回路の定常入力と内部状態を分離した単一のオシレータ。
 
 use crate::envelope::{Envelope, EnvelopeParameters};
-use std::{collections::hash_map::RandomState, hash::BuildHasher};
+use crate::random::Random;
 
 #[path = "oscillator_tables.rs"]
 mod tables;
@@ -77,13 +77,6 @@ fn sine_sample(phase: f64) -> f64 {
     // SAFETY: 位相は有限の0〜1（更新時の丸めによる1も含む）。折り返し位置は0〜1024。
     let value = unsafe { interpolate(folded * 1024.0, &tables::SINE) };
     value * (1.0 - f64::from(quadrant & 2))
-}
-
-/// SplitMix64の出力変換。位相生成とノイズ状態の初期化で共用する純粋計算。
-fn splitmix64(mut bits: u64) -> u64 {
-    bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    bits ^ (bits >> 31)
 }
 
 /// 三角波・ノコギリ波・一様ノイズの実効値をピーク振幅へ変換する倍率（√3）。
@@ -193,10 +186,10 @@ pub struct OscillatorState {
     /// 次に生成するサンプルの位相（周期単位、0以上1未満）。
     /// 初期値は0。Note On時はphase_modeに従い、release完了後と処理停止中は進めない。
     phases: [f64; 7],
-    /// Note On時だけ進めるSplitMix64の内部状態。初期化時に発振器ごとの種を取得する。
-    random: u64,
+    /// Note On時だけ進める位相用乱数。ノイズ用とは独立した状態を持つ。
+    random: Random,
     /// ノイズ専用xoshiro256+の状態。各ユニゾンに連続する別の値を割り当てる。
-    noise: [u64; 4],
+    noise: Random,
     /// 正規化値のAHDSR。入力の目標実効値をピークとして使用する。
     envelope: Envelope,
     /// サンプル処理へ反映済みのNote On世代番号。
@@ -223,17 +216,11 @@ pub struct Oscillator {
 
 impl Oscillator {
     pub fn new() -> Self {
-        let random = RandomState::new().hash_one(0_u64);
         Self {
             state: OscillatorState {
                 phases: [0.0; 7],
-                random,
-                // SplitMix64の連続出力は全要素0にならない。乱数列は位相用と独立に進める。
-                noise: std::array::from_fn(|i| {
-                    splitmix64(
-                        random.wrapping_add(0x9e37_79b9_7f4a_7c15_u64.wrapping_mul(i as u64 + 1)),
-                    )
-                }),
+                random: Random::new(),
+                noise: Random::new(),
                 envelope: Envelope::new(),
                 note_generation: 0,
                 reset_generation: 0,
@@ -267,7 +254,7 @@ impl Oscillator {
                 PhaseMode::Zero => self.state.phases.fill(0.0),
                 PhaseMode::Random => {
                     for k in 0..self.state.phases.len() {
-                        self.state.phases[k] = self.random_phase();
+                        self.state.phases[k] = self.state.random.next_f64();
                     }
                 }
             }
@@ -292,28 +279,6 @@ impl Oscillator {
         sample
     }
 
-    /// SplitMix64の上位53bitを周期単位へ換算。乱数生成はNote On時の整数演算だけで完了する。
-    /// 参照元: https://prng.di.unimi.it/splitmix64.c （通知はTHIRD_PARTY_NOTICES.txt）。
-    fn random_phase(&mut self) -> f64 {
-        self.state.random = self.state.random.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        (splitmix64(self.state.random) >> 11) as f64 * (1.0 / (1_u64 << 53) as f64)
-    }
-
-    /// xoshiro256+ 1.0の上位53bitを[0,1)へ換算し、次の乱数へ進める。
-    /// 参照元: https://prng.di.unimi.it/xoshiro256plus.c （通知はTHIRD_PARTY_NOTICES.txt）。
-    fn generate_noise_sample(&mut self) -> f64 {
-        let s = &mut self.state.noise;
-        let bits = s[0].wrapping_add(s[3]);
-        let t = s[1] << 17;
-        s[2] ^= s[0];
-        s[3] ^= s[1];
-        s[1] ^= s[2];
-        s[0] ^= s[3];
-        s[2] ^= t;
-        s[3] = s[3].rotate_left(45);
-        (bits >> 11) as f64 * (1.0 / (1_u64 << 53) as f64)
-    }
-
     /// 位相を保持して波形を生成する。Noiseはユニゾンごとに乱数を一つ進める。
     fn generate_waveform_sample(
         &mut self,
@@ -326,7 +291,7 @@ impl Oscillator {
         // 乱数生成の判定はユニゾンの内側で繰り返さない。
         if input.waveform == Waveform::Noise {
             for gains in &gains[..count] {
-                let sample = Waveform::Noise.unit_sample(self.generate_noise_sample());
+                let sample = Waveform::Noise.unit_sample(self.state.noise.next_f64());
                 sum[0] += sample * gains[0];
                 sum[1] += sample * gains[1];
             }
@@ -402,28 +367,6 @@ mod tests {
     ];
 
     #[test]
-    fn noise_matches_reference_sequence() {
-        let mut oscillator = Oscillator::new();
-        oscillator.state.noise = NOISE_SEED;
-        // 作者のxoshiro256+ 1.0 C実装を同じ初期状態で実行した上位53bit。
-        for expected in [
-            5441996726197760_u64,
-            2484858452741806,
-            5686259996541749,
-            7701203122316008,
-            8048927005211174,
-            5195266920391698,
-            2168565655257186,
-            1019535850546686,
-        ] {
-            assert_eq!(
-                oscillator.generate_noise_sample(),
-                expected as f64 / (1_u64 << 53) as f64
-            );
-        }
-    }
-
-    #[test]
     fn noise_controls_preserve_sequence_and_stop_after_release() {
         let mut input = test_input();
         input.waveform = Waveform::Noise;
@@ -431,7 +374,7 @@ mod tests {
         input.envelope.decay_ms = 0.0;
         input.envelope.release_ms = 1.0;
         let mut initial = sustained();
-        initial.state.noise = NOISE_SEED;
+        initial.state.noise = Random::from_seed(NOISE_SEED);
         for n in 1..=7 {
             for detune in [0.0, 1.0, 100.0] {
                 for mode in [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random] {
@@ -470,6 +413,7 @@ mod tests {
                             actual.generate_sample(&a, 96000.0, &gains),
                             reference.generate_sample(&b, 44100.0, &gains)
                         );
+                        assert_eq!(reference.state.random, initial.state.random);
                     }
                 }
             }
@@ -507,7 +451,7 @@ mod tests {
         for n in [1, 2, 7] {
             for width in [0.0, 1.0] {
                 let mut oscillator = sustained();
-                oscillator.state.noise = NOISE_SEED;
+                oscillator.state.noise = Random::from_seed(NOISE_SEED);
                 let input = OscillatorInput {
                     waveform: Waveform::Noise,
                     unison_voices: n,
@@ -688,7 +632,7 @@ mod tests {
     #[test]
     fn phase_modes_apply_only_at_note_on_and_cover_all_unison_phases() {
         let mut oscillator = Oscillator::new();
-        oscillator.state.random = 42;
+        oscillator.state.random = Random::from_seed(NOISE_SEED);
         oscillator.state.phases = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875];
         let mut input = test_input();
         input.frequency_hz = 0.0; // 境界処理後の位相を進めずに観測する。
@@ -738,24 +682,6 @@ mod tests {
         );
         assert_eq!(oscillator.state.phases, phases);
         assert_eq!(oscillator.state.random, random);
-    }
-
-    #[test]
-    fn random_phase_sequence_is_reproducible_from_its_state() {
-        let mut oscillator = Oscillator::new();
-        oscillator.state.random = 0;
-        // SplitMix64の既知の先頭値。再開時も同じStateから同じ列を生成する。
-        assert_eq!(
-            oscillator.random_phase(),
-            (0xe220_a839_7b1d_cdaf_u64 >> 11) as f64 / (1_u64 << 53) as f64
-        );
-        let state = oscillator.state;
-        let expected: [f64; 7] = std::array::from_fn(|_| oscillator.random_phase());
-        oscillator.state = state;
-        assert_eq!(
-            std::array::from_fn::<_, 7, _>(|_| oscillator.random_phase()),
-            expected
-        );
     }
 
     fn test_input() -> OscillatorInput {
