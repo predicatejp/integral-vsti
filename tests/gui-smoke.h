@@ -310,7 +310,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1024 && rect.getHeight() == 768);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 856 && rect.getHeight() == 380);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -323,7 +323,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1024);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 856);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -359,16 +359,17 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     };
     // グループ内のノブ中心と選択リスト。画面上の実入力で全設定を検証する。
     const std::array<std::pair<int, int>, 31> controls {{
-        {287, 102}, {68, 628}, {131, 628}, {194, 628}, {257, 628}, {320, 628},
-        {76, 160}, {155, 160}, {904, 208}, {715, 102}, {489, 160}, {683, 160},
-        {938, 152}, {904, 302}, {424, 316}, {489, 316}, {554, 316}, {618, 316},
-        {683, 316}, {748, 316}, {234, 160}, {904, 396}, {313, 160},
-        {287, 258}, {89, 316}, {194, 316}, {287, 414}, {89, 472}, {194, 472}, {299, 316}, {299, 472}
+        {231, 28}, {353, 322}, {418, 322}, {484, 322}, {550, 322}, {615, 322},
+        {51, 74}, {121, 74}, {756, 120}, {583, 28}, {375, 80}, {484, 80},
+        {790, 70}, {756, 204}, {353, 184}, {418, 184}, {484, 184}, {550, 184},
+        {615, 184}, {593, 80}, {191, 74}, {756, 288}, {261, 74},
+        {231, 152}, {63, 198}, {156, 198}, {231, 276}, {63, 322}, {156, 322}, {249, 198}, {249, 322}
     }};
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
         parent.click(x, y); pump(); assert(handler.sequence.empty());
-        parent.click(x, y + 30 + item * 28);
+        parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
+        parent.click(x, (index == 26 ? y - 154 : y + 34) + item * 30);
         waitFor([&] { return handler.sequence.size() >= 3; }, "grouped choice");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
@@ -379,7 +380,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(1024, 768); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(856, 380); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
@@ -418,12 +419,12 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0}));
             assert(!parent.cursorVisible());
             // 全ノブで224×60 pxの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(x - 112, 0, 800);
-            const int overlayY = std::clamp(y - 91, 0, 708);
+            const int overlayX = std::clamp(x - 112, 0, 632);
+            const int overlayY = std::clamp(y - 91, 0, 320);
 #ifdef _WIN32
-            const uint32 overlayColor = RGB(37, 53, 51);
+            const uint32 overlayColor = RGB(23, 43, 38);
 #else
-            const uint32 overlayColor = 0x253533;
+            const uint32 overlayColor = 0x172b26;
 #endif
             waitFor([&] {
                 return parent.pixel(overlayX + 4, overlayY + 4) == overlayColor &&
@@ -478,7 +479,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             pump(); assert(handler.sequence.empty());
         }
         assert(controller->setParamNormalized(filterIds[0], 1.0 / 6.0) == kResultOk);
-        pump(); choose(9, 0);
+        pump(); choose(9, 6);
+        assert(handler.editedId == filterIds[0] && handler.value == 1.0);
+        choose(9, 0);
         assert(handler.editedId == filterIds[0] && handler.value == 0.0);
         assert(controller->setParamNormalized(phaseId, 0.0) == kResultOk);
         pump(); choose(12, 2);

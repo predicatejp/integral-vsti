@@ -26,20 +26,12 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "Tune", "Vol", "FM", "FM",
 ];
 
-/// グループの寸法とノブの並ぶ方向。
-struct GroupLayout {
-    /// 固定サイズの操作盤上での配置。
-    rect: egui::Rect,
-    /// Masterではノブを上から下へ並べる。
-    vertical_knobs: bool,
-}
-
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
 const PANEL: egui::Color32 = egui::Color32::from_rgb(248, 249, 245);
-const INK: egui::Color32 = egui::Color32::from_rgb(37, 53, 51);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(93, 110, 105);
-const LINE: egui::Color32 = egui::Color32::from_rgb(207, 216, 209);
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(36, 113, 101);
+const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(53, 71, 62);
+const LINE: egui::Color32 = egui::Color32::from_rgb(143, 160, 147);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(20, 96, 76);
 
 /// 全パラメーターで共通のオーバーレイ寸法（物理px）。
 const OVERLAY_SIZE: egui::Vec2 = egui::vec2(224.0, 60.0);
@@ -171,7 +163,8 @@ impl Editor {
                 };
             }
             style.spacing.button_padding = egui::vec2(10.0, 3.0);
-            style.visuals.override_text_color = Some(INK);
+            style.animation_time = 0.0;
+            style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, INK);
             style.visuals.panel_fill = egui::Color32::from_rgb(232, 237, 231);
             style.visuals.window_fill = PANEL;
             style.visuals.selection.bg_fill = ACCENT;
@@ -239,7 +232,7 @@ impl Editor {
         ));
         painter.add(egui::Shape::line(
             arc(zero, position),
-            egui::Stroke::new(2.5, ACCENT),
+            egui::Stroke::new(3.0, ACCENT),
         ));
         painter.circle_filled(center + egui::vec2(0.0, 1.5), 22.0, LINE);
         painter.circle(
@@ -248,14 +241,13 @@ impl Editor {
             egui::Color32::WHITE,
             egui::Stroke::new(1.0, if drag.is_some() { ACCENT } else { LINE }),
         );
-        painter.circle_stroke(center, 19.0, egui::Stroke::new(1.0, PANEL));
         let d = direction(position);
         painter.line_segment(
             [center + d * 10.0, center + d * 18.0],
-            egui::Stroke::new(2.5, ACCENT),
+            egui::Stroke::new(3.0, ACCENT),
         );
         painter.text(
-            egui::pos2(center.x, area.top() + 66.0),
+            egui::pos2(center.x, area.top() + 62.0),
             egui::Align2::CENTER_CENTER,
             KNOB_NAMES[index],
             egui::FontId::proportional(18.0),
@@ -371,7 +363,8 @@ impl Editor {
         let names = parameters::choices(index);
         let mut choice = parameters::to_plain(index, selected) as usize;
         if egui::ComboBox::from_id_salt(index)
-            .width(if index == 12 { 100.0 } else { 130.0 })
+            .width(if index == 12 { 120.0 } else { 130.0 })
+            .height(320.0)
             .show_index(ui, &mut choice, names.len(), |i| names[i])
             .changed()
         {
@@ -387,11 +380,10 @@ impl Editor {
         ui: &mut egui::Ui,
         title: &str,
         choices: &[usize],
-        knobs: &[usize],
-        layout: GroupLayout,
+        rows: &[&[usize]],
+        rect: egui::Rect,
         selected: &[f64; parameters::COUNT],
     ) {
-        let rect = layout.rect;
         let painter = ui.painter().clone();
         painter.rect_filled(rect, 8.0, PANEL);
         painter.rect_stroke(
@@ -401,33 +393,35 @@ impl Editor {
             egui::StrokeKind::Inside,
         );
         painter.rect_filled(
-            egui::Rect::from_min_size(rect.min + egui::vec2(12.0, 18.0), egui::vec2(3.0, 16.0)),
+            egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 12.0), egui::vec2(3.0, 16.0)),
             1.0,
             ACCENT,
         );
         painter.text(
-            rect.min + egui::vec2(24.0, 26.0),
+            rect.min + egui::vec2(18.0, 20.0),
             egui::Align2::LEFT_CENTER,
             title,
             egui::FontId::proportional(24.0),
             INK,
         );
-        painter.line_segment(
-            [
-                rect.min + egui::vec2(12.0, 48.0),
-                egui::pos2(rect.right() - 12.0, rect.top() + 48.0),
-            ],
-            egui::Stroke::new(1.0, LINE),
-        );
+        if matches!(choices, [9] | [12]) {
+            painter.line_segment(
+                [
+                    rect.min + egui::vec2(8.0, 38.0),
+                    egui::pos2(rect.right() - 8.0, rect.top() + 38.0),
+                ],
+                egui::Stroke::new(1.0, LINE),
+            );
+        }
         for &index in choices {
             let (width, y) = if index == 12 {
-                (100.0, 62.0)
+                (120.0, 48.0)
             } else {
-                (130.0, 12.0)
+                (130.0, 6.0)
             };
             if index == 12 {
                 painter.text(
-                    rect.min + egui::vec2(12.0, 76.0),
+                    rect.min + egui::vec2(8.0, 62.0),
                     egui::Align2::LEFT_CENTER,
                     "Phase",
                     egui::FontId::proportional(18.0),
@@ -435,29 +429,31 @@ impl Editor {
                 );
             }
             let choice = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - 12.0 - width, rect.top() + y),
+                egui::pos2(rect.right() - 8.0 - width, rect.top() + y),
                 egui::vec2(width, 28.0),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(choice), |ui| {
                 self.choice(ui, index, selected[index]);
             });
         }
-        let count = if layout.vertical_knobs {
-            1
-        } else {
-            knobs.len()
-        };
-        let width = (rect.width() - 24.0) / count as f32;
-        for (k, &index) in knobs.iter().enumerate() {
-            let offset = if layout.vertical_knobs {
-                egui::vec2(12.0, 104.0 + k as f32 * 94.0)
+        for (row, knobs) in rows.iter().enumerate() {
+            let width = (rect.width() - 16.0) / knobs.len() as f32;
+            let y = if choices == [12] {
+                84.0 + row as f32 * 84.0
+            } else if choices == [9] {
+                44.0 + row as f32 * 104.0
             } else {
-                egui::vec2(12.0 + k as f32 * width, 56.0)
+                38.0
             };
-            let area = egui::Rect::from_min_size(rect.min + offset, egui::vec2(width, 82.0));
-            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                self.knob(ui, index, selected[index], width);
-            });
+            for (k, &index) in knobs.iter().enumerate() {
+                let area = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(8.0 + k as f32 * width, y),
+                    egui::vec2(width, 82.0),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                    self.knob(ui, index, selected[index], width);
+                });
+            }
         }
     }
 
@@ -523,51 +519,51 @@ impl WindowHandler for Editor {
         let mut output = self.context.run_ui(input, |ui| {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
-            ui.painter().text(
-                egui::pos2(24.0, 36.0),
-                egui::Align2::LEFT_CENTER,
-                "Sample VSTi",
-                egui::FontId::proportional(24.0),
-                INK,
-            );
-            ui.painter().line_segment(
-                [egui::pos2(194.0, 36.0), egui::pos2(1000.0, 36.0)],
-                egui::Stroke::new(1.0, LINE),
-            );
             let groups = [
                 (
                     "Osc1",
                     &[0_usize] as &[usize],
-                    &[6_usize, 7, 20, 22] as &[usize],
-                    [24.0, 76.0, 340.0, 144.0],
+                    &[&[6_usize, 7, 20, 22][..]][..],
+                    [8.0, 8.0, 296.0, 116.0],
                 ),
-                ("Osc2", &[23], &[24, 25, 29], [24.0, 232.0, 340.0, 144.0]),
-                ("Osc3", &[26], &[27, 28, 30], [24.0, 388.0, 340.0, 144.0]),
                 (
-                    "Amp envelope",
-                    &[],
-                    &[1, 2, 3, 4, 5],
-                    [24.0, 544.0, 340.0, 144.0],
+                    "Osc2",
+                    &[23],
+                    &[&[24, 25, 29][..]][..],
+                    [8.0, 132.0, 296.0, 116.0],
                 ),
-                ("Filter", &[9], &[10, 11], [380.0, 76.0, 412.0, 144.0]),
                 (
-                    "Cutoff envelope",
-                    &[],
-                    &[14, 15, 16, 17, 18, 19],
-                    [380.0, 232.0, 412.0, 144.0],
+                    "Osc3",
+                    &[26],
+                    &[&[27, 28, 30][..]][..],
+                    [8.0, 256.0, 296.0, 116.0],
                 ),
-                ("Master", &[12], &[8, 13, 21], [808.0, 76.0, 192.0, 400.0]),
+                (
+                    "Filter",
+                    &[9],
+                    &[&[10, 11, 19][..], &[14, 15, 16, 17, 18][..]][..],
+                    [312.0, 8.0, 344.0, 240.0],
+                ),
+                (
+                    "Amp",
+                    &[],
+                    &[&[1, 2, 3, 4, 5][..]][..],
+                    [312.0, 256.0, 344.0, 116.0],
+                ),
+                (
+                    "Master",
+                    &[12],
+                    &[&[8][..], &[13][..], &[21][..]][..],
+                    [664.0, 8.0, 184.0, 364.0],
+                ),
             ];
-            for (title, choices, knobs, [x, y, w, h]) in groups {
+            for (title, choices, rows, [x, y, w, h]) in groups {
                 self.group(
                     ui,
                     title,
                     choices,
-                    knobs,
-                    GroupLayout {
-                        rect: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)),
-                        vertical_knobs: choices == [12],
-                    },
+                    rows,
+                    egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)),
                     &selected,
                 );
             }
@@ -716,14 +712,14 @@ mod tests {
     use super::*;
     #[test]
     fn overlay_stays_inside_viewport_at_every_edge() {
-        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1024.0, 768.0));
-        for x in [0.0, 43.0, 512.0, 1024.0] {
-            for y in [0.0, 114.0, 384.0, 768.0] {
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(856.0, 380.0));
+        for x in [0.0, 43.0, 428.0, 856.0] {
+            for y in [0.0, 114.0, 190.0, 380.0] {
                 let knob = egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(50.0, 50.0));
                 let bounds = overlay_rect(knob, viewport);
                 assert_eq!(bounds.size(), egui::vec2(224.0, 60.0));
                 assert!(viewport.contains_rect(bounds));
-                if (112.0..=912.0).contains(&x) {
+                if (112.0..=744.0).contains(&x) {
                     assert_eq!(bounds.center().x, x);
                 }
                 if y >= 91.0 {
