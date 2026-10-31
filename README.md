@@ -362,6 +362,7 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 ホストのプラグイン画面に、ライトテーマで処理順に左からOsc1/2/3・Filter・Masterを配置します。
 左にOsc1/2/3、中央上段にカットオフAHDSRを統合したFilter、中央下段に音量AHDSRのAmp、右にMasterを配置します。WaveformとFilterの選択欄はタイトルの右、Masterのノブは縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
+ノブとラベルは64×80 pxの共通セルに配置し、行内の個数による均等割りを行いません。枠内余白・行間・グループ間は8px、見出しと選択欄は28px高です。枠の高さは内容から計算します。
 ノブは直径44pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
 Waveform・Filter・Phaseはドロップダウン、その他のパラメーターはノブです。選択リストは全項目をスクロールなしで表示し、背景は開いた直後から不透明にします。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
@@ -373,7 +374,7 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは856×380物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
+サイズは832×428物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
 対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。

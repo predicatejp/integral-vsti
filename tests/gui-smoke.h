@@ -310,7 +310,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 856 && rect.getHeight() == 380);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 832 && rect.getHeight() == 428);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -323,7 +323,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 856);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 832);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -359,11 +359,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     };
     // グループ内のノブ中心と選択リスト。画面上の実入力で全設定を検証する。
     const std::array<std::pair<int, int>, 31> controls {{
-        {231, 28}, {353, 322}, {418, 322}, {484, 322}, {550, 322}, {615, 322},
-        {51, 74}, {121, 74}, {756, 120}, {583, 28}, {375, 80}, {484, 80},
-        {790, 70}, {756, 204}, {353, 184}, {418, 184}, {484, 184}, {550, 184},
-        {615, 184}, {593, 80}, {191, 74}, {756, 288}, {261, 74},
-        {231, 152}, {63, 198}, {156, 198}, {231, 276}, {63, 322}, {156, 322}, {249, 198}, {249, 322}
+        {207, 30}, {328, 310}, {392, 310}, {456, 310}, {520, 310}, {584, 310},
+        {48, 82}, {112, 82}, {728, 118}, {559, 30}, {328, 82}, {392, 82},
+        {756, 66}, {728, 206}, {328, 170}, {392, 170}, {456, 170}, {520, 170},
+        {584, 170}, {456, 82}, {176, 82}, {728, 294}, {240, 82},
+        {207, 170}, {48, 222}, {112, 222}, {207, 310}, {48, 362}, {112, 362}, {176, 222}, {176, 362}
     }};
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
@@ -380,7 +380,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(856, 380); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(832, 428); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
@@ -419,8 +419,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0}));
             assert(!parent.cursorVisible());
             // 全ノブで224×60 pxの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(x - 112, 0, 632);
-            const int overlayY = std::clamp(y - 91, 0, 320);
+            const int overlayX = std::clamp(x - 112, 0, 608);
+            const int overlayY = std::clamp(y - 91, 0, 368);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
 #else
