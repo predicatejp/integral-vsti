@@ -357,22 +357,24 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size() << std::endl;
         assert(false);
     };
-    // グループ内のノブ中心と選択リスト。画面上の実入力で全設定を検証する。
+    // グループ内のノブ中心と選択ボタンの先頭。画面上の実入力で全設定を検証する。
     const std::array<std::pair<int, int>, 31> controls {{
-        {207, 30}, {328, 310}, {392, 310}, {456, 310}, {520, 310}, {584, 310},
-        {48, 82}, {112, 82}, {728, 118}, {559, 30}, {328, 82}, {392, 82},
-        {756, 66}, {728, 206}, {328, 170}, {392, 170}, {456, 170}, {520, 170},
-        {584, 170}, {456, 82}, {176, 82}, {728, 294}, {240, 82},
-        {207, 170}, {48, 222}, {112, 222}, {207, 310}, {48, 362}, {112, 362}, {176, 222}, {176, 362}
+        {112, 30}, {328, 82}, {392, 82}, {456, 82}, {520, 82}, {584, 82},
+        {48, 82}, {112, 82}, {728, 118}, {317, 206}, {349, 258}, {456, 258},
+        {728, 66}, {728, 240}, {328, 362}, {392, 362}, {456, 362}, {520, 362},
+        {584, 362}, {563, 258}, {176, 82}, {728, 362}, {240, 82},
+        {112, 170}, {59, 222}, {144, 222}, {112, 310}, {59, 362}, {144, 362}, {229, 222}, {229, 362}
     }};
     auto choose = [&](int index, int item) {
-        const auto [x, y] = controls[index];
-        parent.click(x, y); pump(); assert(handler.sequence.empty());
-        parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
-        parent.click(x, (index == 26 ? y - 154 : y + 34) + item * 30);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "grouped choice");
+        const auto [first, y] = controls[index];
+        const double pitch = index == 9 ? (320.0 - 24.0) / 7.0 + 4.0 : 36.0;
+        const int x = first + static_cast<int>(std::lround(item * pitch));
+        parent.click(x, y);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "choice button");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
+        // 選択済みボタンを再度押しても未選択にならず、ホストへ再通知しない。
+        parent.click(x, y); pump(); assert(handler.sequence.empty());
     };
     for (int cycle = 0; cycle < 2; ++cycle) {
 #ifdef _WIN32
@@ -385,8 +387,10 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
-        choose(0, 4);
-        assert(handler.editedId == waveformId && handler.value == 1.0);
+        for (int item = 1; item <= 4; ++item) {
+            choose(0, item);
+            assert(handler.editedId == waveformId && handler.value == item / 4.0);
+        }
         choose(0, 0);
         assert(handler.editedId == waveformId && handler.value == 0.0);
         Points point; point.values = {{0, handler.value}};
@@ -401,8 +405,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         for (const int index : {23, 26}) {
             ParameterInfo info; assert(controller->getParameterInfo(index, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
-            pump(); choose(index, 4);
-            assert(handler.editedId == info.id && handler.value == 1.0);
+            pump();
+            for (int item = 1; item <= 4; ++item) {
+                choose(index, item);
+                assert(handler.editedId == info.id && handler.value == item / 4.0);
+            }
             choose(index, 0);
             assert(handler.editedId == info.id && handler.value == 0.0);
         }
@@ -479,13 +486,20 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             pump(); assert(handler.sequence.empty());
         }
         assert(controller->setParamNormalized(filterIds[0], 1.0 / 6.0) == kResultOk);
-        pump(); choose(9, 6);
-        assert(handler.editedId == filterIds[0] && handler.value == 1.0);
+        pump();
+        for (int item = 2; item <= 6; ++item) {
+            choose(9, item);
+            assert(handler.editedId == filterIds[0] && handler.value == item / 6.0);
+        }
         choose(9, 0);
         assert(handler.editedId == filterIds[0] && handler.value == 0.0);
         assert(controller->setParamNormalized(phaseId, 0.0) == kResultOk);
-        pump(); choose(12, 2);
+        pump(); choose(12, 1);
+        assert(handler.editedId == phaseId && handler.value == .5);
+        choose(12, 2);
         assert(handler.editedId == phaseId && handler.value == 1.0);
+        parent.movePointer(4, 4); pump();
+        parent.screenshot("target/gui-choices.ppm");
         point.id = phaseId; point.values = {{0, handler.value}};
         assert(processor->process(data) == kResultOk);
         StateStream phaseState; assert(component->getState(&phaseState) == kResultOk);

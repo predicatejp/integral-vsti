@@ -9,6 +9,8 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import struct
+import zlib
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,3 +39,26 @@ else:
                "-Werror", "-UNDEBUG", "-I", sdk, source, "-ldl", "-lX11", "-o", str(test)]
 subprocess.run(command, cwd=ROOT, check=True)
 subprocess.run([str(test), str(binary), info["version"], *extra_args], cwd=ROOT, check=True)
+
+if options.gui:
+    # 検証ホストが取得した実ウィンドウのRGB画像を、追加依存なしでPNGへ保存する。
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data)))
+
+    for source_name, name in [("gui-panel", "gui-panel"), ("gui-choices", "gui-choices"),
+                              ("gui-smoke", "gui-overlay")]:
+        with (ROOT / "target" / f"{source_name}.ppm").open("rb") as image:
+            assert image.readline() == b"P6\n"
+            width, height = map(int, image.readline().split())
+            assert image.readline() == b"255\n"
+            rgb = image.read()
+        assert len(rgb) == width * height * 3
+        rows = b"".join(b"\0" + rgb[y * width * 3:(y + 1) * width * 3]
+                        for y in range(height))
+        png = (b"\x89PNG\r\n\x1a\n"
+               + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+        path = ROOT / "target" / f"{name}.png"
+        path.write_bytes(png)
+        print(f"Rendered image: {path}")

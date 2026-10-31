@@ -104,7 +104,7 @@ Stateはデータ保持専用とし、所有コンポーネントのメソッド
 | Cutoff | ノート周波数から−2400〜9600 cent（−2〜＋8 oct） | ＋4800 cent（＋4 oct） | `0x46435554` |
 | Resonance | Q=0.5〜10 | 1 | `0x46524553` |
 
-GUIではFilterをドロップダウン、CutoffとResonanceを整数ノブで操作します。
+GUIではFilterを横並びの選択ボタン、CutoffとResonanceを整数ノブで操作します。
 Cutoffは0〜1200 tickを10 cent刻みへ換算し、Resonanceは0〜950 tickをQ=0.5〜10（0.01刻み）へ換算します。
 Filterは`stepCount=6`のリスト、Cutoffは`stepCount=0`の連続値として公開し、どちらも変更点で切り替えます。
 Resonanceは連続値で、ホストの変更点間を正規化値で線形補間します。
@@ -360,11 +360,11 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマで処理順に左からOsc1/2/3・Filter・Masterを配置します。
-左にOsc1/2/3、中央上段にカットオフAHDSRを統合したFilter、中央下段に音量AHDSRのAmp、右にMasterを配置します。WaveformとFilterの選択欄はタイトルの右、Masterのノブは縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左にOsc1/2/3、中央上段に音量AHDSRのAmp、中央下段にカットオフAHDSRを統合したFilter、右にMasterを配置します。Waveformの選択ボタンはタイトルの右、Filterの選択ボタンは見出しの下、Masterのノブは縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
-ノブとラベルは64×80 pxの共通セルに配置し、行内の個数による均等割りを行いません。枠内余白・行間・グループ間は8px、見出しと選択欄は28px高です。枠の高さは内容から計算します。
+ノブは行内を均等割りし、複数行は上下の余白を確保して等間隔に並べます。パネルの上下端を揃え、外周・グループ間・枠内余白は8pxで統一します。見出しと選択ボタンは28px高です。
 ノブは直径44pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
-Waveform・Filter・Phaseはドロップダウン、その他のパラメーターはノブです。選択リストは全項目をスクロールなしで表示し、背景は開いた直後から不透明にします。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
+Waveform・Filter・Phaseは横並びの排他的な選択ボタンです。Waveformは5種類の波形図、Phaseは継続・位相原点・シャッフルの図案を使います。FilterはNoneを丸と斜線で示し、他はLP1/LP2/HP1/HP2/BP1/BP2と表示します。選択中は濃色、マウスを重ねると名称を表示します。その他のパラメーターはノブです。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
 操作中はカーソルを隠して移動のたびに基準位置へ戻し、ノブの中央直上に「正式名称」「現在値」を中央揃えの2行で表示します。オーバーレイは全パラメーター共通の224×60 pxとし、枠全体が画面内に収まるよう位置を補正します。
 Unison・Polyphonyは整数、連続パラメーターは小数点以下最大3桁と単位を表示し、末尾の不要なゼロは省略します。
@@ -375,6 +375,7 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
 サイズは832×428物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
+`python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`へ保存します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
 対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。
@@ -654,7 +655,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/plugin/programs.rs`: VST3のルートユニットと内蔵プログラム一覧。
 - `src/plugin.rs`: インスタンス、バス、イベント・パラメーター処理、音声出力、Controller。
 - `src/gui.rs`: VST3画面の直接実装とホストへの編集通知。
-- `src/editor.rs`: カテゴリ別ノブ・選択リストの入力とegui/OpenGL描画。`src/editor/edits.rs`は編集通知キュー、`src/editor/pointer.rs`はOS別のカーソル操作。
+- `src/editor.rs`: カテゴリ別ノブ・選択ボタンの入力とegui/OpenGL描画。`src/editor/edits.rs`は編集通知キュー、`src/editor/pointer.rs`はOS別のカーソル操作。
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 全パラメーターの選択肢・単位・値変換、VST3変更キューとIBStreamの読み書き。
 - `src/volume.rs`: 生波形の実効値補正・ユニゾン合成・Vol・定位。

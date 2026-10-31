@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! カテゴリ別のノブ・選択リストとOpenGL描画を接続する。
+//! カテゴリ別のノブ・選択ボタンとOpenGL描画を接続する。
 
 pub(crate) mod edits;
 mod pointer;
@@ -37,7 +37,7 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(20, 96, 76);
 const GAP: f32 = 8.0;
 /// 全グループで共通の見出し／選択欄の高さ。
 const HEADER_HEIGHT: f32 = 28.0;
-/// ノブとラベルを含む共通の配置領域。行内の個数によって引き伸ばさない。
+/// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
 const KNOB_CELL: egui::Vec2 = egui::vec2(64.0, 80.0);
 
 /// 全パラメーターで共通のオーバーレイ寸法（物理px）。
@@ -57,6 +57,90 @@ fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
         ),
         OVERLAY_SIZE,
     )
+}
+
+/// ボタン中央の図案。Keepは波形の継続、Zeroは位相原点、Randomはシャッフル。
+fn choice_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    index: usize,
+    item: usize,
+    color: egui::Color32,
+) {
+    let center = rect.center();
+    let point = |x: f32, y: f32| center + egui::vec2(x * 10.0, y * 7.0);
+    let stroke = egui::Stroke::new(1.8, color);
+    let line = |points: &[(f32, f32)]| {
+        painter.add(egui::Shape::line(
+            points.iter().map(|&(x, y)| point(x, y)).collect(),
+            stroke,
+        ));
+    };
+    if index == 9 {
+        // None: フィルタを無効にする丸と斜線。
+        painter.circle_stroke(center, 7.0, stroke);
+        line(&[(-0.6, 0.85), (0.6, -0.85)]);
+    } else if index == 12 {
+        match item {
+            0 => {
+                line(&[
+                    (-1.0, 0.0),
+                    (-0.7, -0.7),
+                    (-0.4, 0.0),
+                    (-0.1, 0.7),
+                    (0.2, 0.0),
+                    (1.0, 0.0),
+                ]);
+                line(&[(0.6, -0.45), (1.0, 0.0), (0.6, 0.45)]);
+            }
+            1 => {
+                painter.circle_stroke(center, 7.0, stroke);
+                line(&[(0.0, 0.0), (0.0, -1.0)]);
+                painter.circle_filled(point(0.0, -1.0), 2.0, color);
+            }
+            _ => {
+                line(&[(-1.0, -0.7), (-0.6, -0.7), (0.6, 0.7), (1.0, 0.7)]);
+                line(&[(-1.0, 0.7), (-0.6, 0.7), (0.6, -0.7), (1.0, -0.7)]);
+                for y in [-0.7, 0.7] {
+                    line(&[(0.6, y - 0.4), (1.0, y), (0.6, y + 0.4)]);
+                }
+            }
+        }
+    } else {
+        match item {
+            0 => {
+                let points = (0..=24)
+                    .map(|i| {
+                        let t = i as f32 / 24.0;
+                        point(t * 2.0 - 1.0, -(t * std::f32::consts::TAU).sin())
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(points, stroke));
+            }
+            1 => line(&[(-1.0, 0.0), (-0.5, -1.0), (0.5, 1.0), (1.0, 0.0)]),
+            2 => line(&[
+                (-1.0, 1.0),
+                (-1.0, -1.0),
+                (0.0, -1.0),
+                (0.0, 1.0),
+                (1.0, 1.0),
+            ]),
+            3 => line(&[(-1.0, 1.0), (0.0, -1.0), (0.0, 1.0), (1.0, -1.0)]),
+            _ => line(&[
+                (-1.0, 0.2),
+                (-0.8, -0.7),
+                (-0.6, 0.6),
+                (-0.4, -0.9),
+                (-0.2, 0.1),
+                (0.0, 0.8),
+                (0.2, -0.5),
+                (0.4, 0.5),
+                (0.6, -0.2),
+                (0.8, 0.9),
+                (1.0, -0.8),
+            ]),
+        }
+    }
 }
 
 struct EditorState {
@@ -195,8 +279,9 @@ impl Editor {
         Ok(editor)
     }
 
-    fn knob(&self, ui: &mut egui::Ui, index: usize, selected: f64) {
-        let (area, _) = ui.allocate_exact_size(KNOB_CELL, egui::Sense::hover());
+    fn knob(&self, ui: &mut egui::Ui, index: usize, selected: f64, width: f32) {
+        let (area, _) =
+            ui.allocate_exact_size(egui::vec2(width, KNOB_CELL.y), egui::Sense::hover());
         let rect = egui::Rect::from_center_size(
             egui::pos2(area.center().x, area.top() + 30.0),
             egui::vec2(50.0, 50.0),
@@ -366,20 +451,52 @@ impl Editor {
         }
     }
 
+    /// 選択肢は横並びの排他的なボタンとして表示する。
     fn choice(&self, ui: &mut egui::Ui, index: usize, selected: f64) {
         let names = parameters::choices(index);
-        let mut choice = parameters::to_plain(index, selected) as usize;
-        if egui::ComboBox::from_id_salt(index)
-            .width(if index == 12 { 120.0 } else { 130.0 })
-            .height(320.0)
-            .show_index(ui, &mut choice, names.len(), |i| names[i])
-            .changed()
-        {
-            self.edits.push(Edit::Set(
-                index,
-                parameters::to_normalized(index, choice as f64),
-            ));
-        }
+        let choice = parameters::to_plain(index, selected) as usize;
+        let width = (ui.available_width() - 4.0 * (names.len() - 1) as f32) / names.len() as f32;
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.horizontal(|ui| {
+            for (item, name) in names.iter().enumerate() {
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(width, HEADER_HEIGHT), egui::Sense::click());
+                let active = item == choice;
+                let fill = if active {
+                    ACCENT
+                } else if response.hovered() {
+                    egui::Color32::from_rgb(219, 232, 222)
+                } else {
+                    egui::Color32::WHITE
+                };
+                ui.painter().rect(
+                    rect,
+                    3.0,
+                    fill,
+                    egui::Stroke::new(1.0, LINE),
+                    egui::StrokeKind::Inside,
+                );
+                let color = if active { egui::Color32::WHITE } else { INK };
+                if index == 9 && item != 0 {
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        ["", "LP1", "LP2", "HP1", "HP2", "BP1", "BP2"][item],
+                        egui::FontId::proportional(18.0),
+                        color,
+                    );
+                } else {
+                    choice_icon(ui.painter(), rect, index, item, color);
+                }
+                if response.clicked() && !active {
+                    self.edits.push(Edit::Set(
+                        index,
+                        parameters::to_normalized(index, item as f64),
+                    ));
+                }
+                response.on_hover_text(*name);
+            }
+        });
     }
 
     fn group(
@@ -412,14 +529,19 @@ impl Editor {
             INK,
         );
         for &index in choices {
-            let (width, y) = if index == 12 {
-                (120.0, GAP + HEADER_HEIGHT + GAP)
+            let width = if index == 9 {
+                rect.width() - GAP * 2.0
             } else {
-                (130.0, GAP)
+                parameters::choices(index).len() as f32 * 36.0 - 4.0
+            };
+            let y = if matches!(index, 9 | 12) {
+                GAP + HEADER_HEIGHT + GAP
+            } else {
+                GAP
             };
             if index == 12 {
                 painter.text(
-                    rect.min + egui::vec2(GAP, GAP * 2.0 + HEADER_HEIGHT * 1.5),
+                    rect.min + egui::vec2(GAP, y + HEADER_HEIGHT / 2.0),
                     egui::Align2::LEFT_CENTER,
                     "Phase",
                     egui::FontId::proportional(18.0),
@@ -437,29 +559,31 @@ impl Editor {
         let body_y = GAP
             + HEADER_HEIGHT
             + GAP
-            + if choices == [12] {
+            + if matches!(choices, [9] | [12]) {
                 HEADER_HEIGHT + GAP
             } else {
                 0.0
             };
+        // 上下左右の外周は共通のGAP。余った幅・高さは行内と行間へ均等に配る。
+        let row_gap = if rows.len() > 1 {
+            (rect.height() - body_y - GAP - KNOB_CELL.y * rows.len() as f32)
+                / (rows.len() - 1) as f32
+        } else {
+            0.0
+        };
         for (row, knobs) in rows.iter().enumerate() {
-            // Masterだけは単一ノブを列の中央へ置く。他の行は共通の左端から同じピッチで並べる。
-            let left = if choices == [12] {
-                (rect.width() - KNOB_CELL.x) / 2.0
-            } else {
-                GAP
-            };
+            let width = (rect.width() - GAP * 2.0) / knobs.len() as f32;
             for (k, &index) in knobs.iter().enumerate() {
                 let area = egui::Rect::from_min_size(
                     rect.min
                         + egui::vec2(
-                            left + k as f32 * KNOB_CELL.x,
-                            body_y + row as f32 * (KNOB_CELL.y + GAP),
+                            GAP + k as f32 * width,
+                            body_y + row as f32 * (KNOB_CELL.y + row_gap),
                         ),
-                    KNOB_CELL,
+                    egui::vec2(width, KNOB_CELL.y),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                    self.knob(ui, index, selected[index]);
+                    self.knob(ui, index, selected[index], width);
                 });
             }
         }
@@ -527,62 +651,66 @@ impl WindowHandler for Editor {
         let mut output = self.context.run_ui(input, |ui| {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
-            // 列幅は必要なノブ数と選択欄、グループの高さは共通のセル寸法から決める。
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
             let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
             let single_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
-            let filter_x = GAP + oscillator_width + GAP;
-            let master_x = filter_x + filter_width + GAP;
+            let panel_height = single_height * 3.0 + GAP * 2.0;
+            let center_x = GAP + oscillator_width + GAP;
+            let master_x = center_x + filter_width + GAP;
             let groups = [
                 (
                     "Osc1",
                     &[0_usize] as &[usize],
                     &[&[6_usize, 7, 20, 22][..]][..],
-                    [GAP, GAP, oscillator_width],
+                    [GAP, GAP, oscillator_width, single_height],
                 ),
                 (
                     "Osc2",
                     &[23],
                     &[&[24, 25, 29][..]][..],
-                    [GAP, GAP + single_height + GAP, oscillator_width],
+                    [
+                        GAP,
+                        GAP + single_height + GAP,
+                        oscillator_width,
+                        single_height,
+                    ],
                 ),
                 (
                     "Osc3",
                     &[26],
                     &[&[27, 28, 30][..]][..],
-                    [GAP, GAP + (single_height + GAP) * 2.0, oscillator_width],
-                ),
-                (
-                    "Filter",
-                    &[9],
-                    &[&[10, 11, 19][..], &[14, 15, 16, 17, 18][..]][..],
-                    [filter_x, GAP, filter_width],
+                    [
+                        GAP,
+                        GAP + (single_height + GAP) * 2.0,
+                        oscillator_width,
+                        single_height,
+                    ],
                 ),
                 (
                     "Amp",
                     &[],
                     &[&[1, 2, 3, 4, 5][..]][..],
+                    [center_x, GAP, filter_width, single_height],
+                ),
+                (
+                    "Filter",
+                    &[9],
+                    &[&[10, 11, 19][..], &[14, 15, 16, 17, 18][..]][..],
                     [
-                        filter_x,
-                        GAP + single_height + KNOB_CELL.y + GAP * 2.0,
+                        center_x,
+                        GAP + single_height + GAP,
                         filter_width,
+                        panel_height - single_height - GAP,
                     ],
                 ),
                 (
                     "Master",
                     &[12],
                     &[&[8][..], &[13][..], &[21][..]][..],
-                    [master_x, GAP, 192.0],
+                    [master_x, GAP, 192.0, panel_height],
                 ),
             ];
-            for (title, choices, rows, [x, y, width]) in groups {
-                let height = single_height
-                    + (rows.len() - 1) as f32 * (KNOB_CELL.y + GAP)
-                    + if choices == [12] {
-                        HEADER_HEIGHT + GAP
-                    } else {
-                        0.0
-                    };
+            for (title, choices, rows, [x, y, width, height]) in groups {
                 self.group(
                     ui,
                     title,
