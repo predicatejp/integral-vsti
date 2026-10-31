@@ -75,14 +75,14 @@ PhaseはVoice内の3発振器に共通するNote On時の位相を選ぶ3択パ�
 | ノコギリ波（Sawtooth） | `0.5 × √3` ≈ 0.866025 | 負のピークから直線的に上昇 |
 | ホワイトノイズ（Noise） | `0.5 × √3` ≈ 0.866025 | 毎サンプル別の一様乱数 |
 
-周期波の倍率は理想波形の1周期の実効値が0.5となる値です。有限個のサンプルで測定した実効値は、
+表はVol=0 dB・無変調時の出力です。波形の倍率は発振器の外で適用し、理想波形の1周期の実効値を0.5に揃えます。有限個のサンプルで測定した実効値は、
 周波数・サンプルレート・測定区間によって誤差が生じます。帯域制限・アンチエイリアシングは未実装で、
 特に高音域では折り返し成分が発生します。
 
 ## ホワイトノイズ
 
 Noiseはxoshiro256+ 1.0の上位53bitから一様乱数`u ∈ [0,1)`を生成し、
-`(2u−1) × √3 × amplitude`へ換算します。ベロシティ・エンベロープ最大時の理論実効値は0.5です。
+`2u−1`の生波形を出力し、独立した音量処理で`√3 × amplitude`を掛けます。ベロシティ・エンベロープ最大時の理論実効値は0.5です。
 乱数コンポーネントはOscillatorStateが所有し、乱数の状態更新は固定長の整数演算で行います。
 位相用とは別の状態を進めるため、PhaseのKeep・Zero・Randomでノイズ列はリセットされません。
 同じ初期乱数状態・入力・サンプル数なら同じ列を生成し、初期シードはインスタンスごとに取得します。
@@ -177,19 +177,24 @@ Phaseは3発振器共通で、Randomの乱数と位相はそれぞれ独立し�
 各発振器のVolumeが−∞の間も発音期間中は位相・ノイズ列を進め、音量を戻しても位相を再初期化しません。
 3発振器の加算には音数による音量補正を行いません。カットオフはTune適用前のノート周波数を基準とします。
 
-## FM変調
+## 位相変調
 
-Osc2/3の**FM**は0〜200%（初期値0%、GUIは1%刻み）です。
+Osc2/3の**FM**ノブは位相変調の深さを指定します。0〜200%（初期値0%、GUIは1%刻み）で、
+100%は1回転、200%は2回転（4π rad）です。
 Osc2 FM（ParamID `0x4f32464d`）はOsc1、Osc3 FM（`0x4f33464d`）はOsc2を変調します。
-各サンプル時刻でOsc3→Osc2→Osc1の順に生成し、受け側の周波数を次の式で決めます。
+各サンプル時刻でOsc3→Osc2→Osc1の順に生成し、受け側の波形を読む位相を次の式で決めます。
 
-`変調後Hz = Tune・Detune適用後のHz × (1 + FM / 100 × 生波形)`
+`読出し位相 = (保持位相 + FM / 100 × 生波形) mod 1`（周期単位）
 
-生波形は−1〜＋1で、実効値補正・Vol・Pan・AHDSRを適用する前の値です。
-Volが−∞でも変調は継続します。Noiseも変調に使え、音声と同じ乱数サンプルを共用します。
-Osc1のユニゾン各音へ同じ変調率を適用し、フィルタは元のノート周波数を基準にします。
-FM=200%では周波数が元の−1倍〜＋3倍の間で変化し、負の周波数では位相を逆方向へ進めます。現在の位相から波形を生成し、
-変調後の周波数で次サンプルの位相へ進めます。FMの変更点間は正規化空間で線形補間します。
+保持位相はTune・Detune適用後の周波数で進め、変調量は累積しません。
+FM=200%でモジュレータが±1なら、±2回転なので周期波形は無変調時と同じ位相になります。
+途中の値では位相がずれるため、変調音が生じます。
+Osc1のユニゾン各音には同じ位相変調量を適用します。FMの変更点間は正規化空間で線形補間します。
+
+発振器は各ユニゾンについてピーク振幅1の生波形を出力します。
+実効値補正・ユニゾン合成・Vol・Panは独立した`volume`モジュールで適用し、3発振器の加算後にAHDSRを掛けます。
+生波形を変調に使うため、Volが−∞でも変調は継続します。
+Noiseは音声と変調で同じ乱数サンプルを共用し、Noise自体への位相変調では乱数列を変更しません。
 
 ## ポリフォニー
 
@@ -319,8 +324,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v12は252バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 FM/Osc3 FMを各f64。little endian）です。
-読み込みは現行形式v12のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v13は252バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 FM/Osc3 FMを各f64。little endian）です。
+読み込みは現行形式v13のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -651,6 +656,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/editor.rs`: カテゴリ別ノブ・選択リストの入力とegui/OpenGL描画。`src/editor/edits.rs`は編集通知キュー、`src/editor/pointer.rs`はOS別のカーソル操作。
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 全パラメーターの選択肢・単位・値変換、VST3変更キューとIBStreamの読み書き。
+- `src/volume.rs`: 生波形の実効値補正・ユニゾン合成・Vol・定位。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した5波形オシレータ。
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。

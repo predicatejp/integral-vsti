@@ -121,7 +121,7 @@ impl Synthesizer {
         }
         if values[29..31] != previous[29..31] {
             for voice in &mut self.state.voices {
-                voice.set_fm([values[29] * 2.0, values[30] * 2.0]);
+                voice.set_phase_modulation([values[29] * 2.0, values[30] * 2.0]);
             }
         }
         if values[20..22] != previous[20..22]
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn maximum_fm_stays_finite_with_high_notes_and_all_waveforms() {
+    fn maximum_phase_modulation_stays_finite_with_high_notes_and_all_waveforms() {
         for rate in [44100.0, 48000.0, 96000.0] {
             for wave in 0..5 {
                 let mut synth = Synthesizer::new();
@@ -355,7 +355,7 @@ mod tests {
                             10.0_f64.powf(parameters::to_plain(volume, values[volume]) / 20.0),
                         );
                     }
-                    reference.set_fm([values[29] * 2.0, values[30] * 2.0]);
+                    reference.set_phase_modulation([values[29] * 2.0, values[30] * 2.0]);
                     reference.note_on(note(0, 0, 69), 0.0, 1.0);
                     for id in 0..count {
                         synth.note_on(note(id, 0, 69), 0.0, 1.0);
@@ -597,7 +597,7 @@ mod tests {
             for &(rate, samples) in measurements {
                 for velocity in [0.0, 0.25, 0.5, 1.0] {
                     let mut synth = unfiltered();
-                    synth.state.voices[0].state.oscillator_inputs[0].waveform = waveform;
+                    synth.state.voices[0].set_oscillator(0, waveform, 1.0, 1.0);
                     // 定常RMSの検証なので、立ち上がり・リリースだけ許容最短にする。
                     synth.state.voices[0].state.envelope_parameters.attack_ms = 1.0;
                     synth.state.voices[0].state.envelope_parameters.decay_ms = 1.0;
@@ -636,7 +636,7 @@ mod tests {
     fn retrigger_release_and_stop_preserve_amplitude_and_phase() {
         let mut synth = unfiltered();
         synth.set_sample_rate(1000.0); // 1サンプル=1ms。
-        synth.state.voices[0].state.oscillator_inputs[0].waveform = Waveform::Square;
+        synth.state.voices[0].set_oscillator(0, Waveform::Square, 1.0, 1.0);
         synth.note_on(note(1, 0, 69), 0.0, 1.0);
         for i in 0..5 {
             assert!((synth.generate_sample()[0].abs() - 0.05 * f64::from(i)).abs() < 1e-12);
@@ -673,7 +673,7 @@ mod tests {
     fn missing_note_ids_match_channel_and_pitch_and_invalid_notes_are_ignored() {
         let mut synth = unfiltered();
         synth.set_sample_rate(1000.0);
-        synth.state.voices[0].state.oscillator_inputs[0].waveform = Waveform::Square;
+        synth.state.voices[0].set_oscillator(0, Waveform::Square, 1.0, 1.0);
         synth.note_on(note(-1, 2, 69), 0.0, 1.0);
         for _ in 0..5 {
             synth.generate_sample();

@@ -323,7 +323,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(controller->setParamNormalized(0, 0.0) == kInvalidArgument);
     StateStream initial;
     assert(component->getState(&initial) == kResultOk);
-    assert(initial.bytes.size() == 252 && initial.bytes[4] == 12 && initial.bytes[8] == 0);
+    assert(initial.bytes.size() == 252 && initial.bytes[4] == 13 && initial.bytes[8] == 0);
     configureEnvelope(processor, true);
     // Controllerへの表示更新だけではProcessorの値は変わらない。
     assert(controller->getParamNormalized(waveformId) == 1.0);
@@ -413,7 +413,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     for (int error = 0; error < 5; ++error) {
         StateStream broken; broken.bytes = saved.bytes;
         if (error == 0) broken.bytes.resize(11);
-        if (error == 1) broken.bytes[4] = 13;
+        if (error == 1) broken.bytes[4] = 14;
         if (error == 2) broken.bytes[8] = 5;
         if (error == 3) broken.bytes[0] = 0;
         if (error == 4) broken.fail = true;
@@ -501,7 +501,7 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
     check({.3, .25, .2, .15}); // offset=-1の0.7からoffset=3の0.3へ線形補間。
     changes.queues.clear(); check({.15, .15});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 252 && saved.bytes[4] == 12);
+    assert(saved.bytes.size() == 252 && saved.bytes[4] == 13);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(std::abs(controller->getParamNormalized(envelopeIds[3]) - .3) < 1e-12);
     // 不正な時間値はControllerにもDSPにも適用しない。
@@ -575,7 +575,7 @@ void checkUnison(IComponent* component, IAudioProcessor* processor, IEditControl
         events.values.clear(); previousCount = n; previousDetune = target;
     }
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 252 && saved.bytes[4] == 12);
+    assert(saved.bytes.size() == 252 && saved.bytes[4] == 13);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(unisonId) == 1.0);
     assert(controller->getParamNormalized(detuneId) == 1.0);
@@ -653,7 +653,7 @@ void checkPolyphony(IComponent* component, IAudioProcessor* processor, IEditCont
     events.values = {note(true, 0, 200, 12, 0, .5f), note(false, 0, 100, 12)};
     check({15.75, 15.75});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 252 && saved.bytes[4] == 12);
+    assert(saved.bytes.size() == 252 && saved.bytes[4] == 13);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(polyphonyId) == 1.0);
     // 次の割り当て位置は2。減少で範囲外の音を止め、増加しても復活させない。
@@ -876,14 +876,16 @@ void checkFm(IComponent* component, IAudioProcessor* processor, IEditController*
     std::array<double, 3> phase {};
     for (int n = 0; n < 33; ++n) {
         if (n == 23) phase.fill(0);
-        const double expected = n < 31 ? .5 * std::sqrt(6.) * (2 * phase[0] - 1) : 0;
-        assert(left[n] == 0 && std::abs(right[n] - expected) < 3e-6);
         const double fm2 = n < 16 ? .25 + 1.75 * (n + 1) / 16. : 2;
         const double fm3 = n <= 8 ? .5 : n < 16 ? .5 + 1.5 * (n - 8) / 8. : 2;
-        const double m2 = std::sin(2 * std::acos(-1.) * phase[1]);
         const double m3 = std::sin(2 * std::acos(-1.) * phase[2]);
-        phase[0] = std::fmod(phase[0] + 440 * (1 + fm2 * m2) / 48000., 1.);
-        phase[1] = std::fmod(phase[1] + 880 * (1 + fm3 * m3) / 48000., 1.);
+        const double m2 = std::sin(2 * std::acos(-1.) * (phase[1] + fm3 * m3));
+        const double modulated = phase[0] + fm2 * m2;
+        const double wrapped = modulated - std::floor(modulated);
+        const double expected = n < 31 ? .5 * std::sqrt(6.) * (2 * wrapped - 1) : 0;
+        assert(left[n] == 0 && std::abs(right[n] - expected) < 2e-5);
+        phase[0] = std::fmod(phase[0] + 440 / 48000., 1.);
+        phase[1] = std::fmod(phase[1] + 880 / 48000., 1.);
         phase[2] = std::fmod(phase[2] + 220 / 48000., 1.);
         for (auto& p : phase) if (p < 0) p += 1;
     }

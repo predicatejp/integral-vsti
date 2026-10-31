@@ -589,9 +589,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v12: 固定252バイト。波形番号u32と、その他の実単位f64を保持する。
+// v13: 固定252バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x0c\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x0d\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -837,12 +837,12 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13] {
+                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14] {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                (*stream).bytes[4] = 12;
+                (*stream).bytes[4] = 13;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
