@@ -540,6 +540,13 @@ impl Editor {
 
 impl WindowHandler for Editor {
     fn draw(&self) -> Result<(), HandlerError> {
+        // 借用をフレーム全体で保持し、OSやドライバーからの再入は次の描画へ回す。
+        // 失敗時の早期returnでもRefMutが解放され、次の描画を受け付けられる。
+        let Ok(mut painter) = self.painter.try_borrow_mut() else {
+            // 再入側のフレーム終了に再描画要求を消費させず、復帰後に配送する。
+            self.window.request_redraw_after(Duration::ZERO);
+            return Ok(());
+        };
         let size = self.window.size().physical;
         let mut input = self.input.borrow_mut().take();
         input.time = Some(self.start.elapsed().as_secs_f64());
@@ -547,7 +554,7 @@ impl WindowHandler for Editor {
             egui::Pos2::ZERO,
             egui::vec2(size.width as f32, size.height as f32),
         ));
-        input.max_texture_side = Some(self.painter.borrow().max_texture_side());
+        input.max_texture_side = Some(painter.max_texture_side());
         let selected = self.parameters.snapshot();
         self.displayed.set(selected);
         let voice_count = self.active_voices.load(Ordering::Relaxed);
@@ -657,16 +664,13 @@ impl WindowHandler for Editor {
         unsafe {
             self.gl.make_current()?;
         }
-        {
-            let mut painter = self.painter.borrow_mut();
-            painter.clear([size.width, size.height], [0.0, 0.0, 0.0, 1.0]);
-            painter.paint_and_update_textures(
-                [size.width, size.height],
-                output.pixels_per_point,
-                &shapes,
-                &mut output.textures_delta,
-            );
-        }
+        painter.clear([size.width, size.height], [0.0, 0.0, 0.0, 1.0]);
+        painter.paint_and_update_textures(
+            [size.width, size.height],
+            output.pixels_per_point,
+            &shapes,
+            &mut output.textures_delta,
+        );
         let result = self.gl.swap_buffers();
         // SAFETY: 上で有効にした同じコンテキスト。
         unsafe {
@@ -760,6 +764,10 @@ impl WindowHandler for Editor {
     }
 
     fn on_timer(&self, _: &baseview::TimerHandle) {
+        // 描画中のタイマー再入ではホストを呼ばず、編集キューを次の通知まで保持する。
+        if self.painter.try_borrow().is_err() {
+            return;
+        }
         // キーボードフォーカスを取得しないWindowsでは、終了条件もタイマーで確認する。
         #[cfg(target_os = "windows")]
         if self.state.borrow().drag.is_some() && self.current_drag_position().is_none() {

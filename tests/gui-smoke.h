@@ -7,7 +7,9 @@
 #include <thread>
 #include <algorithm>
 #include <fstream>
-#ifndef _WIN32
+#ifdef _WIN32
+#include "gui-reentry.h"
+#else
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
@@ -286,12 +288,18 @@ public:
     uint32 PLUGIN_API addRef() override { return ++refs; }
     uint32 PLUGIN_API release() override { assert(refs > 1); return --refs; }
     tresult PLUGIN_API beginEdit(ParamID id) override {
+#ifdef _WIN32
+        assert(!GuiReentry::insideDraw);
+#endif
         assert(std::this_thread::get_id() == uiThread);
         assert(id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
     tresult PLUGIN_API performEdit(ParamID id, ParamValue v) override {
+#ifdef _WIN32
+        assert(!GuiReentry::insideDraw);
+#endif
         assert(std::this_thread::get_id() == uiThread && id == editedId);
         sequence.push_back(1); value = v;
         // ホストからControllerへ再入しても循環・借用違反を起こさない。
@@ -299,6 +307,9 @@ public:
         return kResultOk;
     }
     tresult PLUGIN_API endEdit(ParamID id) override {
+#ifdef _WIN32
+        assert(!GuiReentry::insideDraw);
+#endif
         assert(std::this_thread::get_id() == uiThread && id == editedId);
         sequence.push_back(2); return kResultOk;
     }
@@ -464,7 +475,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
             pump(); assert(handler.sequence.empty());
             const auto [x, y] = controls[i];
-            parent.movePointer(x, y); pump(); parent.knobButton(true);
+            parent.movePointer(x, y); pump();
+#ifdef _WIN32
+            GuiReentry::arm(parent.child());
+#endif
+            parent.knobButton(true);
             waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
             assert(handler.sequence == (std::vector<int>{0}));
             assert(!parent.cursorVisible());
@@ -583,5 +598,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     assert(view->setFrame(nullptr) == kResultOk && frame.refs == 1);
     assert(view->release() == 0);
     assert(controller->setComponentHandler(nullptr) == kResultOk && handler.refs == 1);
+#ifdef _WIN32
+    assert(GuiReentry::injections == 52); // 26ノブ×2回の表示で再入と配送延期を検証。
+#endif
     std::cout << "GUI: embedded editor, clicks, UI-thread gestures, restore and reopen passed\n";
 }

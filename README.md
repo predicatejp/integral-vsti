@@ -377,6 +377,7 @@ VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11Embed
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
 サイズは784×472物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
 `python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中・発音中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`、`target/gui-voices.png`へ保存します。
+Windowsでは、描画中に再描画と編集配送タイマーを意図的に再入させ、描画の延期と、描画終了後の編集通知を検証します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.2のOpenGLバックエンドを使用します。
 対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。
@@ -671,6 +672,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/tests.rs`: Rust側のABIレイアウトと参照管理のテスト。各コンポーネントの回帰テストは各モジュール内に配置。
 - `benchmarks/`: 継続利用するDSPの速度測定。
 - `tests/gui-smoke.h`: 埋め込み画面とマウス操作の検証専用コード。
+- `tests/gui-reentry.h`: Windowsの描画・タイマー再入を再現する回帰試験。
 - `scripts/bundle-licenses.py`: 対象OSの依存ライブラリと付属フォントの通知収集。
 - `tests/abi-smoke.cpp`: 公式SDKの型を使う独立したABI検証。
 - `scripts/build-vst3.py` / `scripts/check-abi.py`: Linux/Windows共通のバンドル・ZIP生成とABI検証。
