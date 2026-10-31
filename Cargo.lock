@@ -43,9 +43,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "baseview"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4179c1b5e41cec78a6b000eaa8317ddbc2556124dabc7344ff1df89d566cc517"
+checksum = "5d74c34d835411d7fcc30896cd37d28f0f6f11415ac116898546c6e019762a7d"
 dependencies = [
  "block2",
  "bytemuck",

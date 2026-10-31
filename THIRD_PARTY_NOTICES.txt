@@ -59,7 +59,7 @@ SOFTWARE.
 
 GUI dependencies and fonts
 
-The GUI uses egui 0.37.0, egui_glow 0.37.0 and baseview 0.4.1 with
+The GUI uses egui 0.37.0, egui_glow 0.37.0 and baseview 0.4.2 with
 OpenGL rendering. Cargo.lock records the exact dependency versions.
 The bundle's Contents/Resources/Licenses/dependencies/ contains the target's
 crate and bundled-font license notices. Its index.json lists the versions,
