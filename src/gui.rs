@@ -21,8 +21,8 @@ use std::{
     },
 };
 
-const WIDTH: i32 = 1024;
-const HEIGHT: i32 = 768;
+const WIDTH: i32 = 784;
+const HEIGHT: i32 = 472;
 const RECT: ViewRect = ViewRect {
     left: 0,
     top: 0,
@@ -73,6 +73,8 @@ struct ViewState {
     ticker: RefCell<Option<Ticker>>,
     /// Controllerと共有する22個の正規化値。
     parameters: Arc<SharedParameters>,
+    /// 音声側と共有する表示専用の発音数。
+    active_voices: Arc<AtomicU32>,
     /// 描画側からの操作の送り口。音声スレッドでは使用しない。
     sender: Arc<Edits>,
     /// 開始が成功した編集先。終了時にtakeし、再入による二重通知を防ぐ。
@@ -225,7 +227,11 @@ static TIMER_TABLE: TimerVTable = TimerVTable {
 };
 
 /// SAFETY: Controllerへの有効な借用参照をUIスレッドで渡す。
-pub unsafe fn create(controller: This, parameters: Arc<SharedParameters>) -> This {
+pub unsafe fn create(
+    controller: This,
+    parameters: Arc<SharedParameters>,
+    active_voices: Arc<AtomicU32>,
+) -> This {
     let Some(controller) = (unsafe { HostRef::retain(controller) }) else {
         return ptr::null_mut();
     };
@@ -240,6 +246,7 @@ pub unsafe fn create(controller: This, parameters: Arc<SharedParameters>) -> Thi
             #[cfg(target_os = "linux")]
             ticker: RefCell::new(None),
             parameters,
+            active_voices,
             sender,
             editing: RefCell::new(None),
             polling: Cell::new(false),
@@ -372,6 +379,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
         .with_parent(Some(&parent))
         .with_gl_config(Some(baseview::gl::GlConfig::default()));
     let parameters = Arc::clone(&state.state.parameters);
+    let active_voices = Arc::clone(&state.state.active_voices);
     let edits = state.state.sender.clone();
     match baseview::Window::create(settings, move |window| {
         #[cfg(target_os = "windows")]
@@ -381,6 +389,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
         super::editor::Editor::new(
             window,
             parameters,
+            active_voices,
             edits,
             #[cfg(target_os = "windows")]
             view,

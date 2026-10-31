@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! カテゴリ別のノブ・選択リストとOpenGL描画を接続する。
+//! カテゴリ別のノブ・ドロップダウンとOpenGL描画を接続する。
 
 pub(crate) mod edits;
 mod pointer;
@@ -15,7 +15,10 @@ use baseview::{
 use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers, NamedKey};
 use std::{
     cell::{Cell, RefCell},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -26,13 +29,22 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "Tune", "Vol", "FM", "FM",
 ];
 
-/// グループの寸法とノブの並ぶ方向。
-struct GroupLayout {
-    /// 枠内の最小サイズ。
-    size: egui::Vec2,
-    /// Masterではノブを上から下へ並べる。
-    vertical_knobs: bool,
-}
+// 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
+const PANEL: egui::Color32 = egui::Color32::from_rgb(248, 249, 245);
+const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(53, 71, 62);
+const LINE: egui::Color32 = egui::Color32::from_rgb(143, 160, 147);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(20, 96, 76);
+
+/// 外周・グループ間・枠内の左右余白と、基本の縦間隔。
+const GAP: f32 = 8.0;
+/// 見出し行と選択欄の高さ。選択欄は見出し行の中央に置く。
+const HEADER_HEIGHT: f32 = 28.0;
+const CHOICE_HEIGHT: f32 = 28.0;
+/// プラグイン名と発音数を表示する上部バー。
+const TITLE_BAR_HEIGHT: f32 = 36.0;
+/// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
+const KNOB_CELL: egui::Vec2 = egui::vec2(64.0, 80.0);
 
 /// 全パラメーターで共通のオーバーレイ寸法（物理px）。
 const OVERLAY_SIZE: egui::Vec2 = egui::vec2(224.0, 60.0);
@@ -106,8 +118,14 @@ pub(super) struct Editor {
     pointer: Cell<egui::Pos2>,
     /// eguiへ渡す単調増加時刻の起点。
     start: Instant,
+    /// X11の定期コールバックを有効に保つため、画面と同じ寿命で保持する。
+    _timer: baseview::TimerHandle,
     /// Controllerと共有する表示値。
     parameters: Arc<SharedParameters>,
+    /// 音声ブロック末尾の発音数。描画側は読み取りだけ行う。
+    active_voices: Arc<AtomicU32>,
+    /// 最後に描画した発音数。変化した場合だけ再描画する。
+    displayed_voices: Cell<u32>,
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
     displayed: Cell<[f64; parameters::COUNT]>,
     /// ホストUIスレッドへの編集キュー。描画中にはホストを呼ばない。
@@ -121,6 +139,7 @@ impl Editor {
     pub(super) fn new(
         window: WindowContext,
         parameters: Arc<SharedParameters>,
+        active_voices: Arc<AtomicU32>,
         edits: Arc<Edits>,
         #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::EditorView>,
     ) -> Result<Self, HandlerError> {
@@ -136,6 +155,7 @@ impl Editor {
             gl.make_not_current()?;
             painter?
         };
+        let timer = window.create_timer(Duration::from_millis(16))?;
         let editor = Self {
             state: RefCell::new(EditorState {
                 drag: None,
@@ -148,7 +168,10 @@ impl Editor {
             input: RefCell::new(egui::RawInput::default()),
             pointer: Cell::new(egui::Pos2::ZERO),
             start: Instant::now(),
+            _timer: timer,
             parameters,
+            active_voices,
+            displayed_voices: Cell::new(u32::MAX),
             displayed: Cell::new([f64::NAN; parameters::COUNT]),
             edits,
             #[cfg(target_os = "windows")]
@@ -163,15 +186,37 @@ impl Editor {
                     18.0
                 };
             }
+            style.spacing.button_padding = egui::vec2(10.0, 3.0);
+            style.animation_time = 0.0;
+            style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, INK);
+            style.visuals.panel_fill = egui::Color32::from_rgb(232, 237, 231);
+            style.visuals.window_fill = PANEL;
+            style.visuals.selection.bg_fill = ACCENT;
+            style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+            for widget in [
+                &mut style.visuals.widgets.inactive,
+                &mut style.visuals.widgets.hovered,
+                &mut style.visuals.widgets.active,
+                &mut style.visuals.widgets.open,
+            ] {
+                widget.corner_radius = egui::CornerRadius::same(4);
+                widget.bg_stroke = egui::Stroke::new(1.0, LINE);
+                widget.fg_stroke = egui::Stroke::new(1.0, INK);
+            }
+            style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(235, 241, 234);
+            style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(219, 232, 222);
+            style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(207, 225, 215);
         });
-        // タイマーの寿命と解除はbaseviewの子ウィンドウに従う。
-        editor.window.create_timer(Duration::from_millis(16))?;
         Ok(editor)
     }
 
     fn knob(&self, ui: &mut egui::Ui, index: usize, selected: f64, width: f32) {
-        let (area, _) = ui.allocate_exact_size(egui::vec2(width, 50.0), egui::Sense::hover());
-        let rect = egui::Rect::from_center_size(area.center(), egui::vec2(50.0, 50.0));
+        let (area, _) =
+            ui.allocate_exact_size(egui::vec2(width, KNOB_CELL.y), egui::Sense::hover());
+        let rect = egui::Rect::from_center_size(
+            egui::pos2(area.center().x, area.top() + 30.0),
+            egui::vec2(50.0, 50.0),
+        );
         let mut state = self.state.borrow_mut();
         state.knobs[index] = rect;
         let drag = state.drag.as_ref().filter(|d| d.index == index);
@@ -181,31 +226,66 @@ impl Editor {
         } else {
             parameters::to_plain(index, selected)
         };
-        let angle =
-            std::f32::consts::PI * (0.75 + 1.5 * tick as f32 / parameters::max_tick(index) as f32);
+        let position = tick as f32 / parameters::max_tick(index) as f32;
+        let angle = |t: f32| std::f32::consts::PI * (0.75 + 1.5 * t);
+        let direction = |t: f32| egui::vec2(angle(t).cos(), angle(t).sin());
         let center = rect.center();
-        let color = if drag.is_some() {
-            ui.visuals().selection.bg_fill
+        let painter = ui.painter().clone();
+        // 一定の目盛りと値の円弧。中点を持つパラメーターはゼロから両方向へ伸ばす。
+        let zero = if matches!(index, 19 | 21 | 24 | 27) {
+            0.5
         } else {
-            egui::Color32::from_gray(220)
+            0.0
         };
-        ui.painter().circle(
+        for k in 0..=8 {
+            let d = direction(k as f32 / 8.0);
+            painter.line_segment(
+                [center + d * 28.0, center + d * 30.0],
+                egui::Stroke::new(1.0, LINE),
+            );
+        }
+        let arc = |from: f32, to: f32| {
+            (0..=32)
+                .map(|k| center + direction(from + (to - from) * k as f32 / 32.0) * 26.0)
+                .collect::<Vec<_>>()
+        };
+        painter.add(egui::Shape::line(
+            arc(0.0, 1.0),
+            egui::Stroke::new(2.0, LINE),
+        ));
+        painter.add(egui::Shape::line(
+            arc(zero, position),
+            egui::Stroke::new(3.0, ACCENT),
+        ));
+        painter.circle_filled(center + egui::vec2(0.0, 1.5), 22.0, LINE);
+        painter.circle(
             center,
             22.0,
-            color,
-            egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
+            egui::Color32::WHITE,
+            egui::Stroke::new(1.0, if drag.is_some() { ACCENT } else { LINE }),
         );
-        ui.painter().line_segment(
-            [center, center + egui::vec2(angle.cos(), angle.sin()) * 16.0],
-            egui::Stroke::new(2.0, egui::Color32::from_rgb(40, 90, 150)),
+        let d = direction(position);
+        painter.line_segment(
+            [center + d * 10.0, center + d * 18.0],
+            egui::Stroke::new(3.0, ACCENT),
+        );
+        painter.text(
+            egui::pos2(center.x, area.top() + 68.0),
+            egui::Align2::CENTER_CENTER,
+            KNOB_NAMES[index],
+            egui::FontId::proportional(18.0),
+            MUTED,
         );
         if drag.is_some() {
             let value_label = if parameters::is_volume(index) && value == f64::NEG_INFINITY {
                 "−∞ dB".to_owned()
-            } else if matches!(index, 6 | 8) {
-                format!("{value:.0}")
             } else {
-                format!("{value:.3} {}", parameters::unit(index))
+                let number = format!("{value:.3}");
+                format!(
+                    "{} {}",
+                    number.trim_end_matches('0').trim_end_matches('.'),
+                    parameters::unit(index)
+                )
             };
             let label = format!("{}\n{}", NAMES[index], value_label.trim_end());
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
@@ -214,18 +294,18 @@ impl Editor {
             ));
             let mut layout = egui::text::LayoutJob::simple(
                 label,
-                egui::FontId::monospace(18.0),
-                egui::Color32::BLACK,
+                egui::FontId::proportional(18.0),
+                egui::Color32::WHITE,
                 f32::INFINITY,
             );
             layout.halign = egui::Align::Center;
             let text = painter.layout_job(layout);
             let bounds = overlay_rect(rect, ui.ctx().viewport_rect());
-            painter.rect_filled(bounds, 3.0, egui::Color32::from_rgb(255, 250, 220));
+            painter.rect_filled(bounds, 5.0, INK);
             painter.galley(
                 egui::pos2(bounds.center().x, bounds.center().y - text.size().y / 2.0),
                 text,
-                egui::Color32::BLACK,
+                egui::Color32::WHITE,
             );
         }
     }
@@ -306,7 +386,8 @@ impl Editor {
         let names = parameters::choices(index);
         let mut choice = parameters::to_plain(index, selected) as usize;
         if egui::ComboBox::from_id_salt(index)
-            .width(130.0)
+            .width(ui.available_width())
+            .height(320.0)
             .show_index(ui, &mut choice, names.len(), |i| names[i])
             .changed()
         {
@@ -322,61 +403,92 @@ impl Editor {
         ui: &mut egui::Ui,
         title: &str,
         choices: &[usize],
-        knobs: &[usize],
-        layout: GroupLayout,
+        rows: &[&[usize]],
+        [x, y, width, height]: [f32; 4],
         selected: &[f64; parameters::COUNT],
     ) {
-        egui::Frame::group(ui.style())
-            .inner_margin(8)
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    let knob_count = if layout.vertical_knobs {
-                        1
-                    } else {
-                        knobs.len()
-                    };
-                    let knob_width = knob_count as f32 * 60.0 - 8.0;
-                    let choice_width = choices.len() as f32 * 138.0 - 8.0;
-                    ui.set_min_size(layout.size);
-                    ui.set_width(layout.size.x.max(knob_width).max(choice_width));
-                    if choices.len() == 1 && parameters::is_waveform(choices[0]) {
-                        ui.horizontal(|ui| {
-                            ui.heading(title);
-                            self.choice(ui, choices[0], selected[choices[0]]);
-                        });
-                    } else {
-                        ui.heading(title);
-                        if !choices.is_empty() {
-                            ui.horizontal(|ui| {
-                                for &index in choices {
-                                    ui.vertical(|ui| {
-                                        ui.label(KNOB_NAMES[index]);
-                                        self.choice(ui, index, selected[index]);
-                                    });
-                                }
-                            });
-                        }
-                    }
-                    ui.add_space(6.0);
-                    let knob_layout = if layout.vertical_knobs {
-                        egui::Layout::top_down(egui::Align::Center)
-                    } else {
-                        egui::Layout::left_to_right(egui::Align::Min)
-                    };
-                    ui.with_layout(knob_layout, |ui| {
-                        for &index in knobs {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(52.0, 74.0),
-                                egui::Layout::top_down(egui::Align::Center),
-                                |ui| {
-                                    self.knob(ui, index, selected[index], 52.0);
-                                    ui.label(KNOB_NAMES[index]);
-                                },
-                            );
-                        }
-                    });
-                });
+        // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
+        let phase_height = if choices == [12] {
+            18.0 + GAP + CHOICE_HEIGHT
+        } else {
+            0.0
+        };
+        let content_rows = rows.len() + usize::from(phase_height > 0.0);
+        let row_gap =
+            (height - GAP - HEADER_HEIGHT - phase_height - KNOB_CELL.y * rows.len() as f32)
+                / (content_rows + 1) as f32;
+        let body_y = GAP
+            + HEADER_HEIGHT
+            + row_gap
+            + if phase_height > 0.0 {
+                phase_height + row_gap
+            } else {
+                0.0
+            };
+        let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
+        let painter = ui.painter().clone();
+        painter.rect_filled(rect, 8.0, PANEL);
+        painter.rect_stroke(
+            rect,
+            8.0,
+            egui::Stroke::new(1.0, LINE),
+            egui::StrokeKind::Inside,
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_size(rect.min + egui::vec2(GAP, GAP + 6.0), egui::vec2(3.0, 16.0)),
+            1.0,
+            ACCENT,
+        );
+        painter.text(
+            rect.min + egui::vec2(GAP + 10.0, GAP + HEADER_HEIGHT / 2.0),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(24.0),
+            INK,
+        );
+        for &index in choices {
+            let choice = if index == 12 {
+                let label = rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT + row_gap);
+                painter.text(
+                    label,
+                    egui::Align2::LEFT_TOP,
+                    "Phase",
+                    egui::FontId::proportional(18.0),
+                    MUTED,
+                );
+                egui::Rect::from_min_size(
+                    label + egui::vec2(0.0, 18.0 + GAP),
+                    egui::vec2(rect.width() - GAP * 2.0, CHOICE_HEIGHT),
+                )
+            } else {
+                egui::Rect::from_min_size(
+                    egui::pos2(
+                        rect.right() - GAP - 130.0,
+                        rect.top() + GAP + (HEADER_HEIGHT - CHOICE_HEIGHT) / 2.0,
+                    ),
+                    egui::vec2(130.0, CHOICE_HEIGHT),
+                )
+            };
+            ui.scope_builder(egui::UiBuilder::new().max_rect(choice), |ui| {
+                self.choice(ui, index, selected[index]);
             });
+        }
+        for (row, knobs) in rows.iter().enumerate() {
+            let width = (rect.width() - GAP * 2.0) / knobs.len() as f32;
+            for (k, &index) in knobs.iter().enumerate() {
+                let area = egui::Rect::from_min_size(
+                    rect.min
+                        + egui::vec2(
+                            GAP + k as f32 * width,
+                            body_y + row as f32 * (KNOB_CELL.y + row_gap),
+                        ),
+                    egui::vec2(width, KNOB_CELL.y),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                    self.knob(ui, index, selected[index], width);
+                });
+            }
+        }
     }
 
     fn keyboard_input(&self, event: KeyboardEvent) -> EventStatus {
@@ -438,94 +550,105 @@ impl WindowHandler for Editor {
         input.max_texture_side = Some(self.painter.borrow().max_texture_side());
         let selected = self.parameters.snapshot();
         self.displayed.set(selected);
+        let voice_count = self.active_voices.load(Ordering::Relaxed);
+        self.displayed_voices.set(voice_count);
         let mut output = self.context.run_ui(input, |ui| {
-            egui::Frame::new()
-                .inner_margin(8)
-                .fill(ui.visuals().panel_fill)
-                .show(ui, |ui| {
-                    ui.set_min_size(ui.available_size());
-                    ui.heading("Sample VSTi");
-                    ui.add_space(4.0);
-                    ui.horizontal_top(|ui| {
-                        ui.vertical(|ui| {
-                            self.group(
-                                ui,
-                                "Osc1",
-                                &[0],
-                                &[6, 7, 20, 22],
-                                GroupLayout {
-                                    size: egui::vec2(292.0, 0.0),
-                                    vertical_knobs: false,
-                                },
-                                &selected,
-                            );
-                            for (title, wave, tune, volume, fm) in
-                                [("Osc2", 23, 24, 25, 29), ("Osc3", 26, 27, 28, 30)]
-                            {
-                                ui.add_space(5.0);
-                                self.group(
-                                    ui,
-                                    title,
-                                    &[wave],
-                                    &[tune, volume, fm],
-                                    GroupLayout {
-                                        size: egui::vec2(292.0, 0.0),
-                                        vertical_knobs: false,
-                                    },
-                                    &selected,
-                                );
-                            }
-                            ui.add_space(5.0);
-                            self.group(
-                                ui,
-                                "Amplitude envelope",
-                                &[],
-                                &[1, 2, 3, 4, 5],
-                                GroupLayout {
-                                    size: egui::vec2(292.0, 0.0),
-                                    vertical_knobs: false,
-                                },
-                                &selected,
-                            );
-                        });
-                        ui.vertical(|ui| {
-                            self.group(
-                                ui,
-                                "Filter",
-                                &[9],
-                                &[10, 11],
-                                GroupLayout {
-                                    size: egui::vec2(352.0, 162.0),
-                                    vertical_knobs: false,
-                                },
-                                &selected,
-                            );
-                            ui.add_space(5.0);
-                            self.group(
-                                ui,
-                                "Cutoff envelope",
-                                &[],
-                                &[14, 15, 16, 17, 18, 19],
-                                GroupLayout {
-                                    size: egui::vec2(352.0, 0.0),
-                                    vertical_knobs: false,
-                                },
-                                &selected,
-                            );
-                        });
-                        self.group(
-                            ui,
-                            "Master",
-                            &[12],
-                            &[8, 13, 21],
-                            GroupLayout {
-                                size: egui::vec2(172.0, 0.0),
-                                vertical_knobs: true,
-                            },
-                            &selected,
-                        );
-                    });
-                });
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
+            let title = egui::Rect::from_min_size(
+                egui::vec2(GAP, GAP).to_pos2(),
+                egui::vec2(size.width as f32 - GAP * 2.0, TITLE_BAR_HEIGHT),
+            );
+            let painter = ui.painter();
+            painter.rect_filled(title, 8.0, PANEL);
+            painter.text(
+                title.left_center() + egui::vec2(GAP, 0.0),
+                egui::Align2::LEFT_CENTER,
+                "Sample VSTi",
+                egui::FontId::proportional(24.0),
+                INK,
+            );
+            let meter_x = title.right() - GAP - 254.0;
+            for voice in 0..32 {
+                let segment = egui::Rect::from_min_size(
+                    egui::pos2(meter_x + voice as f32 * 8.0, title.center().y - 6.0),
+                    egui::vec2(6.0, 12.0),
+                );
+                painter.rect_filled(
+                    segment,
+                    1.0,
+                    if voice < voice_count { ACCENT } else { LINE },
+                );
+            }
+            let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
+            let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
+            let single_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
+            let panel_height = single_height * 3.0 + GAP * 2.0;
+            let center_x = GAP + oscillator_width + GAP;
+            let master_x = center_x + filter_width + GAP;
+            let groups = [
+                (
+                    "Osc1",
+                    &[0_usize] as &[usize],
+                    &[&[6_usize, 7, 20, 22][..]][..],
+                    [GAP, GAP, oscillator_width, single_height],
+                ),
+                (
+                    "Osc2",
+                    &[23],
+                    &[&[24, 25, 29][..]][..],
+                    [
+                        GAP,
+                        GAP + single_height + GAP,
+                        oscillator_width,
+                        single_height,
+                    ],
+                ),
+                (
+                    "Osc3",
+                    &[26],
+                    &[&[27, 28, 30][..]][..],
+                    [
+                        GAP,
+                        GAP + (single_height + GAP) * 2.0,
+                        oscillator_width,
+                        single_height,
+                    ],
+                ),
+                (
+                    "Amp",
+                    &[],
+                    &[&[1, 2, 3, 4, 5][..]][..],
+                    [center_x, GAP, filter_width, single_height],
+                ),
+                (
+                    "Filter",
+                    &[9],
+                    &[&[10, 11, 19][..], &[14, 15, 16, 17, 18][..]][..],
+                    [
+                        center_x,
+                        GAP + single_height + GAP,
+                        filter_width,
+                        panel_height - single_height - GAP,
+                    ],
+                ),
+                (
+                    "Master",
+                    &[12],
+                    &[&[8][..], &[13][..], &[21][..]][..],
+                    [master_x, GAP, 144.0, panel_height],
+                ),
+            ];
+            for (title, choices, rows, [x, y, width, height]) in groups {
+                self.group(
+                    ui,
+                    title,
+                    choices,
+                    rows,
+                    [x, y + TITLE_BAR_HEIGHT + GAP, width, height],
+                    &selected,
+                );
+            }
         });
         let shapes = self
             .context
@@ -642,7 +765,9 @@ impl WindowHandler for Editor {
         if self.state.borrow().drag.is_some() && self.current_drag_position().is_none() {
             self.end_drag();
         }
-        if self.displayed.get() != self.parameters.snapshot() {
+        if self.displayed.get() != self.parameters.snapshot()
+            || self.displayed_voices.get() != self.active_voices.load(Ordering::Relaxed)
+        {
             self.window.request_redraw();
         }
         #[cfg(target_os = "windows")]
@@ -671,14 +796,14 @@ mod tests {
     use super::*;
     #[test]
     fn overlay_stays_inside_viewport_at_every_edge() {
-        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1024.0, 768.0));
-        for x in [0.0, 43.0, 512.0, 1024.0] {
-            for y in [0.0, 114.0, 384.0, 768.0] {
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(784.0, 472.0));
+        for x in [0.0, 43.0, 392.0, 784.0] {
+            for y in [0.0, 114.0, 236.0, 472.0] {
                 let knob = egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(50.0, 50.0));
                 let bounds = overlay_rect(knob, viewport);
                 assert_eq!(bounds.size(), egui::vec2(224.0, 60.0));
                 assert!(viewport.contains_rect(bounds));
-                if (112.0..=912.0).contains(&x) {
+                if (112.0..=672.0).contains(&x) {
                     assert_eq!(bounds.center().x, x);
                 }
                 if y >= 91.0 {

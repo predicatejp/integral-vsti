@@ -83,11 +83,11 @@ struct NativeParent {
         assert(value != CLR_INVALID);
         return value;
     }
-    void screenshot() {
+    void screenshot(const char* path = "target/gui-smoke.ppm") {
         HWND child = this->child(); assert(child);
         RECT rect; assert(GetClientRect(child, &rect));
         HDC dc = GetDC(child); assert(dc);
-        std::ofstream file("target/gui-smoke.ppm", std::ios::binary);
+        std::ofstream file(path, std::ios::binary);
         file << "P6\n" << rect.right << ' ' << rect.bottom << "\n255\n";
         for (int y = 0; y < rect.bottom; ++y) for (int x = 0; x < rect.right; ++x) {
             COLORREF pixel = GetPixel(dc, x, y);
@@ -142,13 +142,13 @@ struct NativeParent {
         XDestroyImage(image);
         return value;
     }
-    void screenshot() {
+    void screenshot(const char* path = "target/gui-smoke.ppm") {
         const auto target = child(); XWindowAttributes attributes;
         assert(XGetWindowAttributes(display, target, &attributes));
         XImage* image = XGetImage(display, target, 0, 0, static_cast<unsigned>(attributes.width),
                                  static_cast<unsigned>(attributes.height), AllPlanes, ZPixmap);
         assert(image);
-        std::ofstream file("target/gui-smoke.ppm", std::ios::binary);
+        std::ofstream file(path, std::ios::binary);
         file << "P6\n" << attributes.width << ' ' << attributes.height << "\n255\n";
         for (int y = 0; y < attributes.height; ++y) for (int x = 0; x < attributes.width; ++x) {
             unsigned long pixel = XGetPixel(image, x, y);
@@ -310,7 +310,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1024 && rect.getHeight() == 768);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 784 && rect.getHeight() == 472);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -323,7 +323,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1024);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 784);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -357,19 +357,22 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size() << std::endl;
         assert(false);
     };
-    // グループ内のノブ中心と選択リスト。画面上の実入力で全設定を検証する。
-    const std::array<std::pair<int, int>, 31> controls {{
-        {140, 67}, {43, 525}, {103, 525}, {163, 525}, {223, 525}, {283, 525},
-        {43, 114}, {103, 114}, {799, 166}, {400, 119}, {361, 166}, {421, 166},
-        {780, 119}, {799, 243}, {361, 303}, {421, 303}, {481, 303}, {541, 303},
-        {601, 303}, {661, 303}, {163, 114}, {799, 320}, {223, 114},
-        {140, 204}, {43, 251}, {103, 251}, {140, 341}, {43, 388}, {103, 388}, {163, 251}, {163, 388}
+    // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
+    std::array<std::pair<int, int>, 31> controls {{
+        {212, 30}, {328, 82}, {392, 82}, {456, 82}, {520, 82}, {584, 82},
+        {48, 82}, {112, 82}, {704, 161}, {564, 170}, {349, 239}, {456, 239},
+        {704, 100}, {704, 257}, {328, 345}, {392, 345}, {456, 345}, {520, 345},
+        {584, 345}, {563, 239}, {176, 82}, {704, 354}, {240, 82},
+        {212, 170}, {59, 222}, {144, 222}, {212, 310}, {59, 362}, {144, 362}, {229, 222}, {229, 362}
     }};
+    for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
         parent.click(x, y); pump(); assert(handler.sequence.empty());
-        parent.click(x, y + 30 + item * 28);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "grouped choice");
+        parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
+        // 下段のOsc3は上側へ、それ以外は下側へ開く。
+        parent.click(x, (index == 26 ? y - 154 : y + 34) + item * 30);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "dropdown choice");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
     };
@@ -379,12 +382,58 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(1024, 768); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(784, 472); }, "first rendered frame");
         pump();
+        if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
+        if (cycle == 0) {
+            // 実際の音声処理からタイトルバーへ発音数を渡し、再描画・release・停止を検証する。
+            StateStream original; assert(component->getState(&original) == kResultOk);
+            ProcessSetup setup {kRealtime, kSample32, 64, 48000.0};
+            assert(processor->setupProcessing(setup) == kResultOk);
+            assert(component->setActive(true) == kResultOk);
+            assert(processor->setProcessing(true) == kResultOk);
+            Points poly; poly.id = polyphonyId; poly.values = {{0, 2.0 / 31.0}};
+            assert(controller->setParamNormalized(polyphonyId, 2.0 / 31.0) == kResultOk);
+            Changes changes; changes.queues = {&poly};
+            Events events; events.values = {note(true, 0, 100), note(true, 0, 101), note(true, 0, 102)};
+            ProcessData audio {}; audio.numSamples = 1; audio.symbolicSampleSize = kSample32;
+            audio.inputParameterChanges = &changes; audio.inputEvents = &events;
+#ifdef _WIN32
+            const uint32 lit = RGB(20, 96, 76), unlit = RGB(143, 160, 147);
+#else
+            const uint32 lit = 0x14604c, unlit = 0x8fa093;
+#endif
+            auto meter = [&](int count) {
+                for (int i = 0; i < 32; ++i) {
+                    if (parent.pixel(517 + i * 8, 26) != (i < count ? lit : unlit)) return false;
+                }
+                return true;
+            };
+            assert(processor->process(audio) == kResultOk);
+            waitFor([&] { return meter(3); }, "three active voices");
+            parent.screenshot("target/gui-voices.ppm");
+            audio.inputParameterChanges = nullptr;
+            events.values = {note(false, 0, 100), note(false, 0, 101), note(false, 0, 102)};
+            assert(processor->process(audio) == kResultOk);
+            pump(); assert(meter(3)); // release中も点灯する。
+            audio.inputEvents = nullptr; audio.numSamples = 64;
+            for (int i = 0; i < 80; ++i) assert(processor->process(audio) == kResultOk);
+            waitFor([&] { return meter(0); }, "release finished");
+            events.values = {note(true, 0, 100), note(true, 0, 101), note(true, 0, 102)};
+            audio.inputEvents = &events;
+            assert(processor->process(audio) == kResultOk);
+            waitFor([&] { return meter(3); }, "voices before stop");
+            assert(processor->setProcessing(false) == kResultOk);
+            waitFor([&] { return meter(0); }, "voices after stop");
+            assert(component->setActive(false) == kResultOk);
+            assert(component->setState(&original) == kResultOk);
+        }
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
-        choose(0, 4);
-        assert(handler.editedId == waveformId && handler.value == 1.0);
+        for (int item = 1; item <= 4; ++item) {
+            choose(0, item);
+            assert(handler.editedId == waveformId && handler.value == item / 4.0);
+        }
         choose(0, 0);
         assert(handler.editedId == waveformId && handler.value == 0.0);
         Points point; point.values = {{0, handler.value}};
@@ -399,8 +448,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         for (const int index : {23, 26}) {
             ParameterInfo info; assert(controller->getParameterInfo(index, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
-            pump(); choose(index, 4);
-            assert(handler.editedId == info.id && handler.value == 1.0);
+            pump();
+            for (int item = 1; item <= 4; ++item) {
+                choose(index, item);
+                assert(handler.editedId == info.id && handler.value == item / 4.0);
+            }
             choose(index, 0);
             assert(handler.editedId == info.id && handler.value == 0.0);
         }
@@ -417,12 +469,12 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0}));
             assert(!parent.cursorVisible());
             // 全ノブで224×60 pxの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(x - 112, 0, 800);
-            const int overlayY = std::clamp(y - 91, 0, 708);
+            const int overlayX = std::clamp(x - 112, 0, 560);
+            const int overlayY = std::clamp(y - 91, 0, 412);
 #ifdef _WIN32
-            const uint32 overlayColor = RGB(255, 250, 220);
+            const uint32 overlayColor = RGB(23, 43, 38);
 #else
-            const uint32 overlayColor = 0xfffadc;
+            const uint32 overlayColor = 0x172b26;
 #endif
             waitFor([&] {
                 return parent.pixel(overlayX + 4, overlayY + 4) == overlayColor &&
@@ -477,11 +529,20 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             pump(); assert(handler.sequence.empty());
         }
         assert(controller->setParamNormalized(filterIds[0], 1.0 / 6.0) == kResultOk);
-        pump(); choose(9, 0);
+        pump();
+        for (int item = 2; item <= 6; ++item) {
+            choose(9, item);
+            assert(handler.editedId == filterIds[0] && handler.value == item / 6.0);
+        }
+        choose(9, 0);
         assert(handler.editedId == filterIds[0] && handler.value == 0.0);
         assert(controller->setParamNormalized(phaseId, 0.0) == kResultOk);
-        pump(); choose(12, 2);
+        pump(); choose(12, 1);
+        assert(handler.editedId == phaseId && handler.value == .5);
+        choose(12, 2);
         assert(handler.editedId == phaseId && handler.value == 1.0);
+        parent.movePointer(4, 4); pump();
+        parent.screenshot("target/gui-choices.ppm");
         point.id = phaseId; point.values = {{0, handler.value}};
         assert(processor->process(data) == kResultOk);
         StateStream phaseState; assert(component->getState(&phaseState) == kResultOk);

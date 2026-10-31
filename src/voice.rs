@@ -152,12 +152,20 @@ impl Voice {
         }
     }
 
+    /// ノート保持中または音量AHDSRのrelease中のVoiceを数える。
+    pub fn is_active(&self) -> bool {
+        self.state.gate || self.state.oscillator_inputs[0].active
+    }
+
     pub fn stop(&mut self) {
         // releaseとは区別し、次サンプルで即時消音する。位相は保持する。
         self.state.gate = false;
         self.state.reset_generation = self.state.reset_generation.wrapping_add(1);
         self.state.note = None;
         self.state.filter.reset();
+        for input in &mut self.state.oscillator_inputs {
+            input.active = false;
+        }
     }
 
     pub fn set_filter(&mut self, filter_type: FilterType, cutoff_cents: f64, resonance_q: f64) {

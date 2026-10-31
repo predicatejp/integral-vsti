@@ -182,6 +182,14 @@ impl Synthesizer {
         }
     }
 
+    /// 表示用の同時発音数。ブロック末尾で読み、ユニゾンや発振器数は加算しない。
+    pub fn active_voice_count(&self) -> u32 {
+        self.state.voices[..self.state.polyphony]
+            .iter()
+            .filter(|voice| voice.is_active())
+            .count() as u32
+    }
+
     pub fn generate_sample(&mut self) -> [f64; 2] {
         let mut sum = [0.0; 2];
         for voice in &mut self.state.voices[..self.state.polyphony] {
@@ -214,6 +222,49 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn voice_count_tracks_allocation_release_limits_and_stop() {
+        let mut synth = unfiltered();
+        synth.set_sample_rate(48000.0);
+        let mut values = parameters::sine_preset();
+        values[5] = parameters::to_normalized(5, 1.0); // 48サンプルのrelease。
+        values[8] = parameters::to_normalized(8, 32.0);
+        values[6] = 1.0; // ユニゾン7でもVoiceの数は変わらない。
+        values[7] = 1.0;
+        synth.set_parameters(values);
+        assert_eq!(synth.active_voice_count(), 0);
+        for id in 0..33 {
+            assert!(synth.note_on(note(id, 0, 60), 0.0, 1.0));
+            synth.generate_sample();
+            assert_eq!(synth.active_voice_count(), (id + 1).min(32) as u32);
+        }
+        // 上書きされた旧ノートのOffは新しいノートを消さない。
+        synth.note_off(note(0, 0, 60));
+        assert_eq!(synth.active_voice_count(), 32);
+        for id in 1..33 {
+            synth.note_off(note(id, 0, 60));
+        }
+        for _ in 0..48 {
+            synth.generate_sample();
+            assert_eq!(synth.active_voice_count(), 32);
+        }
+        synth.generate_sample();
+        assert_eq!(synth.active_voice_count(), 0);
+        for id in 0..32 {
+            synth.note_on(note(id, 0, 60), 0.0, 1.0);
+        }
+        values[8] = parameters::to_normalized(8, 2.0);
+        synth.set_parameters(values);
+        assert_eq!(synth.active_voice_count(), 2);
+        synth.stop();
+        assert_eq!(synth.active_voice_count(), 0);
+        values[8] = 1.0;
+        synth.set_parameters(values);
+        assert_eq!(synth.active_voice_count(), 0);
+        synth.generate_sample();
+        assert_eq!(synth.active_voice_count(), 0);
     }
 
     #[test]

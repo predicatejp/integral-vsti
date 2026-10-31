@@ -618,11 +618,11 @@ fn editor_owns_controller_and_has_fixed_size() {
             bottom: 0,
         };
         assert_eq!((vt.get_size)(view, &mut rect), OK);
-        assert_eq!((rect.right, rect.bottom), (1024, 768));
+        assert_eq!((rect.right, rect.bottom), (784, 472));
         rect.right = 800;
         assert_eq!((vt.on_size)(view, &rect), FALSE);
         assert_eq!((vt.check_size_constraint)(view, &mut rect), OK);
-        assert_eq!((rect.right, rect.bottom), (1024, 768));
+        assert_eq!((rect.right, rect.bottom), (784, 472));
         assert_eq!((vt.on_size)(view, &rect), OK);
         assert_eq!((vt.removed)(view), OK);
         assert_eq!((vt.unknown.release)(view), 0);
