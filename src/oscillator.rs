@@ -198,6 +198,14 @@ pub struct OscillatorState {
     unison_divisor: f64,
 }
 
+/// 同じサンプル時刻の音声と変調用波形。
+pub struct OscillatorSample {
+    /// 音量補正・定位を適用したステレオ信号。
+    pub audio: [f64; 2],
+    /// 先頭ユニゾンの補正・定位前の−1〜＋1の波形。変調源のOsc2/3は1発振器。
+    pub raw: f64,
+}
+
 /// Oscillatorの処理を担当し、専用のStateを所有するコンポーネント。
 pub struct Oscillator {
     /// このコンポーネントの内部状態。
@@ -224,14 +232,18 @@ impl Oscillator {
     /// 現在の入力・状態でサンプルを生成し、その後で次のサンプルに向けて状態を更新する。
     /// sample_rateは処理環境のサンプルレート（Hz）。不正な入力・レートでは無音を返し、状態を保持する。
     /// gainsはSynthesizerが実発音数・Width・Panから算出した共通の定常入力。
+    #[inline]
     pub fn generate_sample(
         &mut self,
         input: &OscillatorInput,
         sample_rate: f64,
         gains: &PanningGains,
-    ) -> [f64; 2] {
+    ) -> OscillatorSample {
         if !(input.is_valid() & (sample_rate <= f64::MAX) & (sample_rate > 0.0)) {
-            return [0.0; 2];
+            return OscillatorSample {
+                audio: [0.0; 2],
+                raw: 0.0,
+            };
         }
         // ノート境界と位相モードを反映して生成した後、次サンプルへ進める。
         // キャッシュを含むState全体のサンプルごとのコピーは行わない。
@@ -249,7 +261,10 @@ impl Oscillator {
         self.state.note_generation = input.note_generation;
         // activeはVoiceの共通AHDSRから渡す。無音のattack中も位相を進める。
         if !input.active {
-            return [0.0; 2];
+            return OscillatorSample {
+                audio: [0.0; 2],
+                raw: 0.0,
+            };
         }
         self.refresh_frequency(input, sample_rate);
         let sample = self.generate_waveform_sample(input, input.amplitude, gains);
@@ -263,26 +278,34 @@ impl Oscillator {
         input: &OscillatorInput,
         amplitude: f64,
         gains: &PanningGains,
-    ) -> [f64; 2] {
+    ) -> OscillatorSample {
         let count = input.rendered_voices();
-        let mut sum = [0.0; 2];
-        // 乱数生成の判定はユニゾンの内側で繰り返さない。
+        // 先頭の生波形はFMと音声で共用する。Noiseの乱数も二重に進めない。
+        let raw = if input.waveform == Waveform::Noise {
+            Waveform::Noise.unit_sample(self.state.noise.next_f64())
+        } else {
+            input.waveform.unit_sample(self.state.phases[0])
+        };
+        let mut sum = gains[0].map(|gain| raw * gain);
         if input.waveform == Waveform::Noise {
-            for gains in &gains[..count] {
+            for gains in &gains[1..count] {
                 let sample = Waveform::Noise.unit_sample(self.state.noise.next_f64());
                 sum[0] += sample * gains[0];
                 sum[1] += sample * gains[1];
             }
         } else {
-            for (&phase, gains) in self.state.phases[..count].iter().zip(gains) {
+            for (&phase, gains) in self.state.phases[1..count].iter().zip(&gains[1..]) {
                 let sample = input.waveform.unit_sample(phase);
                 sum[0] += sample * gains[0];
                 sum[1] += sample * gains[1];
             }
         }
-        sum.map(|sample| {
-            amplitude * input.waveform.peak_per_rms() * sample / self.state.unison_divisor
-        })
+        OscillatorSample {
+            audio: sum.map(|sample| {
+                amplitude * input.waveform.peak_per_rms() * sample / self.state.unison_divisor
+            }),
+            raw,
+        }
     }
 
     /// 定常入力が変わったサンプルでだけ周波数倍率・位相増分を再計算する。
@@ -333,6 +356,43 @@ impl Oscillator {
 mod tests {
     use super::*;
 
+    #[test]
+    fn raw_sample_precedes_amplitude_and_pan_and_reuses_noise_draw() {
+        for wave in [
+            Waveform::Sine,
+            Waveform::Triangle,
+            Waveform::Square,
+            Waveform::Sawtooth,
+            Waveform::Noise,
+        ] {
+            let mut oscillator = Oscillator::new();
+            oscillator.state.noise = Random::from_seed(NOISE_SEED);
+            let mut random = oscillator.state.noise;
+            let mut input = test_input();
+            input.waveform = wave;
+            input.amplitude = 0.0;
+            for n in 0..32 {
+                let expected = if wave == Waveform::Noise {
+                    wave.unit_sample(random.next_f64())
+                } else {
+                    wave.unit_sample((n % 4) as f64 / 4.0)
+                };
+                let result = oscillator.generate_sample(&input, 4.0, &[[0.0; 2]; 7]);
+                assert_eq!(result.audio, [0.0; 2]);
+                assert_eq!(result.raw, expected);
+                assert!((-1.0..=1.0).contains(&result.raw));
+            }
+            if wave == Waveform::Noise {
+                assert_eq!(oscillator.state.noise, random);
+            }
+            input.active = false;
+            assert_eq!(
+                oscillator.generate_sample(&input, 4.0, &[[1.0; 2]; 7]).raw,
+                0.0
+            );
+        }
+    }
+
     const NOISE_SEED: [u64; 4] = [
         0x1234_5678_9abc_def0,
         0xfedc_ba98_7654_3210,
@@ -381,8 +441,8 @@ mod tests {
                             ..b
                         };
                         assert_eq!(
-                            actual.generate_sample(&a, 96000.0, &gains),
-                            reference.generate_sample(&b, 44100.0, &gains)
+                            actual.generate_sample(&a, 96000.0, &gains).audio,
+                            reference.generate_sample(&b, 44100.0, &gains).audio
                         );
                         assert_eq!(reference.state.random, initial.state.random);
                     }
@@ -398,7 +458,7 @@ mod tests {
         }
         let noise = oscillator.state.noise;
         assert_eq!(
-            oscillator.generate_sample(&input, 48000.0, &gains),
+            oscillator.generate_sample(&input, 48000.0, &gains).audio,
             [0.0; 2]
         );
         assert_eq!(oscillator.state.noise, noise);
@@ -409,7 +469,7 @@ mod tests {
         input.active = false;
         let noise = oscillator.state.noise;
         assert_eq!(
-            oscillator.generate_sample(&input, 48000.0, &gains),
+            oscillator.generate_sample(&input, 48000.0, &gains).audio,
             [0.0; 2]
         );
         assert_eq!(oscillator.state.noise, noise);
@@ -432,7 +492,7 @@ mod tests {
                 let (mut sum, mut energy, mut cross, mut lag) = ([0.0; 2], [0.0; 2], 0.0, 0.0);
                 let mut previous = 0.0;
                 for _ in 0..65536 {
-                    let sample = oscillator.generate_sample(&input, 48000.0, &gains);
+                    let sample = oscillator.generate_sample(&input, 48000.0, &gains).audio;
                     for ch in 0..2 {
                         assert!(sample[ch].is_finite());
                         sum[ch] += sample[ch];
@@ -525,7 +585,7 @@ mod tests {
                             expected[1] += sample * angle.sin();
                         }
                         let gains = panning_gains(count, width, pan);
-                        let actual = oscillator.generate_sample(&input, 48_000.0, &gains);
+                        let actual = oscillator.generate_sample(&input, 48_000.0, &gains).audio;
                         for ch in 0..2 {
                             // 最大7音の合成誤差。単体係数の上限は専用テストで確認する。
                             assert!((actual[ch] - expected[ch]).abs() < 1e-6);
@@ -593,7 +653,12 @@ mod tests {
                 frequency_hz,
                 ..test_input()
             };
-            assert!(oscillator.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0].is_finite());
+            assert!(
+                oscillator
+                    .generate_sample(&input, 4.0, &[[1.0; 2]; 7])
+                    .audio[0]
+                    .is_finite()
+            );
             assert_eq!(oscillator.state.phases[0], expected, "{frequency_hz}");
         }
     }
@@ -615,13 +680,17 @@ mod tests {
         assert_eq!(oscillator.state.phases, held);
         input.note_generation += 1;
         assert_eq!(
-            oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])[0],
+            oscillator
+                .generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])
+                .audio[0],
             0.0
         );
         assert_eq!(oscillator.state.phases, [0.0; 7]);
         input.phase_mode = PhaseMode::Random;
         input.note_generation += 1;
-        let sample = oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])[0];
+        let sample = oscillator
+            .generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])
+            .audio[0];
         let phases = oscillator.state.phases;
         for (i, &phase) in phases.iter().enumerate() {
             assert!((0.0..1.0).contains(&phase));
@@ -643,7 +712,9 @@ mod tests {
         let phases = oscillator.state.phases;
         let random = oscillator.state.random;
         assert_eq!(
-            oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])[0],
+            oscillator
+                .generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])
+                .audio[0],
             0.0
         );
         assert_eq!(oscillator.state.phases, phases);
@@ -682,7 +753,9 @@ mod tests {
         input.active = false;
         for _ in 0..16 {
             assert_eq!(
-                oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7]),
+                oscillator
+                    .generate_sample(&input, 1000.0, &[[1.0; 2]; 7])
+                    .audio,
                 [0.0; 2]
             );
         }
@@ -691,17 +764,26 @@ mod tests {
         input.note_generation += 1;
         input.amplitude = 0.0;
         assert_eq!(
-            oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7]),
+            oscillator
+                .generate_sample(&input, 1000.0, &[[1.0; 2]; 7])
+                .audio,
             [0.0; 2]
         );
         assert_eq!(oscillator.state.phases[0], 0.1);
         input.amplitude = 0.5;
-        assert!(oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7])[0] > 0.0);
+        assert!(
+            oscillator
+                .generate_sample(&input, 1000.0, &[[1.0; 2]; 7])
+                .audio[0]
+                > 0.0
+        );
         input.active = false;
         let phases = oscillator.state.phases;
         for _ in 0..16 {
             assert_eq!(
-                oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7]),
+                oscillator
+                    .generate_sample(&input, 1000.0, &[[1.0; 2]; 7])
+                    .audio,
                 [0.0; 2]
             );
         }
@@ -823,7 +905,8 @@ mod tests {
             for _ in 0..2 {
                 for unit in expected {
                     assert!(
-                        (state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0] - peak * unit).abs()
+                        (state.generate_sample(&input, 8.0, &[[1.0; 2]; 7]).audio[0] - peak * unit)
+                            .abs()
                             < 1e-14,
                         "{waveform:?}"
                     );
@@ -864,22 +947,33 @@ mod tests {
             active: true,
             ..test_input()
         };
-        assert_eq!(state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0], 0.0);
+        assert_eq!(
+            state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]).audio[0],
+            0.0
+        );
         input.waveform = Waveform::Triangle;
         assert!(
-            (state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0] - 0.866_025_403_784_438_6).abs()
+            (state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]).audio[0] - 0.866_025_403_784_438_6)
+                .abs()
                 < 1e-14
         );
         input.waveform = Waveform::Square;
-        assert_eq!(state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0], -0.5);
+        assert_eq!(
+            state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]).audio[0],
+            -0.5
+        );
         input.active = false;
         input.waveform = Waveform::Sawtooth;
-        assert_eq!(state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0], 0.0);
+        assert_eq!(
+            state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]).audio[0],
+            0.0
+        );
         input.active = true;
         // 位相を保持して再び発音期間へ入る。
         input.note_generation += 1;
         assert!(
-            (state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0] - 0.433_012_701_892_219_3).abs()
+            (state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]).audio[0] - 0.433_012_701_892_219_3)
+                .abs()
                 < 1e-14
         );
     }
@@ -894,25 +988,34 @@ mod tests {
             active: true,
             ..test_input()
         };
-        assert_eq!(state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0], 0.0); // 更新前の位相0で生成
-        assert!((state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0] - 0.5).abs() < 1e-14);
+        assert_eq!(
+            state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]).audio[0],
+            0.0
+        ); // 更新前の位相0で生成
+        assert!((state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]).audio[0] - 0.5).abs() < 1e-14);
         // 入力だけを変更する。保持していた位相1/2から、新しい振幅・周波数で処理する。
         input.frequency_hz = 2.0;
         input.amplitude = 0.25 / std::f64::consts::SQRT_2;
-        assert!(state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0].abs() < 1e-14);
+        assert!(state.generate_sample(&input, 8.0, &[[1.0; 2]; 7]).audio[0].abs() < 1e-14);
         input.active = false;
         for _ in 0..7 {
-            assert_eq!(state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0], 0.0);
+            assert_eq!(
+                state.generate_sample(&input, 8.0, &[[1.0; 2]; 7]).audio[0],
+                0.0
+            );
         }
         input.active = true;
         // 位相を保持して再び発音期間へ入る。
         input.note_generation += 1;
-        assert!((state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0] + 0.25).abs() < 1e-14);
+        assert!((state.generate_sample(&input, 8.0, &[[1.0; 2]; 7]).audio[0] + 0.25).abs() < 1e-14);
         // 振幅0でもactiveなら状態更新を続ける。
         input.amplitude = 0.0;
-        assert_eq!(state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0], 0.0);
+        assert_eq!(
+            state.generate_sample(&input, 8.0, &[[1.0; 2]; 7]).audio[0],
+            0.0
+        );
         input.amplitude = 0.5 / std::f64::consts::SQRT_2;
-        assert!((state.generate_sample(&input, 8.0, &[[1.0; 2]; 7])[0] - 0.5).abs() < 1e-14);
+        assert!((state.generate_sample(&input, 8.0, &[[1.0; 2]; 7]).audio[0] - 0.5).abs() < 1e-14);
     }
 
     #[test]
@@ -954,7 +1057,7 @@ mod tests {
             input.note_generation += 1;
             let expected = 0.5 * std::f64::consts::SQRT_2 * sine_sample(held_phases[0]);
             assert!(
-                (state.generate_sample(&input, 48000.0, &[[1.0; 2]; 7])[0] - expected).abs()
+                (state.generate_sample(&input, 48000.0, &[[1.0; 2]; 7]).audio[0] - expected).abs()
                     < 1e-12
             );
             assert_eq!(&state.state.phases[1..], &held_phases[1..]);
@@ -982,7 +1085,8 @@ mod tests {
                     let mut state = sustained();
                     let mut energy = 0.0;
                     for _ in 0..48000 {
-                        let sample = state.generate_sample(&input, 24000.0, &[[1.0; 2]; 7])[0];
+                        let sample =
+                            state.generate_sample(&input, 24000.0, &[[1.0; 2]; 7]).audio[0];
                         assert!(sample.is_finite());
                         energy += sample * sample;
                     }
@@ -1013,43 +1117,56 @@ mod tests {
                 ..input
             };
             assert!(!invalid.is_valid());
-            assert_eq!(state.generate_sample(&invalid, 4.0, &[[1.0; 2]; 7])[0], 0.0);
+            assert_eq!(
+                state.generate_sample(&invalid, 4.0, &[[1.0; 2]; 7]).audio[0],
+                0.0
+            );
         }
         for amplitude in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
             let invalid = OscillatorInput { amplitude, ..input };
             assert!(!invalid.is_valid());
-            assert_eq!(state.generate_sample(&invalid, 4.0, &[[1.0; 2]; 7])[0], 0.0);
+            assert_eq!(
+                state.generate_sample(&invalid, 4.0, &[[1.0; 2]; 7]).audio[0],
+                0.0
+            );
         }
         for unison_voices in [0, 8, u32::MAX] {
             assert_eq!(
-                state.generate_sample(
-                    &OscillatorInput {
-                        unison_voices,
-                        ..input
-                    },
-                    4.0,
-                    &[[1.0; 2]; 7]
-                )[0],
+                state
+                    .generate_sample(
+                        &OscillatorInput {
+                            unison_voices,
+                            ..input
+                        },
+                        4.0,
+                        &[[1.0; 2]; 7]
+                    )
+                    .audio[0],
                 0.0
             );
         }
         for detune_cents in [-1.0, 101.0, f64::NAN, f64::INFINITY] {
             assert_eq!(
-                state.generate_sample(
-                    &OscillatorInput {
-                        detune_cents,
-                        ..input
-                    },
-                    4.0,
-                    &[[1.0; 2]; 7]
-                )[0],
+                state
+                    .generate_sample(
+                        &OscillatorInput {
+                            detune_cents,
+                            ..input
+                        },
+                        4.0,
+                        &[[1.0; 2]; 7]
+                    )
+                    .audio[0],
                 0.0
             );
         }
         for rate in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert_eq!(state.generate_sample(&input, rate, &[[1.0; 2]; 7])[0], 0.0);
+            assert_eq!(
+                state.generate_sample(&input, rate, &[[1.0; 2]; 7]).audio[0],
+                0.0
+            );
         }
-        assert!((state.generate_sample(&input, 4.0, &[[1.0; 2]; 7])[0] - 0.5).abs() < 1e-14);
+        assert!((state.generate_sample(&input, 4.0, &[[1.0; 2]; 7]).audio[0] - 0.5).abs() < 1e-14);
         let extreme = OscillatorInput {
             waveform: Waveform::Sine,
             frequency_hz: f64::MAX,
@@ -1059,7 +1176,7 @@ mod tests {
         };
         for rate in [f64::MIN_POSITIVE, 44100.0, 96000.0, f64::MAX] {
             for _ in 0..16 {
-                assert!(state.generate_sample(&extreme, rate, &[[1.0; 2]; 7])[0].is_finite());
+                assert!(state.generate_sample(&extreme, rate, &[[1.0; 2]; 7]).audio[0].is_finite());
             }
         }
     }

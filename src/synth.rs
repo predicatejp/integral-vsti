@@ -119,6 +119,11 @@ impl Synthesizer {
                 }
             }
         }
+        if values[29..31] != previous[29..31] {
+            for voice in &mut self.state.voices {
+                voice.set_fm([values[29], values[30]]);
+            }
+        }
         if values[20..22] != previous[20..22]
             || values[6] != previous[6]
             || (values[7] == 0.0) != (previous[7] == 0.0)
@@ -209,6 +214,36 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn maximum_fm_stays_finite_with_high_notes_and_all_waveforms() {
+        for rate in [44100.0, 48000.0, 96000.0] {
+            for wave in 0..5 {
+                let mut synth = Synthesizer::new();
+                synth.set_sample_rate(rate);
+                let mut values = parameters::sine_preset();
+                for index in [0, 23, 26] {
+                    values[index] = parameters::to_normalized(index, f64::from(wave));
+                }
+                for index in [6, 7, 8, 11, 24, 27, 29, 30] {
+                    values[index] = 1.0;
+                }
+                for index in [13, 22, 25, 28] {
+                    values[index] = parameters::to_normalized(index, 12.0);
+                }
+                values[9] = parameters::to_normalized(9, 2.0);
+                synth.set_parameters(values);
+                for id in 0..32 {
+                    assert!(synth.note_on(note(id, 0, 127), 0.0, 1.0));
+                }
+                for _ in 0..33 {
+                    assert!(synth.generate_sample().iter().all(|x| x.is_finite()));
+                }
+                synth.stop();
+                assert_eq!(synth.generate_sample(), [0.0; 2]);
+            }
+        }
     }
 
     #[test]
@@ -320,6 +355,7 @@ mod tests {
                             10.0_f64.powf(parameters::to_plain(volume, values[volume]) / 20.0),
                         );
                     }
+                    reference.set_fm([values[29], values[30]]);
                     reference.note_on(note(0, 0, 69), 0.0, 1.0);
                     for id in 0..count {
                         synth.note_on(note(id, 0, 69), 0.0, 1.0);

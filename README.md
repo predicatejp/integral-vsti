@@ -16,7 +16,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
 | サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
-| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
+| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・FM、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
@@ -177,6 +177,20 @@ Phaseは3発振器共通で、Randomの乱数と位相はそれぞれ独立し�
 各発振器のVolumeが−∞の間も発音期間中は位相・ノイズ列を進め、音量を戻しても位相を再初期化しません。
 3発振器の加算には音数による音量補正を行いません。カットオフはTune適用前のノート周波数を基準とします。
 
+## FM変調
+
+Osc2/3の**FM**は0〜100%（初期値0%、GUIは1%刻み）です。
+Osc2 FM（ParamID `0x4f32464d`）はOsc1、Osc3 FM（`0x4f33464d`）はOsc2を変調します。
+各サンプル時刻でOsc3→Osc2→Osc1の順に生成し、受け側の周波数を次の式で決めます。
+
+`変調後Hz = Tune・Detune適用後のHz × (1 + FM / 100 × 生波形)`
+
+生波形は−1〜＋1で、実効値補正・Vol・Pan・AHDSRを適用する前の値です。
+Volが−∞でも変調は継続します。Noiseも変調に使え、音声と同じ乱数サンプルを共用します。
+Osc1のユニゾン各音へ同じ変調率を適用し、フィルタは元のノート周波数を基準にします。
+FM=100%では周波数が0〜元の2倍の間で変化します。現在の位相から波形を生成し、
+変調後の周波数で次サンプルの位相へ進めます。FMの変更点間は正規化空間で線形補間します。
+
 ## ポリフォニー
 
 **Polyphony** は1〜32（初期値1）、ParamIDは `0x504F4C59`、`stepCount=31` / `kCanAutomate` です。
@@ -296,7 +310,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 | パラメーター | 変更点の間の処理 |
 | --- | --- |
 | Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase | 直前の値を保持し、変更点で切り替える |
-| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Width・Pan | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
+| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・FM・Width・Pan | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
 
 最後の点以降は値を保持します。同位置ではパラメーターをキュー順に適用した後、ノートをイベントリスト順に処理します。
 
@@ -305,8 +319,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v11は236バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volumeを各f64。little endian）です。
-読み込みは現行形式v11のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v12は252バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 FM/Osc3 FMを各f64。little endian）です。
+読み込みは現行形式v12のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -315,7 +329,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定29個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定31個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -327,14 +341,14 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | Filter / Cutoff / Resonance | None / +4800 cent / Q=1 |
 | カットオフAHDSR / Amount | A/H/D/R=0 ms、S=1 / 0 cent |
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
-| Osc2/3 Waveform / Tune / Volume | Sine / 0 cent / −∞ dB |
+| Osc2/3 Waveform / Tune / Volume / FM | Sine / 0 cent / −∞ dB / 0% |
 
 ノートオン・オフで即時に発音・消音し、最大ベロシティ時の実効値は片チャンネル当たり0.5です。
 選択すると全設定を読み直し、同じ「Sine」の再選択でも編集した値を元に戻します。
 ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
 音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
 連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
-編集内容は実際の29設定として保存し、復元時にも編集後の値を保持します。
+編集内容は実際の31設定として保存し、復元時にも編集後の値を保持します。
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
 
@@ -342,7 +356,7 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 
 ホストのプラグイン画面に、ライトテーマで処理順に左からOsc1/2/3・Filter・Masterを配置します。
 Amplitude envelopeはOsc3の下、Cutoff envelopeはFilterの下へ配置します。各列とエンベロープの幅、グループ間隔を揃えています。各オシレータのWaveformはタイトルの右へ配置して高さを詰め、Masterのノブは縦に並べます。
-Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol、Masterには共通Phase・Polyphony・Volume・Panを配置します。
+Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
 ノブは直径44pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
 Waveform・Filter・Phaseはドロップダウン、その他のパラメーターはノブです。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。

@@ -10,7 +10,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 29;
+pub const COUNT: usize = 31;
 /// Osc1・Osc2・Osc3のVolume設定位置。
 pub const OSCILLATOR_VOLUMES: [usize; 3] = [22, 25, 28];
 
@@ -59,6 +59,8 @@ pub fn sine_preset() -> [f64; COUNT] {
         0.0,
         0.0,
         f64::NEG_INFINITY, // Osc3: Sine, Tune=0, mute
+        0.0,               // Osc2 FM
+        0.0,               // Osc3 FM
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -127,6 +129,8 @@ pub const IDS: [u32; COUNT] = [
     0x4f335746, // O3WF
     0x4f33544e, // O3TN
     0x4f33564c, // O3VL
+    0x4f32464d, // O2FM
+    0x4f33464d, // O3FM
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -158,6 +162,8 @@ pub const NAMES: [&str; COUNT] = [
     "Osc3 Waveform",
     "Osc3 Tune",
     "Osc3 Volume",
+    "Osc2 FM",
+    "Osc3 FM",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -205,7 +211,7 @@ pub fn unit(index: usize) -> &'static str {
     } else {
         match index {
             13 | 22 | 25 | 28 => "dB",
-            20 | 21 => "%",
+            20 | 21 | 29 | 30 => "%",
             7 | 10 | 19 | 24 | 27 => "cent",
             _ => "",
         }
@@ -243,7 +249,7 @@ pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
     } else {
         match index {
             6 | 8 => f64::from(tick) + 1.0,
-            7 | 9 | 20 => f64::from(tick),
+            7 | 9 | 20 | 29 | 30 => f64::from(tick),
             21 => f64::from(tick) - 100.0,
             10 => f64::from(tick) * 10.0 - 2400.0,
             11 => 0.5 + f64::from(tick) / 100.0,
@@ -267,7 +273,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     match index {
         4 | 17 => return normalized,
         6 => return (normalized * 7.0).floor().min(6.0) + 1.0,
-        7 | 20 => return normalized * 100.0,
+        7 | 20 | 29 | 30 => return normalized * 100.0,
         21 => return normalized * 200.0 - 100.0,
         8 => return (normalized * 32.0).floor().min(31.0) + 1.0,
         9 => return (normalized * 7.0).floor().min(6.0),
@@ -302,7 +308,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     match index {
         4 | 17 => return plain,
         6 => return (plain.clamp(1.0, 7.0).round() - 1.0) / 6.0,
-        7 | 20 => return plain / 100.0,
+        7 | 20 | 29 | 30 => return plain / 100.0,
         21 => return (plain + 100.0) / 200.0,
         8 => return (plain.clamp(1.0, 32.0).round() - 1.0) / 31.0,
         9 => return plain.clamp(0.0, 6.0).round() / 6.0,
@@ -330,7 +336,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         4 | 17 => (0.0..=1.0).contains(&plain),
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
-        7 | 20 => (0.0..=100.0).contains(&plain),
+        7 | 20 | 29 | 30 => (0.0..=100.0).contains(&plain),
         21 => (-100.0..=100.0).contains(&plain),
         8 => (1.0..=32.0).contains(&plain) && plain.fract() == 0.0,
         9 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
@@ -385,6 +391,8 @@ pub fn defaults() -> [f64; COUNT] {
         0.0,
         0.0,
         f64::NEG_INFINITY, // Osc3
+        0.0,               // Osc2 FM
+        0.0,               // Osc3 FM
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -578,9 +586,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v11: 固定236バイト。波形番号u32と、その他の実単位f64を保持する。
+// v12: 固定252バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x0b\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x0c\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -764,6 +772,8 @@ mod tests {
             (19, 960),
             (20, 100),
             (21, 200),
+            (29, 100),
+            (30, 100),
         ] {
             for tick in 0..=max {
                 let plain = tick_to_plain(index, tick);
@@ -824,12 +834,12 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12] {
+                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13] {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                (*stream).bytes[4] = 11;
+                (*stream).bytes[4] = 12;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -880,6 +890,10 @@ mod tests {
                     (26, 1.5),
                     (24, -2400.1),
                     (27, 2400.1),
+                    (29, -0.1),
+                    (30, 100.1),
+                    (29, f64::NAN),
+                    (30, f64::INFINITY),
                 ] {
                     let offset = 12 + (index - 1) * 8;
                     let original: [u8; 8] =
