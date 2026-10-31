@@ -121,7 +121,7 @@ impl Synthesizer {
         }
         if values[29..31] != previous[29..31] {
             for voice in &mut self.state.voices {
-                voice.set_fm([values[29], values[30]]);
+                voice.set_fm([values[29] * 2.0, values[30] * 2.0]);
             }
         }
         if values[20..22] != previous[20..22]
@@ -355,7 +355,7 @@ mod tests {
                             10.0_f64.powf(parameters::to_plain(volume, values[volume]) / 20.0),
                         );
                     }
-                    reference.set_fm([values[29], values[30]]);
+                    reference.set_fm([values[29] * 2.0, values[30] * 2.0]);
                     reference.note_on(note(0, 0, 69), 0.0, 1.0);
                     for id in 0..count {
                         synth.note_on(note(id, 0, 69), 0.0, 1.0);

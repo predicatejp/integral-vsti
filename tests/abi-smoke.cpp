@@ -838,7 +838,7 @@ void checkFm(IComponent* component, IAudioProcessor* processor, IEditController*
         ParameterInfo info; assert(controller->getParameterInfo(index, info) == kResultOk);
         assert(info.id == (index == 29 ? fm2Id : fm3Id));
         assert(info.stepCount == 0 && info.defaultNormalizedValue == 0 && info.flags == ParameterInfo::kCanAutomate);
-        assert(controller->plainParamToNormalized(info.id, 100) == 1);
+        assert(controller->plainParamToNormalized(info.id, 200) == 1);
         String128 text; ParamValue value = -1;
         assert(controller->getParamStringByValue(info.id, .375, text) == kResultOk);
         assert(controller->getParamValueByString(info.id, text, value) == kResultOk && value == .375);
@@ -864,7 +864,7 @@ void checkFm(IComponent* component, IAudioProcessor* processor, IEditController*
     assert(processor->setProcessing(true) == kResultOk);
     for (auto& p : points) p.values.clear();
     points[5].values = {{15, 1.0}};
-    points[6].values = {{8, .5}, {16, 1.0}};
+    points[6].values = {{8, .25}, {16, 1.0}};
     Events events; events.values = {note(true, 0, 1), note(true, 23, 2), note(false, 31, 2)};
     std::array<Sample, 33> left {}, right {};
     Sample* channels[] = {left.data(), right.data()};
@@ -878,13 +878,14 @@ void checkFm(IComponent* component, IAudioProcessor* processor, IEditController*
         if (n == 23) phase.fill(0);
         const double expected = n < 31 ? .5 * std::sqrt(6.) * (2 * phase[0] - 1) : 0;
         assert(left[n] == 0 && std::abs(right[n] - expected) < 3e-6);
-        const double fm2 = n < 16 ? .25 + .75 * (n + 1) / 16. : 1;
-        const double fm3 = n <= 8 ? .5 : n < 16 ? .5 + .5 * (n - 8) / 8. : 1;
+        const double fm2 = n < 16 ? .25 + 1.75 * (n + 1) / 16. : 2;
+        const double fm3 = n <= 8 ? .5 : n < 16 ? .5 + 1.5 * (n - 8) / 8. : 2;
         const double m2 = std::sin(2 * std::acos(-1.) * phase[1]);
         const double m3 = std::sin(2 * std::acos(-1.) * phase[2]);
         phase[0] = std::fmod(phase[0] + 440 * (1 + fm2 * m2) / 48000., 1.);
         phase[1] = std::fmod(phase[1] + 880 * (1 + fm3 * m3) / 48000., 1.);
         phase[2] = std::fmod(phase[2] + 220 / 48000., 1.);
+        for (auto& p : phase) if (p < 0) p += 1;
     }
     // 無効化を0サンプルで受理し、次のNote Onは無変調になる。
     points[5].values = {{0, 0}}; points[6].values = {{0, 0}};
@@ -1179,7 +1180,7 @@ void checkNoise(IComponent* component, IAudioProcessor* processor, IEditControll
 
 void checkStateReload(IPluginFactory* factory, const TUID cid) {
     // 全31設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
-    const std::array<double, 31> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125, 62.5, -35.25, -3.7, 2, -1234.5, -8.1, 3, 1599.75, -std::numeric_limits<double>::infinity(), 37.5, 89.125};
+    const std::array<double, 31> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125, 62.5, -35.25, -3.7, 2, -1234.5, -8.1, 3, 1599.75, -std::numeric_limits<double>::infinity(), 137.5, 200};
     std::array<double, 31> expected {};
     StateStream saved;
     for (bool restore : {false, true}) {

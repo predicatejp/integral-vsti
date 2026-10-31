@@ -27,7 +27,7 @@ pub struct VoiceState {
     oscillators: [Oscillator; 3],
     /// 発振器ごとの音量倍率。−∞ dBでは0。
     oscillator_gains: [f64; 3],
-    /// Osc2→Osc1、Osc3→Osc2の変調度（0〜1）。
+    /// Osc2→Osc1、Osc3→Osc2の変調度（0〜2）。
     fm_depths: [f64; 2],
     /// ノート基音に掛けるOsc2/3のTune倍率。Osc1は1。
     tune_ratios: [f64; 3],
@@ -308,7 +308,15 @@ mod tests {
                 Waveform::Square,
                 Waveform::Sawtooth,
             ] {
-                for depths in [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.37, 0.61], [1.0, 1.0]] {
+                for depths in [
+                    [0.0, 0.0],
+                    [0.0, 1.0],
+                    [1.0, 0.0],
+                    [0.37, 0.61],
+                    [1.0, 1.0],
+                    [1.5, 2.0],
+                    [2.0, 2.0],
+                ] {
                     let mut voice = Voice::new();
                     let shape = EnvelopeParameters {
                         attack_ms: 0.0,
@@ -345,8 +353,14 @@ mod tests {
                             * std::f64::consts::SQRT_2
                             / 3.0_f64.sqrt();
                         let actual = voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+                        // 2段FMでは正弦波LUTの補間誤差も変調度に応じて増幅される。
+                        let tolerance = if depths.iter().any(|d| *d > 1.0) {
+                            8e-6
+                        } else {
+                            3e-6
+                        };
                         assert!(
-                            (actual[0] - expected).abs() < 3e-6,
+                            (actual[0] - expected).abs() < tolerance,
                             "rate={rate}, wave={wave:?}, depths={depths:?}, n={n}, actual={actual:?}, expected={expected}"
                         );
                         assert_eq!(actual[0], actual[1]);
@@ -356,11 +370,11 @@ mod tests {
                             *p = (*p
                                 + 440.0 * 2.0_f64.powf(cents / 1200.0) * (1.0 + depths[0] * m2)
                                     / rate)
-                                .fract();
+                                .rem_euclid(1.0);
                         }
                         modulators[0] =
-                            (modulators[0] + 880.0 * (1.0 + depths[1] * m3) / rate).fract();
-                        modulators[1] = (modulators[1] + 220.0 / rate).fract();
+                            (modulators[0] + 880.0 * (1.0 + depths[1] * m3) / rate).rem_euclid(1.0);
+                        modulators[1] = (modulators[1] + 220.0 / rate).rem_euclid(1.0);
                         assert_eq!(
                             voice.state.oscillator_inputs.map(|i| i.frequency_hz),
                             [440.0, 880.0, 220.0]
@@ -434,7 +448,7 @@ mod tests {
                     );
                     assert_eq!(actual[0], actual[1]);
                     for (p, r) in phase.iter_mut().zip([1.0, ratio, 1.0 / ratio]) {
-                        *p = (*p + 440.0 * r / rate).fract();
+                        *p = (*p + 440.0 * r / rate).rem_euclid(1.0);
                     }
                 }
                 assert_eq!(

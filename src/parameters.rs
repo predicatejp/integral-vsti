@@ -184,7 +184,7 @@ pub fn max_tick(index: usize) -> u32 {
             6 => 6,
             8 => 31,
             19 => 960,
-            21 => 200,
+            21 | 29 | 30 => 200,
             10 => 1200,
             13 | 22 | 25 | 28 => 601,
             24 | 27 => 480,
@@ -273,7 +273,8 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     match index {
         4 | 17 => return normalized,
         6 => return (normalized * 7.0).floor().min(6.0) + 1.0,
-        7 | 20 | 29 | 30 => return normalized * 100.0,
+        7 | 20 => return normalized * 100.0,
+        29 | 30 => return normalized * 200.0,
         21 => return normalized * 200.0 - 100.0,
         8 => return (normalized * 32.0).floor().min(31.0) + 1.0,
         9 => return (normalized * 7.0).floor().min(6.0),
@@ -308,7 +309,8 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     match index {
         4 | 17 => return plain,
         6 => return (plain.clamp(1.0, 7.0).round() - 1.0) / 6.0,
-        7 | 20 | 29 | 30 => return plain / 100.0,
+        7 | 20 => return plain / 100.0,
+        29 | 30 => return plain / 200.0,
         21 => return (plain + 100.0) / 200.0,
         8 => return (plain.clamp(1.0, 32.0).round() - 1.0) / 31.0,
         9 => return plain.clamp(0.0, 6.0).round() / 6.0,
@@ -336,7 +338,8 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         4 | 17 => (0.0..=1.0).contains(&plain),
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
-        7 | 20 | 29 | 30 => (0.0..=100.0).contains(&plain),
+        7 | 20 => (0.0..=100.0).contains(&plain),
+        29 | 30 => (0.0..=200.0).contains(&plain),
         21 => (-100.0..=100.0).contains(&plain),
         8 => (1.0..=32.0).contains(&plain) && plain.fract() == 0.0,
         9 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
@@ -772,8 +775,8 @@ mod tests {
             (19, 960),
             (20, 100),
             (21, 200),
-            (29, 100),
-            (30, 100),
+            (29, 200),
+            (30, 200),
         ] {
             for tick in 0..=max {
                 let plain = tick_to_plain(index, tick);
@@ -891,7 +894,7 @@ mod tests {
                     (24, -2400.1),
                     (27, 2400.1),
                     (29, -0.1),
-                    (30, 100.1),
+                    (30, 200.1),
                     (29, f64::NAN),
                     (30, f64::INFINITY),
                 ] {
