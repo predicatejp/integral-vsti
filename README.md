@@ -359,10 +359,10 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 
 ## GUI
 
-ホストのプラグイン画面に、ライトテーマで処理順に左からOsc1/2/3・Filter・Masterを配置します。
-左にOsc1/2/3、中央上段に音量AHDSRのAmp、中央下段にカットオフAHDSRを統合したFilter、右にMasterを配置します。WaveformとFilterのドロップダウンはタイトルの右に置きます。Masterは144px幅とし、Phaseラベルと選択欄を左揃えで上下にまとめ、その下にPoly・Vol・Panを縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+ホストのプラグイン画面に、ライトテーマの操作盤を表示します。
+上段にOsc1/2/3、下段左にAmp、下段右にカットオフAHDSRを統合したFilter、右端にMasterを配置します。AmpはA/H/DとS/Rの2行です。WaveformとFilterのドロップダウンはタイトルの右に置きます。Masterは144px幅とし、Phaseラベルと選択欄を左揃えで上下にまとめ、その下にPoly・Vol・Panを縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
-ノブは行内を均等割りします。ノブ行は80px高、行間・外周・グループ間・枠内余白は8pxで統一し、各パネルの高さを内容から算出します。見出しとドロップダウンは28px高です。
+ノブは行内を均等割りします。ノブ行は80px高、行間・外周・グループ間・枠内余白は8pxで統一し、各パネルの高さを内容から算出します。見出し行は38px高、ドロップダウンは28px高です。上段と下段の合計高をMasterと一致させ、画面全体を8pxの余白で囲みます。
 ノブは直径44pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
 Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
@@ -374,7 +374,7 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは784×428物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
+サイズは872×396物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
 `python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`へ保存します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
