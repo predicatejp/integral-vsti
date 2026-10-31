@@ -343,7 +343,58 @@ void checkViewContract(IEditController* controller) {
     assert(view->release() == 0);
 }
 
+#ifdef _WIN32
+void checkGlContext(IEditController* controller) {
+    NativeParent parent;
+    GuiFrame frame; frame.parent = &parent;
+    HDC dc = GetDC(parent.window); assert(dc);
+    PIXELFORMATDESCRIPTOR format {};
+    format.nSize = sizeof(format); format.nVersion = 1;
+    format.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    format.iPixelType = PFD_TYPE_RGBA; format.cColorBits = 24;
+    const int index = ChoosePixelFormat(dc, &format); assert(index);
+    assert(SetPixelFormat(dc, index, &format));
+    HGLRC context = wglCreateContext(dc); assert(context);
+    auto* view = controller->createView("editor"); assert(view);
+    assert(view->setFrame(&frame) == kResultOk);
+    unsigned draws = 0;
+    for (int cycle = 0; cycle < 4; ++cycle) {
+        const bool active = cycle % 2 == 0;
+        const HGLRC expectedContext = active ? context : nullptr;
+        const HDC expectedDc = active ? dc : nullptr;
+        assert(wglMakeCurrent(expectedDc, expectedContext));
+        auto restored = [&] {
+            return wglGetCurrentContext() == expectedContext && wglGetCurrentDC() == expectedDc;
+        };
+        // Painter生成後のタイマー作成失敗から戻る経路も、同じ条件で検証する。
+        GuiReentry::failTimer = true;
+        assert(view->attached(parent.handle(), kPlatformTypeHWND) != kResultOk);
+        assert(!GuiReentry::failTimer && restored());
+        assert(view->attached(parent.handle(), kPlatformTypeHWND) == kResultOk);
+        assert(restored());
+        for (int i = 0; i < 100; ++i) {
+            const auto before = GuiReentry::draws;
+            InvalidateRect(parent.child(), nullptr, FALSE);
+            UpdateWindow(parent.child());
+            assert(GuiReentry::draws > before && restored());
+            ++draws;
+        }
+        assert(view->removed() == kResultOk);
+        assert(restored());
+    }
+    assert(view->setFrame(nullptr) == kResultOk);
+    assert(view->release() == 0);
+    assert(!wglGetCurrentContext() && !wglGetCurrentDC());
+    assert(wglDeleteContext(context));
+    ReleaseDC(parent.window, dc);
+    std::cout << "GL context: " << draws << " redraws, 4 opens/closes and 4 creation failures preserved host context/DC\n";
+}
+#endif
+
 void checkGui(IComponent* component, IAudioProcessor* processor, IEditController* controller) {
+#ifdef _WIN32
+    checkGlContext(controller);
+#endif
     NativeParent parent;
     GuiFrame frame; frame.parent = &parent;
     GuiHandler handler(controller);

@@ -7,18 +7,24 @@ inline HWND target = nullptr, timerWindow = nullptr;
 inline UINT_PTR timerId = 0;
 inline WNDPROC windowProc = nullptr;
 inline bool armed = false, insideDraw = false;
+inline bool failTimer = false;
+inline unsigned draws = 0;
 inline unsigned injections = 0;
 inline void (WINAPI* clear)(unsigned) = nullptr;
 inline PROC (WINAPI* getGlProc)(LPCSTR) = nullptr;
 
 void WINAPI clearWithReentry(unsigned mask) {
+    ++draws;
     if (armed) {
         armed = false;
         insideDraw = true;
         assert(target && timerWindow && timerId);
         // 描画資源を借用中に同じ画面へ再入する。
+        const auto context = wglGetCurrentContext();
+        const auto dc = wglGetCurrentDC();
         InvalidateRect(target, nullptr, FALSE);
         UpdateWindow(target);
+        assert(wglGetCurrentContext() == context && wglGetCurrentDC() == dc);
         // beginEditがキューに残っている状態でタイマーを再入させる。
         SendMessageW(timerWindow, WM_TIMER, timerId, 0);
         insideDraw = false;
@@ -46,6 +52,11 @@ PROC WINAPI resolveGl(LPCSTR name) {
 }
 
 UINT_PTR WINAPI setTimer(HWND hwnd, UINT_PTR id, UINT ms, TIMERPROC callback) {
+    if (failTimer && hwnd && ms == 16) {
+        failTimer = false;
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
     auto result = SetTimer(hwnd, id, ms, callback);
     // Editorの編集配送用16msタイマー。再表示時は新しいウィンドウへ更新する。
     if (result && hwnd && ms == 16) { timerWindow = hwnd; timerId = id; }
