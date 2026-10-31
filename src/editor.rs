@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! カテゴリ別のノブ・選択ボタンとOpenGL描画を接続する。
+//! カテゴリ別のノブ・ドロップダウンとOpenGL描画を接続する。
 
 pub(crate) mod edits;
 mod pointer;
@@ -57,90 +57,6 @@ fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
         ),
         OVERLAY_SIZE,
     )
-}
-
-/// ボタン中央の図案。Keepは波形の継続、Zeroは位相原点、Randomはシャッフル。
-fn choice_icon(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    index: usize,
-    item: usize,
-    color: egui::Color32,
-) {
-    let center = rect.center();
-    let point = |x: f32, y: f32| center + egui::vec2(x * 10.0, y * 7.0);
-    let stroke = egui::Stroke::new(1.8, color);
-    let line = |points: &[(f32, f32)]| {
-        painter.add(egui::Shape::line(
-            points.iter().map(|&(x, y)| point(x, y)).collect(),
-            stroke,
-        ));
-    };
-    if index == 9 {
-        // None: フィルタを無効にする丸と斜線。
-        painter.circle_stroke(center, 7.0, stroke);
-        line(&[(-0.6, 0.85), (0.6, -0.85)]);
-    } else if index == 12 {
-        match item {
-            0 => {
-                line(&[
-                    (-1.0, 0.0),
-                    (-0.7, -0.7),
-                    (-0.4, 0.0),
-                    (-0.1, 0.7),
-                    (0.2, 0.0),
-                    (1.0, 0.0),
-                ]);
-                line(&[(0.6, -0.45), (1.0, 0.0), (0.6, 0.45)]);
-            }
-            1 => {
-                painter.circle_stroke(center, 7.0, stroke);
-                line(&[(0.0, 0.0), (0.0, -1.0)]);
-                painter.circle_filled(point(0.0, -1.0), 2.0, color);
-            }
-            _ => {
-                line(&[(-1.0, -0.7), (-0.6, -0.7), (0.6, 0.7), (1.0, 0.7)]);
-                line(&[(-1.0, 0.7), (-0.6, 0.7), (0.6, -0.7), (1.0, -0.7)]);
-                for y in [-0.7, 0.7] {
-                    line(&[(0.6, y - 0.4), (1.0, y), (0.6, y + 0.4)]);
-                }
-            }
-        }
-    } else {
-        match item {
-            0 => {
-                let points = (0..=24)
-                    .map(|i| {
-                        let t = i as f32 / 24.0;
-                        point(t * 2.0 - 1.0, -(t * std::f32::consts::TAU).sin())
-                    })
-                    .collect();
-                painter.add(egui::Shape::line(points, stroke));
-            }
-            1 => line(&[(-1.0, 0.0), (-0.5, -1.0), (0.5, 1.0), (1.0, 0.0)]),
-            2 => line(&[
-                (-1.0, 1.0),
-                (-1.0, -1.0),
-                (0.0, -1.0),
-                (0.0, 1.0),
-                (1.0, 1.0),
-            ]),
-            3 => line(&[(-1.0, 1.0), (0.0, -1.0), (0.0, 1.0), (1.0, -1.0)]),
-            _ => line(&[
-                (-1.0, 0.2),
-                (-0.8, -0.7),
-                (-0.6, 0.6),
-                (-0.4, -0.9),
-                (-0.2, 0.1),
-                (0.0, 0.8),
-                (0.2, -0.5),
-                (0.4, 0.5),
-                (0.6, -0.2),
-                (0.8, 0.9),
-                (1.0, -0.8),
-            ]),
-        }
-    }
 }
 
 struct EditorState {
@@ -451,52 +367,20 @@ impl Editor {
         }
     }
 
-    /// 選択肢は横並びの排他的なボタンとして表示する。
     fn choice(&self, ui: &mut egui::Ui, index: usize, selected: f64) {
         let names = parameters::choices(index);
-        let choice = parameters::to_plain(index, selected) as usize;
-        let width = (ui.available_width() - 4.0 * (names.len() - 1) as f32) / names.len() as f32;
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.horizontal(|ui| {
-            for (item, name) in names.iter().enumerate() {
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(width, HEADER_HEIGHT), egui::Sense::click());
-                let active = item == choice;
-                let fill = if active {
-                    ACCENT
-                } else if response.hovered() {
-                    egui::Color32::from_rgb(219, 232, 222)
-                } else {
-                    egui::Color32::WHITE
-                };
-                ui.painter().rect(
-                    rect,
-                    3.0,
-                    fill,
-                    egui::Stroke::new(1.0, LINE),
-                    egui::StrokeKind::Inside,
-                );
-                let color = if active { egui::Color32::WHITE } else { INK };
-                if index == 9 && item != 0 {
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        ["", "LP1", "LP2", "HP1", "HP2", "BP1", "BP2"][item],
-                        egui::FontId::proportional(18.0),
-                        color,
-                    );
-                } else {
-                    choice_icon(ui.painter(), rect, index, item, color);
-                }
-                if response.clicked() && !active {
-                    self.edits.push(Edit::Set(
-                        index,
-                        parameters::to_normalized(index, item as f64),
-                    ));
-                }
-                response.on_hover_text(*name);
-            }
-        });
+        let mut choice = parameters::to_plain(index, selected) as usize;
+        if egui::ComboBox::from_id_salt(index)
+            .width(ui.available_width())
+            .height(320.0)
+            .show_index(ui, &mut choice, names.len(), |i| names[i])
+            .changed()
+        {
+            self.edits.push(Edit::Set(
+                index,
+                parameters::to_normalized(index, choice as f64),
+            ));
+        }
     }
 
     fn group(
@@ -529,41 +413,15 @@ impl Editor {
             INK,
         );
         for &index in choices {
-            let width = if index == 9 {
-                rect.width() - GAP * 2.0
-            } else {
-                parameters::choices(index).len() as f32 * 36.0 - 4.0
-            };
-            let y = if matches!(index, 9 | 12) {
-                GAP + HEADER_HEIGHT + GAP
-            } else {
-                GAP
-            };
-            if index == 12 {
-                painter.text(
-                    rect.min + egui::vec2(GAP, y + HEADER_HEIGHT / 2.0),
-                    egui::Align2::LEFT_CENTER,
-                    "Phase",
-                    egui::FontId::proportional(18.0),
-                    MUTED,
-                );
-            }
             let choice = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - GAP - width, rect.top() + y),
-                egui::vec2(width, HEADER_HEIGHT),
+                egui::pos2(rect.right() - GAP - 130.0, rect.top() + GAP),
+                egui::vec2(130.0, HEADER_HEIGHT),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(choice), |ui| {
                 self.choice(ui, index, selected[index]);
             });
         }
-        let body_y = GAP
-            + HEADER_HEIGHT
-            + GAP
-            + if matches!(choices, [9] | [12]) {
-                HEADER_HEIGHT + GAP
-            } else {
-                0.0
-            };
+        let body_y = GAP + HEADER_HEIGHT + GAP;
         // 上下左右の外周は共通のGAP。余った幅・高さは行内と行間へ均等に配る。
         let row_gap = if rows.len() > 1 {
             (rect.height() - body_y - GAP - KNOB_CELL.y * rows.len() as f32)
@@ -583,7 +441,25 @@ impl Editor {
                     egui::vec2(width, KNOB_CELL.y),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                    self.knob(ui, index, selected[index], width);
+                    if index == 12 {
+                        // Phaseも他のMasterコントロールと同じ行高・中心・ラベル位置を使う。
+                        let choice = egui::Rect::from_center_size(
+                            egui::pos2(area.center().x, area.top() + 30.0),
+                            egui::vec2(120.0, HEADER_HEIGHT),
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(choice), |ui| {
+                            self.choice(ui, index, selected[index]);
+                        });
+                        ui.painter().text(
+                            egui::pos2(area.center().x, area.top() + 68.0),
+                            egui::Align2::CENTER_CENTER,
+                            "Phase",
+                            egui::FontId::proportional(18.0),
+                            MUTED,
+                        );
+                    } else {
+                        self.knob(ui, index, selected[index], width);
+                    }
                 });
             }
         }
@@ -705,8 +581,8 @@ impl WindowHandler for Editor {
                 ),
                 (
                     "Master",
-                    &[12],
-                    &[&[8][..], &[13][..], &[21][..]][..],
+                    &[],
+                    &[&[12][..], &[8][..], &[13][..], &[21][..]][..],
                     [master_x, GAP, 192.0, panel_height],
                 ),
             ];

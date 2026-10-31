@@ -357,24 +357,22 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size() << std::endl;
         assert(false);
     };
-    // グループ内のノブ中心と選択ボタンの先頭。画面上の実入力で全設定を検証する。
+    // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
     const std::array<std::pair<int, int>, 31> controls {{
-        {112, 30}, {328, 82}, {392, 82}, {456, 82}, {520, 82}, {584, 82},
-        {48, 82}, {112, 82}, {728, 118}, {317, 206}, {349, 258}, {456, 258},
-        {728, 66}, {728, 240}, {328, 362}, {392, 362}, {456, 362}, {520, 362},
-        {584, 362}, {563, 258}, {176, 82}, {728, 362}, {240, 82},
-        {112, 170}, {59, 222}, {144, 222}, {112, 310}, {59, 362}, {144, 362}, {229, 222}, {229, 362}
+        {207, 30}, {328, 82}, {392, 82}, {456, 82}, {520, 82}, {584, 82},
+        {48, 82}, {112, 82}, {728, 175}, {559, 170}, {349, 222}, {456, 222},
+        {728, 82}, {728, 269}, {328, 362}, {392, 362}, {456, 362}, {520, 362},
+        {584, 362}, {563, 222}, {176, 82}, {728, 362}, {240, 82},
+        {207, 170}, {59, 222}, {144, 222}, {207, 310}, {59, 362}, {144, 362}, {229, 222}, {229, 362}
     }};
     auto choose = [&](int index, int item) {
-        const auto [first, y] = controls[index];
-        const double pitch = index == 9 ? (320.0 - 24.0) / 7.0 + 4.0 : 36.0;
-        const int x = first + static_cast<int>(std::lround(item * pitch));
-        parent.click(x, y);
-        waitFor([&] { return handler.sequence.size() >= 3; }, "choice button");
+        const auto [x, y] = controls[index];
+        parent.click(x, y); pump(); assert(handler.sequence.empty());
+        parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
+        parent.click(x, (index == 26 ? y - 154 : y + 34) + item * 30);
+        waitFor([&] { return handler.sequence.size() >= 3; }, "dropdown choice");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
-        // 選択済みボタンを再度押しても未選択にならず、ホストへ再通知しない。
-        parent.click(x, y); pump(); assert(handler.sequence.empty());
     };
     for (int cycle = 0; cycle < 2; ++cycle) {
 #ifdef _WIN32
