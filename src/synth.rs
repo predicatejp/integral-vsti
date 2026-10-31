@@ -16,7 +16,7 @@ pub struct SynthesizerState {
     sample_rate: f64,
     /// 適用済みの正規化値。変更時だけ実単位へ換算する。
     parameters: [f64; parameters::COUNT],
-    /// 全Voiceのフィルタ出力を加算した後に掛ける振幅倍率。Volume変更時だけ再計算する。
+    /// 全Voiceのディストーション出力を加算した後に掛ける振幅倍率。Volume変更時だけ再計算する。
     master_gain: f64,
     /// 全Voice共通の定位係数。実発音数・有効なWidth・Panの変更時だけ更新する。
     panning_gains: PanningGains,
@@ -147,6 +147,12 @@ impl Synthesizer {
                     parameters::to_plain(20, values[20]) / 100.0,
                     parameters::to_plain(21, values[21]) / 100.0,
                 );
+            }
+        }
+        if values[31..34] != previous[31..34] {
+            let distortion = parameters::distortion(&values);
+            for voice in &mut self.state.voices {
+                voice.set_distortion(distortion);
             }
         }
         if filter_changed {

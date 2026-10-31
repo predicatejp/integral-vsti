@@ -28,7 +28,7 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "FM", "FM",
+    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix",
 ];
 
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
@@ -592,7 +592,9 @@ impl WindowHandler for Editor {
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
             let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
             let single_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
-            let panel_height = single_height * 3.0 + GAP * 2.0;
+            let filter_height = single_height + KNOB_CELL.y + GAP;
+            let panel_height = single_height * 2.0 + filter_height + GAP * 2.0;
+            let oscillator_height = (panel_height - GAP * 2.0) / 3.0;
             let center_x = GAP + oscillator_width + GAP;
             let master_x = center_x + filter_width + GAP;
             let groups = [
@@ -600,7 +602,7 @@ impl WindowHandler for Editor {
                     "Osc1",
                     &[0_usize] as &[usize],
                     &[&[6_usize, 7, 20, 22][..]][..],
-                    [GAP, GAP, oscillator_width, single_height],
+                    [GAP, GAP, oscillator_width, oscillator_height],
                 ),
                 (
                     "Osc2",
@@ -608,9 +610,9 @@ impl WindowHandler for Editor {
                     &[&[24, 25, 29][..]][..],
                     [
                         GAP,
-                        GAP + single_height + GAP,
+                        GAP + oscillator_height + GAP,
                         oscillator_width,
-                        single_height,
+                        oscillator_height,
                     ],
                 ),
                 (
@@ -619,9 +621,9 @@ impl WindowHandler for Editor {
                     &[&[27, 28, 30][..]][..],
                     [
                         GAP,
-                        GAP + (single_height + GAP) * 2.0,
+                        GAP + (oscillator_height + GAP) * 2.0,
                         oscillator_width,
-                        single_height,
+                        oscillator_height,
                     ],
                 ),
                 (
@@ -638,7 +640,18 @@ impl WindowHandler for Editor {
                         center_x,
                         GAP + single_height + GAP,
                         filter_width,
-                        panel_height - single_height - GAP,
+                        filter_height,
+                    ],
+                ),
+                (
+                    "Distortion",
+                    &[31],
+                    &[&[32, 33][..]][..],
+                    [
+                        center_x,
+                        GAP + single_height + filter_height + GAP * 2.0,
+                        filter_width,
+                        single_height,
                     ],
                 ),
                 (
@@ -810,9 +823,9 @@ mod tests {
     use super::*;
     #[test]
     fn overlay_stays_inside_viewport_at_every_edge() {
-        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(784.0, 472.0));
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(784.0, 560.0));
         for x in [0.0, 43.0, 392.0, 784.0] {
-            for y in [0.0, 114.0, 236.0, 472.0] {
+            for y in [0.0, 114.0, 280.0, 560.0] {
                 let knob = egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(50.0, 50.0));
                 let bounds = overlay_rect(knob, viewport);
                 assert_eq!(bounds.size(), egui::vec2(224.0, 60.0));
