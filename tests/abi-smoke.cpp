@@ -1287,6 +1287,7 @@ int wmain(int argc, wchar_t** argv) {
     assert(argc == 3 || argc == 4);
     HMODULE module = LoadLibraryW(argv[1]);
     if (!module) { std::cerr << "LoadLibrary failed: " << GetLastError() << '\n'; return 1; }
+    if (argc == 4) GuiReentry::install(module);
     const auto entry = reinterpret_cast<bool (PLUGIN_API*)()>(GetProcAddress(module, "InitDll"));
     const auto exit = reinterpret_cast<bool (PLUGIN_API*)()>(GetProcAddress(module, "ExitDll"));
     const auto getFactory = reinterpret_cast<IPluginFactory* (PLUGIN_API*)()>(GetProcAddress(module, "GetPluginFactory"));
