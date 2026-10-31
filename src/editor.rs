@@ -569,13 +569,6 @@ impl WindowHandler for Editor {
                 INK,
             );
             let meter_x = title.right() - GAP - 254.0;
-            painter.text(
-                egui::pos2(meter_x - GAP, title.center().y),
-                egui::Align2::RIGHT_CENTER,
-                format!("Voices {voice_count}"),
-                egui::FontId::proportional(18.0),
-                INK,
-            );
             for voice in 0..32 {
                 let segment = egui::Rect::from_min_size(
                     egui::pos2(meter_x + voice as f32 * 8.0, title.center().y - 6.0),
