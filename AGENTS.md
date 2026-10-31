@@ -49,7 +49,7 @@
 - 音源方式・主要機能: 各3発振器を持つ1〜32個の独立Voiceによる多声音音源。サイン波・三角波・矩形波・ノコギリ波・ホワイトノイズに対応。既定はサイン波。音量・カットオフ用の独立した線形AHDSRエンベロープ。同一ノートの1〜7ボイスユニゾン。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
 - サンプルレートは44.1 kHz以上の有限値を受理し、範囲外はVST3の`setupProcessing`で拒否する。フィルタも同じ下限を検証し、カットオフは内部で20〜20,000 Hzにクランプする。
-- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volumeも公開する。eguiで29パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計30パラメーター）。
+- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・FMも公開する。eguiで31パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計32パラメーター）。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。
 バス構成、最大同時発音数、サンプル精度、対応サンプルレート、MIDI機能、独自GUIの有無は、実装時に対応範囲を明記すること。
@@ -116,8 +116,8 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 
 ### ノートとパラメーター
 
-- オシレータを独立したコンポーネントとし、回路の定常入力を `OscillatorInput`、内部状態を `OscillatorState` として分離すること。Polyphonyは1〜32（初期値1）とし、Voiceごとにノートを割り当てる。VoiceはOsc1/2/3を所有し、Osc1だけが1〜7ユニゾンを生成する。Osc2/3はWaveform・Tune（−2400〜2400 cent、GUIは10 cent刻み、初期値0）・Volを持ち、1発振器ずつ生成する。Phase・Panは3発振器共通、Width・DetuneはOsc1だけに適用する。
-- 波形は `OscillatorInput.waveform`、目標実効値は `amplitude` に保持すること。全波形でベロシティ・エンベロープ最大時の理想波形の実効値を0.5とし、ピークへの倍率はオシレータ内で適用すること。現在は帯域制限なし。
+- オシレータを独立したコンポーネントとし、回路の定常入力を `OscillatorInput`、内部状態を `OscillatorState` として分離すること。Polyphonyは1〜32（初期値1）とし、Voiceごとにノートを割り当てる。VoiceはOsc1/2/3を所有し、Osc1だけが1〜7ユニゾンを生成する。Osc2/3はWaveform・Tune（−2400〜2400 cent、GUIは10 cent刻み、初期値0）・Vol・FMを持ち、1発振器ずつ生成する。Phase・Panは3発振器共通、Width・DetuneはOsc1だけに適用する。
+- 波形は`OscillatorInput.waveform`で指定し、発振器は各ユニゾンについてピーク振幅1の生波形を生成すること。実効値補正・ユニゾン合成・Vol・定位は独立した`volume`モジュールで処理する。補正倍率は設定変更時にVoiceStateへ保持する。無変調・Vol=0 dB・ベロシティとエンベロープ最大時の理想実効値は0.5とする。現在は帯域制限なし。
 - ノートイベントはVoiceのノート情報・発振器入力を更新し、子Oscillator・Envelopeの内部状態へ直接触れないこと。サンプルごとに「現在の入力と状態からサンプル生成 → 入力を用いてState更新」の順で処理すること。音量用EnvelopeはVoiceが所有し、3発振器を各Volで加算した後に適用する。発振器へはactiveとノート世代を渡す。正規化値・attack開始値・経過サンプル数・ノートオフ位置はEnvelopeStateに保持すること。再ノートオンは現在の実効振幅からattack時間全体で新しい目標へ移行すること。
 - 位相はオシレータ自身の状態として保持すること。Note On時にはPhaseのKeep（維持、初期値）・Zero（全7位相を0）・Random（全7位相を個別の疑似乱数へ変更）を適用すること。モード変更は次のNote Onで反映し、音程変更では位相を引き継ぐ。release完了後と処理停止中は位相を止める。位相とNoiseは共通のRandomコンポーネント（xoshiro256+）を使用し、用途別の状態をOscillatorStateへ保持する。シード取得はオシレータ作成時だけ標準ライブラリのRandomStateで行う。
 - ユニゾンの入力はボイス数1〜7、Detune 0〜100 cent。初期値は1と0。各ボイスの音程差は `detune * (2k/(N-1) - 1)`、1ボイスでは0とする。Detuneが正なら合成音を `1/√N` 倍にし、0なら保持した先頭位相から1ボイス相当を生成する。未使用ボイスの位相は停止して保持する。エンベロープは全ボイス共通とする。
@@ -125,11 +125,13 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - `SynthesizerState.next_oscillator_id` は初期値0。有効なNote Onを割り当てた後に `(ID + 1) % Polyphony` へ進める。空き枠探索はせず、同じ枠の再使用では現在振幅を引き継ぎ、位相はPhaseの選択に従う。Note Off・不正なNote On・処理停止では割り当て位置を進めない。旧ノートへの復帰は行わない。
 - Note Offは対応する全枠をreleaseする。同じnoteId、またはID未提供の同チャンネル・同音高が複数あれば全一致に適用する。上書きした旧IDへのNote Offでは新しいノートを消さない。
 - Polyphonyの減少時は範囲外の枠を即時停止し、次のIDを新しい枠数の剰余へ変更する。増加時に停止済みノートを復活させない。最大32枠を初期化時に確保し、処理中は動的に確保・解放しない。
-- Widthは0〜100%（初期値0）、Panは−100〜＋100%（初期値0）。GUIは1%刻みの整数tickとし、VST3は連続値とする。`W=Width/100`、`P=Pan/100`、ユニゾン位置`s=2k/(N−1)−1`（1ボイスは0）から`p=P+(1−|P|)*W*s`を求める。equal-powerの左右倍率は`√2*cos((p+1)*π/4)`と`√2*sin((p+1)*π/4)`。Osc1用定位係数とOsc2/3共通のPan倍率はSynthesizerStateに保持し、VoiceとOscillatorへ参照で渡す。実発音数・有効なWidth・Panの変更時に、既存の四半周期正弦波表を線形補間して計算する。倍率の最大絶対誤差は4.17×10⁻⁷、二乗和の最大絶対偏差は1.18×10⁻⁶以内とする。中央は左右1、端点の無音側は厳密に0とする。Detune=0では1ボイス相当を維持し、Widthを適用しない。各Voiceのフィルタは左右独立の履歴と共通係数を持ち、左右別に合成する。
-- 音量補正は各オシレータ内のユニゾンに限定する。ポリフォニー出力は各オシレータの単純加算とし、音数による正規化やクリッピングを追加しない。全Voiceのフィルタ出力を加算した後、Volume（−∞と−48〜＋12 dB、初期値0 dB）を適用する。振幅倍率は`10^(dB / 20)`とし、Volume変更時だけ計算してSynthesizerStateに保持する。
+- Widthは0〜100%（初期値0）、Panは−100〜＋100%（初期値0）。GUIは1%刻みの整数tickとし、VST3は連続値とする。`W=Width/100`、`P=Pan/100`、ユニゾン位置`s=2k/(N−1)−1`（1ボイスは0）から`p=P+(1−|P|)*W*s`を求める。equal-powerの左右倍率は`√2*cos((p+1)*π/4)`と`√2*sin((p+1)*π/4)`。Osc1用定位係数とOsc2/3共通のPan倍率はSynthesizerStateに保持し、Voiceの音量処理へ参照で渡す。実発音数・有効なWidth・Panの変更時に、既存の四半周期正弦波表を線形補間して計算する。倍率の最大絶対誤差は4.17×10⁻⁷、二乗和の最大絶対偏差は1.18×10⁻⁶以内とする。中央は左右1、端点の無音側は厳密に0とする。Detune=0では1ボイス相当を維持し、Widthを適用しない。各Voiceのフィルタは左右独立の履歴と共通係数を持ち、左右別に合成する。
+- 合成音数による音量補正は各オシレータのユニゾンに限定する。ポリフォニー出力は各オシレータの単純加算とし、音数による正規化やクリッピングを追加しない。全Voiceのフィルタ出力を加算した後、Volume（−∞と−48〜＋12 dB、初期値0 dB）を適用する。振幅倍率は`10^(dB / 20)`とし、Volume変更時だけ計算してSynthesizerStateに保持する。
 
 - フィルタはVoiceの最終段に置き、TPT SVFのlow・band・high出力と、外側のタイプ選択・1段／2段・Noneを分離する。内部フィルタへ具体的なHzとQ（0.5〜10）を渡し、既定値はUI／VST3設定側に置く。ノート基準のCutoff（−2400〜9600 cent）をHzへ換算する。
 - 全Volumeは−∞を完全消音とし、有限範囲は−48〜＋12 dB・0.1 dB刻み。Osc1とMasterの初期値は0 dB、Osc2/3は−∞。発音中は消音された発振器の位相・乱数も進める。3発振器の合成後に共通AHDSR、Voiceのフィルタを適用する。Tuneはフィルタの基準ノート周波数へ影響させない。
+
+- FMノブはOsc2→Osc1、Osc3→Osc2の位相変調を指定する。0〜200%・初期値0・GUIは1%刻みとし、100%は1回転、最大200%は2回転。`読出し位相 = (保持位相 + FM/100 × 生波形) mod 1`（周期単位）を使う。発振器は保持位相をTune・Detune適用後の周波数で更新し、位相変調を状態へ累積しない。毎サンプルOsc3→Osc2→Osc1の順で生成する。生波形は−1〜＋1で、RMS補正・Vol・Pan・AHDSRの適用前とする。Vol=−∞でも変調は継続する。Noiseは音声と変調で同じ乱数サンプルを使い、Noise自体への位相変調では乱数列を変更しない。
 
 - カットオフ用AHDSRは各Voiceが音量用と独立したEnvelopeを持つ。初期AHDSRは音量用と同じ、Amountは−4800〜＋4800 cent（初期値0）。`Cutoff + Amount × 正規化値`をノート基準Hzへ換算してフィルタへ渡す。再ノートオンでは現在値からattack時間全体で1へ移行し、ノートオフで独自のreleaseを進める。停止は両エンベロープを即時0にする。
 
@@ -139,12 +141,12 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - パラメーターの列挙位置と安定した `ParamID` を区別し、正規化値 `[0, 1]`、実単位、離散値の変換を一貫させること。選択肢・単位・整数tickの換算は`src/parameters.rs`に集約し、GUIとVST3 Controllerで共用すること。
 - オートメーションは変更点の時刻と区間の意味を扱うこと。連続値の補間、離散値の切り替え、前ブロックからの値の保持を定め、最終点だけで全ブロックを処理しないこと。
 - 同じサンプル位置のパラメーター変更とノートイベントの処理順序を定義し、両者に共通の入力順序情報があるとは仮定しないこと。
-- Waveform・Unison・Polyphony・Filter・Cutoff・Phaseの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Width・Panの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。
+- Waveform・Unison・Polyphony・Filter・Cutoff・Phaseの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・全Volume・Osc2/3 Tune・FM・Width・Panの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。
 - GUIからの編集は `beginEdit` / `performEdit` / `endEdit` など規定の通知を使うこと。ホストからの値更新を再通知して循環させず、GUIを開かなくてもDSPへ更新が反映される構成にすること。
 
 ### 状態保存とGUI
 
-- 内蔵音色は編集値と独立して定義し、IUnitInfoの一覧とkIsProgramChangeのProgramパラメーターで公開する。SineはOsc1のみ0 dB、Osc2/3はSine・Tune=0・−∞とし、1ボイス・ユニゾン1・フィルタ無効・定位中央・Volume=0 dB、両AHDSRはA/H/D/R=0 ms・S=1・Cutoff Amount=0とする。同じ番号の再選択でも読み直す。同位置ではProgram→個別パラメーター→ノートの順に適用し、保存時には編集後の実際の音色設定を保持する。
+- 内蔵音色は編集値と独立して定義し、IUnitInfoの一覧とkIsProgramChangeのProgramパラメーターで公開する。SineはOsc1のみ0 dB、Osc2/3はSine・Tune=0・−∞・FM=0とし、1ボイス・ユニゾン1・フィルタ無効・定位中央・Volume=0 dB、両AHDSRはA/H/D/R=0 ms・S=1・Cutoff Amount=0とする。同じ番号の再選択でも読み直す。同位置ではProgram→個別パラメーター→ノートの順に適用し、保存時には編集後の実際の音色設定を保持する。
 
 - **UI要素の設定値・選択状態は必ず整数型で保持すること。** ノブは整数tick、選択リストは整数の選択番号を使用する。整数値から時間・音量などの実単位およびVST3の正規化値へ明示的に換算すること。ホスト値をUIへ反映する際も整数へ換算し、その表示更新だけではホストへ再通知しないこと。浮動小数点値をUI要素に保持させ、`step_by`などで見かけの刻み幅だけを整数にする実装は禁止する。この制約は表示用の数値計算やVST3 APIで規定される浮動小数点型には適用しない。
 - プラグインのクラスIDとパラメーターIDは固有で安定した値にすること。通常更新で不用意に変更しないこと。保存形式はバージョンを検証し、現行形式だけを受理すること。過去版のデータ互換処理や移行処理は追加しないこと。
@@ -152,7 +154,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - 状態データの読み書き結果、長さ、値の範囲を検証し、破損・途中切れ・未対応バージョンで不正な状態を適用しないこと。
 - 処理中の状態保存・復元とDSPのデータ共有を設計し、音声スレッドをブロックしないこと。設定の復元と、発音中のボイスや残響履歴の完全な復元を同一視しないこと。
 - GUIはegui 0.37.0・egui_glow 0.37.0・baseview 0.4.1のOpenGL描画を使用する。GPUは描画専用とし、DSPでは使用しない。LinuxはX11EmbedWindowIDとIPlugFrameから取得するIRunLoop、WindowsはHWNDを使う。
-- GUIは1024×768物理ピクセルの固定サイズ、ライトテーマとする。標準フォントは18px、見出しは24pxとする。処理順に左からOsc1/2/3・Filter・Masterを配置し、Amplitude envelopeはOsc3の下、Cutoff envelopeはFilterの下に置く。各列とエンベロープの幅、グループ間隔を揃える。各オシレータのWaveformはタイトルの右に置き、上下の高さを詰める。Masterのノブは縦方向に並べる。Osc1はWaveform・Unison・Detune・Width・Vol、Osc2/3はWaveform・Tune・Vol、Masterは共通Phase・Polyphony・Volume・Panを操作する。余白はコンパクトに保つ。ノブは直径44pxとし、省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを下に表示する。WaveformとPhaseのドロップダウンとAHDSRの5ノブ、Unison（1ボイス刻み）とDetune（1 cent刻み）、Polyphony（1刻み）の整数ノブをマウスで操作する。Filterの7択とCutoff（0〜1200 tickを10 cent刻みへ換算）、Resonance（0〜950 tickをQ=0.5〜10へ換算）、全Volume（tick=0は−∞、1〜601を−48〜＋12 dBへ0.1 dB刻みで換算）も操作する。カットオフ用AHDSRも同じ時間軸・Sustain軸で操作し、Cutoff Amountは0〜960 tickを−4800〜＋4800 centへ10 cent刻みで換算する。CutoffのVST3公開値は連続値、初期値は4800 cent、Resonanceの初期値はQ=1とする。時間軸は0ms専用の左端、次が1ms、以降100tickで10倍。sustainは線形。任意倍率・自由なサイズ変更は未対応。
+- GUIは1024×768物理ピクセルの固定サイズ、ライトテーマとする。標準フォントは18px、見出しは24pxとする。処理順に左からOsc1/2/3・Filter・Masterを配置し、Amplitude envelopeはOsc3の下、Cutoff envelopeはFilterの下に置く。各列とエンベロープの幅、グループ間隔を揃える。各オシレータのWaveformはタイトルの右に置き、上下の高さを詰める。Masterのノブは縦方向に並べる。Osc1はWaveform・Unison・Detune・Width・Vol、Osc2/3はWaveform・Tune・Vol・FM、Masterは共通Phase・Polyphony・Volume・Panを操作する。余白はコンパクトに保つ。ノブは直径44pxとし、省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを下に表示する。WaveformとPhaseのドロップダウンとAHDSRの5ノブ、Unison（1ボイス刻み）とDetune（1 cent刻み）、Polyphony（1刻み）の整数ノブをマウスで操作する。Filterの7択とCutoff（0〜1200 tickを10 cent刻みへ換算）、Resonance（0〜950 tickをQ=0.5〜10へ換算）、全Volume（tick=0は−∞、1〜601を−48〜＋12 dBへ0.1 dB刻みで換算）も操作する。カットオフ用AHDSRも同じ時間軸・Sustain軸で操作し、Cutoff Amountは0〜960 tickを−4800〜＋4800 centへ10 cent刻みで換算する。CutoffのVST3公開値は連続値、初期値は4800 cent、Resonanceの初期値はQ=1とする。時間軸は0ms専用の左端、次が1ms、以降100tickで10倍。sustainは線形。任意倍率・自由なサイズ変更は未対応。
 - GUIの編集通知はホストのUIスレッドに配送し、描画処理中にはホストを呼ばない。UI専用の32件キューは1件をノブの終了通知用に予約する。途中の値変更が満杯で破棄されても、終了時に最終値とendEditを通知する。
 - ノブは4物理pxの上下移動で整数tickを1増減する。調整中はノブ中央直上に「正式名称\n現在値」の2行オーバーレイを中央揃えで表示する。全パラメーターで224×60 pxに固定し、画面外へ出る場合は枠全体が画面内に収まる位置へ補正する。Unison・Polyphonyのオーバーレイは整数、連続パラメーターは小数点以下3桁と単位を表示する。カーソル操作はドラッグ期間に限定し、復帰をホストへのendEdit通知の成否に依存させない。Windowsのノブ操作ではキーボードフォーカスを取得・変更しない。開始時のフォーカスと前面ウィンドウをStateへ記録し、既存タイマーでその変化・Esc・キャプチャ解除を検出して終了する。Linuxでは終了時に子が保持しているフォーカスをホストの親へ戻す。他へ移ったフォーカスは奪わない。
 - 独自GUIを実装する場合は、表示・取り外し・再表示、サイズ変更、スケーリング、フォーカスと入力の扱いを確認すること。GUIを閉じても音源の処理を継続できるようにすること。

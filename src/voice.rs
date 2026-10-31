@@ -4,7 +4,7 @@
 use crate::envelope::{DEFAULT_ENVELOPE, Envelope, EnvelopeParameters};
 use crate::filter::{Filter, FilterParameters, FilterType};
 use crate::oscillator::{Oscillator, OscillatorInput, PanningGains, PhaseMode, Waveform};
-use crate::parameters;
+use crate::{parameters, volume};
 
 /// 全波形共通のvelocityが1のときの基準実効値（RMS）。
 const BASE_RMS_AMPLITUDE: f64 = 0.5;
@@ -25,8 +25,12 @@ pub struct VoiceState {
     pub(super) oscillator_inputs: [OscillatorInput; 3],
     /// 発振器ごとに独立した位相・乱数の状態。
     oscillators: [Oscillator; 3],
-    /// 発振器ごとの音量倍率。−∞ dBでは0。
+    /// Volの線形倍率。−∞ dBでは0。
+    oscillator_volumes: [f64; 3],
+    /// 波形・ユニゾン補正とVolを合わせた倍率。設定変更時に計算する。
     oscillator_gains: [f64; 3],
+    /// Osc2→Osc1、Osc3→Osc2の位相変調量（0〜2周期）。
+    phase_depths: [f64; 2],
     /// ノート基音に掛けるOsc2/3のTune倍率。Osc1は1。
     tune_ratios: [f64; 3],
     /// ノートを保持している間true。Note Offでは共通AHDSRのreleaseへ移る。
@@ -78,12 +82,14 @@ impl Voice {
                     unison_voices: 1,
                     detune_cents: 0.0,
                     frequency_hz: 440.0,
-                    amplitude: 1.0,
+                    phase_modulation: 0.0,
                     active: false,
                     note_generation: 0,
                 }; 3],
                 oscillators: std::array::from_fn(|_| Oscillator::new()),
-                oscillator_gains: [1.0, 0.0, 0.0],
+                oscillator_volumes: [1.0, 0.0, 0.0],
+                oscillator_gains: [std::f64::consts::SQRT_2, 0.0, 0.0],
+                phase_depths: [0.0; 2],
                 tune_ratios: [1.0; 3],
                 gate: false,
                 note_generation: 0,
@@ -177,6 +183,7 @@ impl Voice {
         self.state.envelope_parameters = envelope;
         self.state.oscillator_inputs[0].unison_voices = unison;
         self.state.oscillator_inputs[0].detune_cents = detune;
+        self.refresh_volume(0);
         for input in &mut self.state.oscillator_inputs {
             input.phase_mode = phase_mode;
         }
@@ -184,12 +191,27 @@ impl Voice {
 
     /// 設定変更時だけ親が換算したTune倍率・音量を配送する。
     pub fn set_oscillator(&mut self, index: usize, waveform: Waveform, tune_ratio: f64, gain: f64) {
-        self.state.oscillator_gains[index] = gain;
+        self.state.oscillator_volumes[index] = gain;
         self.state.tune_ratios[index] = tune_ratio;
         let base_hz = self.state.oscillator_inputs[0].frequency_hz;
         let input = &mut self.state.oscillator_inputs[index];
         input.waveform = waveform;
         input.frequency_hz = (base_hz * tune_ratio).min(f64::MAX);
+        self.refresh_volume(index);
+    }
+
+    fn refresh_volume(&mut self, index: usize) {
+        let input = &self.state.oscillator_inputs[index];
+        self.state.oscillator_gains[index] = volume::gain(
+            input.waveform,
+            input.rendered_voices(),
+            self.state.oscillator_volumes[index],
+        );
+    }
+
+    /// 親が検証したOsc2・Osc3のFM設定を配送する。
+    pub fn set_phase_modulation(&mut self, depths: [f64; 2]) {
+        self.state.phase_depths = depths;
     }
 
     /// Voice内のステレオ処理パイプライン。生成した信号をSynthesizerが加算する。
@@ -228,17 +250,22 @@ impl Voice {
         let active = self.state.envelope.is_active();
         let mono = [*mono_gains; 7];
         let mut sample = [0.0; 2];
-        for i in 0..3 {
+        let depths = [0.0, self.state.phase_depths[0], self.state.phase_depths[1]];
+        let mut modulation = 0.0;
+        // 同じサンプル時刻の生波形をOsc3→Osc2→Osc1へ渡す。
+        for i in (0..3).rev() {
+            self.state.oscillator_inputs[i].active = active;
             let input = &mut self.state.oscillator_inputs[i];
-            input.active = active;
-            let current = self.state.oscillators[i].generate_sample(
-                input,
-                sample_rate,
+            input.phase_modulation = modulation;
+            let current = self.state.oscillators[i].generate_sample(input, sample_rate);
+            modulation = current.values[0] * depths[i];
+            let audio = volume::process_sample(
+                &current.values[..current.count],
                 if i == 0 { gains } else { &mono },
+                self.state.oscillator_gains[i],
             );
-            for channel in 0..2 {
-                sample[channel] += current[channel] * self.state.oscillator_gains[i];
-            }
+            sample[0] += audio[0];
+            sample[1] += audio[1];
         }
         let sample = sample.map(|value| value * amplitude);
         let output = self.state.filter.process_sample(
@@ -270,6 +297,104 @@ impl Voice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phase_modulation_chain_matches_same_sample_raw_waveforms() {
+        fn raw(wave: Waveform, phase: f64) -> f64 {
+            match wave {
+                Waveform::Sine => (std::f64::consts::TAU * phase).sin(),
+                Waveform::Triangle => 4.0 * ((phase - 0.25).abs() - 0.5).abs() - 1.0,
+                Waveform::Square => {
+                    if phase < 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+                }
+                Waveform::Sawtooth => 2.0 * phase - 1.0,
+                Waveform::Noise => unreachable!(),
+            }
+        }
+        for rate in [44100.0, 48000.0, 96000.0] {
+            for wave in [
+                Waveform::Sine,
+                Waveform::Triangle,
+                Waveform::Square,
+                Waveform::Sawtooth,
+            ] {
+                for depths in [
+                    [0.0, 0.0],
+                    [0.0, 1.0],
+                    [1.0, 0.0],
+                    [0.37, 0.61],
+                    [1.0, 1.0],
+                    [1.5, 2.0],
+                    [2.0, 2.0],
+                ] {
+                    let mut voice = Voice::new();
+                    let shape = EnvelopeParameters {
+                        attack_ms: 0.0,
+                        hold_ms: 0.0,
+                        decay_ms: 0.0,
+                        sustain: 1.0,
+                        release_ms: 0.0,
+                    };
+                    voice.set_parameters(Waveform::Sine, shape, 3, 25.0, PhaseMode::Zero);
+                    voice.set_filter(FilterType::None, 4800.0, 1.0);
+                    voice.set_oscillator(1, wave, 2.0, 0.0);
+                    voice.set_oscillator(2, wave, 0.5, 0.0);
+                    voice.set_phase_modulation(depths);
+                    let note = Note {
+                        id: 1,
+                        channel: 0,
+                        pitch: 69,
+                    };
+                    voice.note_on(note, 0.0, 1.0);
+                    let mut carrier = [0.0; 3];
+                    let mut modulators = [0.0; 2];
+                    for n in 0..256 {
+                        if n == 127 {
+                            // Phase=Zeroの再トリガーを全段へ適用する。
+                            voice.note_on(note, 0.0, 1.0);
+                            carrier.fill(0.0);
+                            modulators.fill(0.0);
+                        }
+                        let m3 = raw(wave, modulators[1]);
+                        let m2 = raw(wave, (modulators[0] + depths[1] * m3).rem_euclid(1.0));
+                        let expected = carrier
+                            .iter()
+                            .map(|p| (std::f64::consts::TAU * (p + depths[0] * m2)).sin())
+                            .sum::<f64>()
+                            * 0.5
+                            * std::f64::consts::SQRT_2
+                            / 3.0_f64.sqrt();
+                        let actual = voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+                        // 2段の位相変調では正弦波LUTの誤差も最大4π倍ずつ増幅される。
+                        let tolerance = 7e-5;
+                        assert!(
+                            (actual[0] - expected).abs() < tolerance,
+                            "rate={rate}, wave={wave:?}, depths={depths:?}, n={n}, actual={actual:?}, expected={expected}"
+                        );
+                        assert_eq!(actual[0], actual[1]);
+                        for (p, cents) in carrier.iter_mut().zip([-25.0_f64, 0.0, 25.0]) {
+                            *p = (*p + 440.0 * 2.0_f64.powf(cents / 1200.0) / rate).rem_euclid(1.0);
+                        }
+                        modulators[0] = (modulators[0] + 880.0 / rate).rem_euclid(1.0);
+                        modulators[1] = (modulators[1] + 220.0 / rate).rem_euclid(1.0);
+                        assert_eq!(
+                            voice.state.oscillator_inputs.map(|i| i.frequency_hz),
+                            [440.0, 880.0, 220.0]
+                        );
+                    }
+                    voice.note_off(note);
+                    assert_eq!(
+                        voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]),
+                        [0.0; 2]
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn three_oscillators_share_envelope_and_phase_and_sum_before_filter() {
@@ -329,7 +454,7 @@ mod tests {
                     );
                     assert_eq!(actual[0], actual[1]);
                     for (p, r) in phase.iter_mut().zip([1.0, ratio, 1.0 / ratio]) {
-                        *p = (*p + 440.0 * r / rate).fract();
+                        *p = (*p + 440.0 * r / rate).rem_euclid(1.0);
                     }
                 }
                 assert_eq!(
@@ -478,9 +603,14 @@ mod tests {
                     }
                     let mut input = voice.state.oscillator_inputs[0];
                     input.active = voice.state.gate;
-                    input.amplitude = voice.state.amplitude;
                     let expected = filter.process_sample(
-                        [oscillator.generate_sample(&input, 1000.0, &[[1.0; 2]; 7])[0]; 2],
+                        volume::process_sample(
+                            &oscillator.generate_sample(&input, 1000.0).values
+                                [..input.rendered_voices()],
+                            &[[1.0; 2]; 7],
+                            voice.state.amplitude
+                                * volume::gain(input.waveform, input.rendered_voices(), 1.0),
+                        ),
                         kind,
                         &FilterParameters {
                             cutoff_hz: 220.0 * 2.0_f64.powf((-1200.0 + amount * level) / 1200.0),
@@ -535,7 +665,6 @@ mod tests {
                 ));
                 let mut input = voice.state.oscillator_inputs[0];
                 input.active = true;
-                input.amplitude = 0.5;
                 let mut oscillator = Oscillator::new();
                 let mut reference = Filter::new();
                 let settings = FilterParameters {
@@ -544,7 +673,13 @@ mod tests {
                 };
                 for _ in 0..64 {
                     let expected = reference.process_sample(
-                        [oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])[0]; 2],
+                        volume::process_sample(
+                            &oscillator.generate_sample(&input, 48_000.0).values
+                                [..input.rendered_voices()],
+                            &[[1.0; 2]; 7],
+                            voice.state.amplitude
+                                * volume::gain(input.waveform, input.rendered_voices(), 1.0),
+                        ),
                         filter_type,
                         &settings,
                         48_000.0,
@@ -563,7 +698,13 @@ mod tests {
                 input.active = false;
                 for _ in 0..16 {
                     let expected = reference.process_sample(
-                        [oscillator.generate_sample(&input, 48_000.0, &[[1.0; 2]; 7])[0]; 2],
+                        volume::process_sample(
+                            &oscillator.generate_sample(&input, 48_000.0).values
+                                [..input.rendered_voices()],
+                            &[[1.0; 2]; 7],
+                            voice.state.amplitude
+                                * volume::gain(input.waveform, input.rendered_voices(), 1.0),
+                        ),
                         filter_type,
                         &settings,
                         48_000.0,

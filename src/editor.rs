@@ -23,7 +23,7 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol",
+    "Waveform", "Tune", "Vol", "FM", "FM",
 ];
 
 /// グループの寸法とノブの並ぶ方向。
@@ -459,15 +459,15 @@ impl WindowHandler for Editor {
                                 },
                                 &selected,
                             );
-                            for (title, wave, tune, volume) in
-                                [("Osc2", 23, 24, 25), ("Osc3", 26, 27, 28)]
+                            for (title, wave, tune, volume, fm) in
+                                [("Osc2", 23, 24, 25, 29), ("Osc3", 26, 27, 28, 30)]
                             {
                                 ui.add_space(5.0);
                                 self.group(
                                     ui,
                                     title,
                                     &[wave],
-                                    &[tune, volume],
+                                    &[tune, volume, fm],
                                     GroupLayout {
                                         size: egui::vec2(292.0, 0.0),
                                         vertical_knobs: false,

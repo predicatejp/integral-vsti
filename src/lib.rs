@@ -22,6 +22,7 @@ mod plugin;
 mod random;
 mod synth;
 mod voice;
+mod volume;
 
 use abi::*;
 use std::ptr;

@@ -16,7 +16,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
 | サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
-| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
+| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・FM、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
@@ -75,14 +75,14 @@ PhaseはVoice内の3発振器に共通するNote On時の位相を選ぶ3択パ�
 | ノコギリ波（Sawtooth） | `0.5 × √3` ≈ 0.866025 | 負のピークから直線的に上昇 |
 | ホワイトノイズ（Noise） | `0.5 × √3` ≈ 0.866025 | 毎サンプル別の一様乱数 |
 
-周期波の倍率は理想波形の1周期の実効値が0.5となる値です。有限個のサンプルで測定した実効値は、
+表はVol=0 dB・無変調時の出力です。波形の倍率は発振器の外で適用し、理想波形の1周期の実効値を0.5に揃えます。有限個のサンプルで測定した実効値は、
 周波数・サンプルレート・測定区間によって誤差が生じます。帯域制限・アンチエイリアシングは未実装で、
 特に高音域では折り返し成分が発生します。
 
 ## ホワイトノイズ
 
 Noiseはxoshiro256+ 1.0の上位53bitから一様乱数`u ∈ [0,1)`を生成し、
-`(2u−1) × √3 × amplitude`へ換算します。ベロシティ・エンベロープ最大時の理論実効値は0.5です。
+`2u−1`の生波形を出力し、独立した音量処理で`√3 × amplitude`を掛けます。ベロシティ・エンベロープ最大時の理論実効値は0.5です。
 乱数コンポーネントはOscillatorStateが所有し、乱数の状態更新は固定長の整数演算で行います。
 位相用とは別の状態を進めるため、PhaseのKeep・Zero・Randomでノイズ列はリセットされません。
 同じ初期乱数状態・入力・サンプル数なら同じ列を生成し、初期シードはインスタンスごとに取得します。
@@ -176,6 +176,25 @@ Osc1のUnison・Detune・WidthはOsc1へ適用し、Osc2/3は共通Panのみで�
 Phaseは3発振器共通で、Randomの乱数と位相はそれぞれ独立しています。
 各発振器のVolumeが−∞の間も発音期間中は位相・ノイズ列を進め、音量を戻しても位相を再初期化しません。
 3発振器の加算には音数による音量補正を行いません。カットオフはTune適用前のノート周波数を基準とします。
+
+## 位相変調
+
+Osc2/3の**FM**ノブは位相変調の深さを指定します。0〜200%（初期値0%、GUIは1%刻み）で、
+100%は1回転、200%は2回転（4π rad）です。
+Osc2 FM（ParamID `0x4f32464d`）はOsc1、Osc3 FM（`0x4f33464d`）はOsc2を変調します。
+各サンプル時刻でOsc3→Osc2→Osc1の順に生成し、受け側の波形を読む位相を次の式で決めます。
+
+`読出し位相 = (保持位相 + FM / 100 × 生波形) mod 1`（周期単位）
+
+保持位相はTune・Detune適用後の周波数で進め、変調量は累積しません。
+FM=200%でモジュレータが±1なら、±2回転なので周期波形は無変調時と同じ位相になります。
+途中の値では位相がずれるため、変調音が生じます。
+Osc1のユニゾン各音には同じ位相変調量を適用します。FMの変更点間は正規化空間で線形補間します。
+
+発振器は各ユニゾンについてピーク振幅1の生波形を出力します。
+実効値補正・ユニゾン合成・Vol・Panは独立した`volume`モジュールで適用し、3発振器の加算後にAHDSRを掛けます。
+生波形を変調に使うため、Volが−∞でも変調は継続します。
+Noiseは音声と変調で同じ乱数サンプルを共用し、Noise自体への位相変調では乱数列を変更しません。
 
 ## ポリフォニー
 
@@ -296,7 +315,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 | パラメーター | 変更点の間の処理 |
 | --- | --- |
 | Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase | 直前の値を保持し、変更点で切り替える |
-| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Width・Pan | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
+| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・FM・Width・Pan | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
 
 最後の点以降は値を保持します。同位置ではパラメーターをキュー順に適用した後、ノートをイベントリスト順に処理します。
 
@@ -305,8 +324,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v11は236バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volumeを各f64。little endian）です。
-読み込みは現行形式v11のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v13は252バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 FM/Osc3 FMを各f64。little endian）です。
+読み込みは現行形式v13のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -315,7 +334,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定29個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定31個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -327,14 +346,14 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | Filter / Cutoff / Resonance | None / +4800 cent / Q=1 |
 | カットオフAHDSR / Amount | A/H/D/R=0 ms、S=1 / 0 cent |
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
-| Osc2/3 Waveform / Tune / Volume | Sine / 0 cent / −∞ dB |
+| Osc2/3 Waveform / Tune / Volume / FM | Sine / 0 cent / −∞ dB / 0% |
 
 ノートオン・オフで即時に発音・消音し、最大ベロシティ時の実効値は片チャンネル当たり0.5です。
 選択すると全設定を読み直し、同じ「Sine」の再選択でも編集した値を元に戻します。
 ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
 音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
 連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
-編集内容は実際の29設定として保存し、復元時にも編集後の値を保持します。
+編集内容は実際の31設定として保存し、復元時にも編集後の値を保持します。
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
 
@@ -342,7 +361,7 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 
 ホストのプラグイン画面に、ライトテーマで処理順に左からOsc1/2/3・Filter・Masterを配置します。
 Amplitude envelopeはOsc3の下、Cutoff envelopeはFilterの下へ配置します。各列とエンベロープの幅、グループ間隔を揃えています。各オシレータのWaveformはタイトルの右へ配置して高さを詰め、Masterのノブは縦に並べます。
-Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol、Masterには共通Phase・Polyphony・Volume・Panを配置します。
+Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
 ノブは直径44pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
 Waveform・Filter・Phaseはドロップダウン、その他のパラメーターはノブです。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
@@ -637,6 +656,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/editor.rs`: カテゴリ別ノブ・選択リストの入力とegui/OpenGL描画。`src/editor/edits.rs`は編集通知キュー、`src/editor/pointer.rs`はOS別のカーソル操作。
 - `src/host.rs`: UIスレッドに限定したホスト参照管理。
 - `src/parameters.rs`: 全パラメーターの選択肢・単位・値変換、VST3変更キューとIBStreamの読み書き。
+- `src/volume.rs`: 生波形の実効値補正・ユニゾン合成・Vol・定位。
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した5波形オシレータ。
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。

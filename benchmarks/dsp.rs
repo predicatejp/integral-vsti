@@ -20,6 +20,8 @@ mod random;
 mod synth;
 #[path = "../src/voice.rs"]
 mod voice;
+#[path = "../src/volume.rs"]
+mod volume;
 
 use envelope::{DEFAULT_ENVELOPE, EnvelopeParameters};
 use filter::{Filter, FilterParameters, FilterType, Svf};
@@ -69,7 +71,7 @@ fn input(waveform: Waveform, unison: u32, detune: f64) -> OscillatorInput {
         unison_voices: unison,
         detune_cents: detune,
         frequency_hz: 440.0,
-        amplitude: 0.5,
+        phase_modulation: 0.0,
         active: true,
         note_generation: 1,
     }
@@ -150,13 +152,13 @@ fn main() {
             let input = input(waveform, unison, detune);
             let mut oscillator = Oscillator::new();
             for _ in 0..rate as usize {
-                oscillator.generate_sample(&input, rate, &[[1.0; 2]; 7]);
+                oscillator.generate_sample(&input, rate);
             }
             measure(
                 &format!("oscillator/{waveform:?}/u{unison}/d{detune}"),
                 "sample",
                 selection,
-                |_| oscillator.generate_sample(black_box(&input), black_box(rate), &[[1.0; 2]; 7]),
+                |_| oscillator.generate_sample(black_box(&input), black_box(rate)),
             );
         }
     }
@@ -168,7 +170,7 @@ fn main() {
         selection,
         |i| {
             modulated_input.detune_cents = 5.0 + (i % 1000) as f64 * 0.075;
-            modulated.generate_sample(black_box(&modulated_input), black_box(rate), &[[1.0; 2]; 7])
+            modulated.generate_sample(black_box(&modulated_input), black_box(rate))
         },
     );
     let mut idle = Oscillator::new();
@@ -176,7 +178,7 @@ fn main() {
     idle_input.active = false;
     idle_input.note_generation = 0;
     measure("oscillator/idle/u7", "sample", selection, |_| {
-        idle.generate_sample(black_box(&idle_input), black_box(rate), &[[1.0; 2]; 7])
+        idle.generate_sample(black_box(&idle_input), black_box(rate))
     });
     let mut p = FilterParameters {
         cutoff_hz: 880.0,
