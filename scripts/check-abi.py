@@ -47,7 +47,7 @@ if options.gui:
                 + struct.pack(">I", zlib.crc32(kind + data)))
 
     for source_name, name in [("gui-panel", "gui-panel"), ("gui-choices", "gui-choices"),
-                              ("gui-smoke", "gui-overlay")]:
+                              ("gui-smoke", "gui-overlay"), ("gui-voices", "gui-voices")]:
         with (ROOT / "target" / f"{source_name}.ppm").open("rb") as image:
             assert image.readline() == b"P6\n"
             width, height = map(int, image.readline().split())

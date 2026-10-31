@@ -15,7 +15,10 @@ use baseview::{
 use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers, NamedKey};
 use std::{
     cell::{Cell, RefCell},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -38,6 +41,8 @@ const GAP: f32 = 8.0;
 /// 見出し行と選択欄の高さ。選択欄は見出し行の中央に置く。
 const HEADER_HEIGHT: f32 = 28.0;
 const CHOICE_HEIGHT: f32 = 28.0;
+/// プラグイン名と発音数を表示する上部バー。
+const TITLE_BAR_HEIGHT: f32 = 36.0;
 /// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
 const KNOB_CELL: egui::Vec2 = egui::vec2(64.0, 80.0);
 
@@ -113,8 +118,14 @@ pub(super) struct Editor {
     pointer: Cell<egui::Pos2>,
     /// eguiへ渡す単調増加時刻の起点。
     start: Instant,
+    /// X11の定期コールバックを有効に保つため、画面と同じ寿命で保持する。
+    _timer: baseview::TimerHandle,
     /// Controllerと共有する表示値。
     parameters: Arc<SharedParameters>,
+    /// 音声ブロック末尾の発音数。描画側は読み取りだけ行う。
+    active_voices: Arc<AtomicU32>,
+    /// 最後に描画した発音数。変化した場合だけ再描画する。
+    displayed_voices: Cell<u32>,
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
     displayed: Cell<[f64; parameters::COUNT]>,
     /// ホストUIスレッドへの編集キュー。描画中にはホストを呼ばない。
@@ -128,6 +139,7 @@ impl Editor {
     pub(super) fn new(
         window: WindowContext,
         parameters: Arc<SharedParameters>,
+        active_voices: Arc<AtomicU32>,
         edits: Arc<Edits>,
         #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::EditorView>,
     ) -> Result<Self, HandlerError> {
@@ -143,6 +155,7 @@ impl Editor {
             gl.make_not_current()?;
             painter?
         };
+        let timer = window.create_timer(Duration::from_millis(16))?;
         let editor = Self {
             state: RefCell::new(EditorState {
                 drag: None,
@@ -155,7 +168,10 @@ impl Editor {
             input: RefCell::new(egui::RawInput::default()),
             pointer: Cell::new(egui::Pos2::ZERO),
             start: Instant::now(),
+            _timer: timer,
             parameters,
+            active_voices,
+            displayed_voices: Cell::new(u32::MAX),
             displayed: Cell::new([f64::NAN; parameters::COUNT]),
             edits,
             #[cfg(target_os = "windows")]
@@ -191,8 +207,6 @@ impl Editor {
             style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(219, 232, 222);
             style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(207, 225, 215);
         });
-        // タイマーの寿命と解除はbaseviewの子ウィンドウに従う。
-        editor.window.create_timer(Duration::from_millis(16))?;
         Ok(editor)
     }
 
@@ -536,9 +550,43 @@ impl WindowHandler for Editor {
         input.max_texture_side = Some(self.painter.borrow().max_texture_side());
         let selected = self.parameters.snapshot();
         self.displayed.set(selected);
+        let voice_count = self.active_voices.load(Ordering::Relaxed);
+        self.displayed_voices.set(voice_count);
         let mut output = self.context.run_ui(input, |ui| {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
+            let title = egui::Rect::from_min_size(
+                egui::vec2(GAP, GAP).to_pos2(),
+                egui::vec2(size.width as f32 - GAP * 2.0, TITLE_BAR_HEIGHT),
+            );
+            let painter = ui.painter();
+            painter.rect_filled(title, 8.0, PANEL);
+            painter.text(
+                title.left_center() + egui::vec2(GAP, 0.0),
+                egui::Align2::LEFT_CENTER,
+                "Sample VSTi",
+                egui::FontId::proportional(24.0),
+                INK,
+            );
+            let meter_x = title.right() - GAP - 254.0;
+            painter.text(
+                egui::pos2(meter_x - GAP, title.center().y),
+                egui::Align2::RIGHT_CENTER,
+                format!("Voices {voice_count}"),
+                egui::FontId::proportional(18.0),
+                INK,
+            );
+            for voice in 0..32 {
+                let segment = egui::Rect::from_min_size(
+                    egui::pos2(meter_x + voice as f32 * 8.0, title.center().y - 6.0),
+                    egui::vec2(6.0, 12.0),
+                );
+                painter.rect_filled(
+                    segment,
+                    1.0,
+                    if voice < voice_count { ACCENT } else { LINE },
+                );
+            }
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
             let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
             let single_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
@@ -598,8 +646,15 @@ impl WindowHandler for Editor {
                     [master_x, GAP, 144.0, panel_height],
                 ),
             ];
-            for (title, choices, rows, bounds) in groups {
-                self.group(ui, title, choices, rows, bounds, &selected);
+            for (title, choices, rows, [x, y, width, height]) in groups {
+                self.group(
+                    ui,
+                    title,
+                    choices,
+                    rows,
+                    [x, y + TITLE_BAR_HEIGHT + GAP, width, height],
+                    &selected,
+                );
             }
         });
         let shapes = self
@@ -717,7 +772,9 @@ impl WindowHandler for Editor {
         if self.state.borrow().drag.is_some() && self.current_drag_position().is_none() {
             self.end_drag();
         }
-        if self.displayed.get() != self.parameters.snapshot() {
+        if self.displayed.get() != self.parameters.snapshot()
+            || self.displayed_voices.get() != self.active_voices.load(Ordering::Relaxed)
+        {
             self.window.request_redraw();
         }
         #[cfg(target_os = "windows")]
@@ -746,9 +803,9 @@ mod tests {
     use super::*;
     #[test]
     fn overlay_stays_inside_viewport_at_every_edge() {
-        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(784.0, 428.0));
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(784.0, 472.0));
         for x in [0.0, 43.0, 392.0, 784.0] {
-            for y in [0.0, 114.0, 214.0, 428.0] {
+            for y in [0.0, 114.0, 236.0, 472.0] {
                 let knob = egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(50.0, 50.0));
                 let bounds = overlay_rect(knob, viewport);
                 assert_eq!(bounds.size(), egui::vec2(224.0, 60.0));

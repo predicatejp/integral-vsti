@@ -53,6 +53,8 @@ struct Plugin {
     processor_parameters: SharedParameters,
     /// Controllerが表示する22パラメーター。ホストの値通知とComponentの状態復元で更新する。
     controller_parameters: Arc<SharedParameters>,
+    /// 音声ブロック末尾の発音数。GUIはこのatomicだけを読み、DSP状態に触れない。
+    active_voices: Arc<AtomicU32>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
     /// オシレータ・現在のノート・サンプルレートを所有する可変DSP状態。
@@ -162,6 +164,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         event_active: AtomicBool::new(false),
         processor_parameters: SharedParameters::new(),
         controller_parameters: Arc::new(SharedParameters::new()),
+        active_voices: Arc::new(AtomicU32::new(0)),
         component_handler: RefCell::new(None),
         synth: UnsafeCell::new(Synthesizer::new()),
         max_samples: AtomicI32::new(0),
@@ -271,6 +274,7 @@ unsafe extern "system" fn terminate(this: This) -> TResult {
     plugin.event_active.store(false, Ordering::Relaxed);
     // SAFETY: terminateはprocessの終了後に呼ばれる。
     unsafe { (*plugin.synth.get()).stop() };
+    plugin.active_voices.store(0, Ordering::Relaxed);
     let old_handler = plugin.component_handler.replace(None);
     drop(old_handler);
     OK
@@ -376,6 +380,7 @@ unsafe extern "system" fn set_active(this: This, state: u8) -> TResult {
         plugin.processing.store(false, Ordering::Relaxed);
         // SAFETY: setActive(false)はprocessの終了後に呼ばれる。
         unsafe { (*plugin.synth.get()).stop() };
+        plugin.active_voices.store(0, Ordering::Relaxed);
     }
     OK
 }
@@ -609,7 +614,14 @@ unsafe extern "system" fn create_view(this: This, name: *const u8) -> This {
         return ptr::null_mut();
     }
     // SAFETY: thisは生存中のController。Viewが独立した所有参照を取る。
-    unsafe { crate::gui::create(this, Arc::clone(&instance(this).controller_parameters)) }
+    unsafe {
+        let plugin = instance(this);
+        crate::gui::create(
+            this,
+            Arc::clone(&plugin.controller_parameters),
+            Arc::clone(&plugin.active_voices),
+        )
+    }
 }
 
 /// SAFETY: GUIの所有参照がthisを保持し、ホストのUIスレッドからのみ呼ぶ。
@@ -770,6 +782,7 @@ unsafe extern "system" fn set_processing(this: This, state: u8) -> TResult {
     if state == 0 {
         // SAFETY: setProcessing(false)は全process呼び出しの終了後に呼ばれる。
         unsafe { (*plugin.synth.get()).stop() };
+        plugin.active_voices.store(0, Ordering::Relaxed);
     }
     OK
 }
@@ -920,6 +933,9 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
             &mut changes,
         )
     };
+    plugin
+        .active_voices
+        .store(synth.active_voice_count(), Ordering::Relaxed);
     if channels.is_some() {
         // SAFETY: channelsがSomeのときは有効な出力バスが存在する。
         unsafe { (*data.outputs).silence_flags = STEREO & !nonzero };

@@ -359,8 +359,9 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 
 ## GUI
 
-ホストのプラグイン画面に、ライトテーマの操作盤を表示します。
+ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数の数字・32枠の点灯インジケーターを表示します。
 左にOsc1/2/3を縦に並べ、中央上段にAmp、中央下段にカットオフAHDSRを統合したFilter、右にMasterを配置します。AmpのAHDSRは横一列です。WaveformとFilterのドロップダウンはタイトルの右に置きます。Masterは144px幅とし、Phaseラベルと選択欄を左揃えで上下にまとめ、その下にPoly・Vol・Panを縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
 ノブは行内を均等割りします。ノブ行は80px高、外周・グループ間・枠内の左右余白は8pxで統一します。各列の下端を揃え、見出しの下に残る高さは上余白・行間・下余白へ均等配分します。見出し行とドロップダウンは28px高です。
 ノブは直径44pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
@@ -374,8 +375,8 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは784×428物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
-`python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`へ保存します。
+サイズは784×472物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
+`python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中・発音中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`、`target/gui-voices.png`へ保存します。
 
 描画にはegui 0.37.0、egui_glow 0.37.0、baseview 0.4.1のOpenGLバックエンドを使用します。
 対応ドライバーがあれば内蔵GPU・外付けGPUを使います。音声処理はCPUで行います。

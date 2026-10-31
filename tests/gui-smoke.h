@@ -310,7 +310,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 784 && rect.getHeight() == 428);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 784 && rect.getHeight() == 472);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -358,13 +358,14 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
-    const std::array<std::pair<int, int>, 31> controls {{
+    std::array<std::pair<int, int>, 31> controls {{
         {212, 30}, {328, 82}, {392, 82}, {456, 82}, {520, 82}, {584, 82},
         {48, 82}, {112, 82}, {704, 161}, {564, 170}, {349, 239}, {456, 239},
         {704, 100}, {704, 257}, {328, 345}, {392, 345}, {456, 345}, {520, 345},
         {584, 345}, {563, 239}, {176, 82}, {704, 354}, {240, 82},
         {212, 170}, {59, 222}, {144, 222}, {212, 310}, {59, 362}, {144, 362}, {229, 222}, {229, 362}
     }};
+    for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
         parent.click(x, y); pump(); assert(handler.sequence.empty());
@@ -381,9 +382,52 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(784, 428); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(784, 472); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
+        if (cycle == 0) {
+            // 実際の音声処理からタイトルバーへ発音数を渡し、再描画・release・停止を検証する。
+            StateStream original; assert(component->getState(&original) == kResultOk);
+            ProcessSetup setup {kRealtime, kSample32, 64, 48000.0};
+            assert(processor->setupProcessing(setup) == kResultOk);
+            assert(component->setActive(true) == kResultOk);
+            assert(processor->setProcessing(true) == kResultOk);
+            Points poly; poly.id = polyphonyId; poly.values = {{0, 2.0 / 31.0}};
+            assert(controller->setParamNormalized(polyphonyId, 2.0 / 31.0) == kResultOk);
+            Changes changes; changes.queues = {&poly};
+            Events events; events.values = {note(true, 0, 100), note(true, 0, 101), note(true, 0, 102)};
+            ProcessData audio {}; audio.numSamples = 1; audio.symbolicSampleSize = kSample32;
+            audio.inputParameterChanges = &changes; audio.inputEvents = &events;
+#ifdef _WIN32
+            const uint32 lit = RGB(20, 96, 76), unlit = RGB(143, 160, 147);
+#else
+            const uint32 lit = 0x14604c, unlit = 0x8fa093;
+#endif
+            auto meter = [&](int count) {
+                for (int i = 0; i < 32; ++i) {
+                    if (parent.pixel(517 + i * 8, 26) != (i < count ? lit : unlit)) return false;
+                }
+                return true;
+            };
+            assert(processor->process(audio) == kResultOk);
+            waitFor([&] { return meter(3); }, "three active voices");
+            parent.screenshot("target/gui-voices.ppm");
+            audio.inputParameterChanges = nullptr;
+            events.values = {note(false, 0, 100), note(false, 0, 101), note(false, 0, 102)};
+            assert(processor->process(audio) == kResultOk);
+            pump(); assert(meter(3)); // release中も点灯する。
+            audio.inputEvents = nullptr; audio.numSamples = 64;
+            for (int i = 0; i < 80; ++i) assert(processor->process(audio) == kResultOk);
+            waitFor([&] { return meter(0); }, "release finished");
+            events.values = {note(true, 0, 100), note(true, 0, 101), note(true, 0, 102)};
+            audio.inputEvents = &events;
+            assert(processor->process(audio) == kResultOk);
+            waitFor([&] { return meter(3); }, "voices before stop");
+            assert(processor->setProcessing(false) == kResultOk);
+            waitFor([&] { return meter(0); }, "voices after stop");
+            assert(component->setActive(false) == kResultOk);
+            assert(component->setState(&original) == kResultOk);
+        }
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
         for (int item = 1; item <= 4; ++item) {
@@ -426,7 +470,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(!parent.cursorVisible());
             // 全ノブで224×60 pxの同じ枠が画面内に描画される。
             const int overlayX = std::clamp(x - 112, 0, 560);
-            const int overlayY = std::clamp(y - 91, 0, 368);
+            const int overlayY = std::clamp(y - 91, 0, 412);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
 #else
