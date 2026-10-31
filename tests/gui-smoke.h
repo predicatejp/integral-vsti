@@ -310,7 +310,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 872 && rect.getHeight() == 396);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 784 && rect.getHeight() == 428);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -323,7 +323,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 872);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 784);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -359,18 +359,18 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
     const std::array<std::pair<int, int>, 31> controls {{
-        {212, 35}, {59, 242}, {144, 242}, {229, 242}, {80, 330}, {208, 330},
-        {48, 92}, {112, 92}, {792, 154}, {644, 185}, {364, 242}, {500, 242},
-        {792, 102}, {792, 242}, {337, 330}, {418, 330}, {500, 330}, {582, 330},
-        {663, 330}, {636, 242}, {176, 92}, {792, 330}, {240, 92},
-        {428, 35}, {328, 92}, {392, 92}, {644, 35}, {544, 92}, {608, 92}, {456, 92}, {672, 92}
+        {212, 30}, {328, 82}, {392, 82}, {456, 82}, {520, 82}, {584, 82},
+        {48, 82}, {112, 82}, {704, 161}, {564, 170}, {349, 239}, {456, 239},
+        {704, 100}, {704, 257}, {328, 345}, {392, 345}, {456, 345}, {520, 345},
+        {584, 345}, {563, 239}, {176, 82}, {704, 354}, {240, 82},
+        {212, 170}, {59, 222}, {144, 222}, {212, 310}, {59, 362}, {144, 362}, {229, 222}, {229, 362}
     }};
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
         parent.click(x, y); pump(); assert(handler.sequence.empty());
         parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
-        // Filterのメニューは上下の空きが足りないため右側へ開く。
-        parent.click(index == 9 ? x + 120 : x, (index == 9 ? y + 7 : y + 34) + item * 30);
+        // 下段のOsc3は上側へ、それ以外は下側へ開く。
+        parent.click(x, (index == 26 ? y - 154 : y + 34) + item * 30);
         waitFor([&] { return handler.sequence.size() >= 3; }, "dropdown choice");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
@@ -381,7 +381,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(872, 396); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(784, 428); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
@@ -425,8 +425,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0}));
             assert(!parent.cursorVisible());
             // 全ノブで224×60 pxの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(x - 112, 0, 648);
-            const int overlayY = std::clamp(y - 91, 0, 336);
+            const int overlayX = std::clamp(x - 112, 0, 560);
+            const int overlayY = std::clamp(y - 91, 0, 368);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
 #else

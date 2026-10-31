@@ -33,10 +33,10 @@ const MUTED: egui::Color32 = egui::Color32::from_rgb(53, 71, 62);
 const LINE: egui::Color32 = egui::Color32::from_rgb(143, 160, 147);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(20, 96, 76);
 
-/// 枠内余白・見出しと本文の間隔・行間・グループ間隔。
+/// 外周・グループ間・枠内の左右余白と、基本の縦間隔。
 const GAP: f32 = 8.0;
 /// 見出し行と選択欄の高さ。選択欄は見出し行の中央に置く。
-const HEADER_HEIGHT: f32 = 38.0;
+const HEADER_HEIGHT: f32 = 28.0;
 const CHOICE_HEIGHT: f32 = 28.0;
 /// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
 const KNOB_CELL: egui::Vec2 = egui::vec2(64.0, 80.0);
@@ -390,19 +390,27 @@ impl Editor {
         title: &str,
         choices: &[usize],
         rows: &[&[usize]],
-        [x, y, width]: [f32; 3],
+        [x, y, width, height]: [f32; 4],
         selected: &[f64; parameters::COUNT],
     ) {
-        // 枠は内容の高さに追従し、余った高さを行間へ配らない。
+        // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
+        let phase_height = if choices == [12] {
+            18.0 + GAP + CHOICE_HEIGHT
+        } else {
+            0.0
+        };
+        let content_rows = rows.len() + usize::from(phase_height > 0.0);
+        let row_gap =
+            (height - GAP - HEADER_HEIGHT - phase_height - KNOB_CELL.y * rows.len() as f32)
+                / (content_rows + 1) as f32;
         let body_y = GAP
             + HEADER_HEIGHT
-            + GAP
-            + if choices == [12] {
-                18.0 + GAP + CHOICE_HEIGHT + GAP
+            + row_gap
+            + if phase_height > 0.0 {
+                phase_height + row_gap
             } else {
                 0.0
             };
-        let height = body_y + rows.len() as f32 * (KNOB_CELL.y + GAP);
         let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
         let painter = ui.painter().clone();
         painter.rect_filled(rect, 8.0, PANEL);
@@ -426,7 +434,7 @@ impl Editor {
         );
         for &index in choices {
             let choice = if index == 12 {
-                let label = rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT + GAP);
+                let label = rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT + row_gap);
                 painter.text(
                     label,
                     egui::Align2::LEFT_TOP,
@@ -441,10 +449,10 @@ impl Editor {
             } else {
                 egui::Rect::from_min_size(
                     egui::pos2(
-                        rect.right() - GAP - 120.0,
+                        rect.right() - GAP - 130.0,
                         rect.top() + GAP + (HEADER_HEIGHT - CHOICE_HEIGHT) / 2.0,
                     ),
-                    egui::vec2(120.0, CHOICE_HEIGHT),
+                    egui::vec2(130.0, CHOICE_HEIGHT),
                 )
             };
             ui.scope_builder(egui::UiBuilder::new().max_rect(choice), |ui| {
@@ -458,7 +466,7 @@ impl Editor {
                     rect.min
                         + egui::vec2(
                             GAP + k as f32 * width,
-                            body_y + row as f32 * (KNOB_CELL.y + GAP),
+                            body_y + row as f32 * (KNOB_CELL.y + row_gap),
                         ),
                     egui::vec2(width, KNOB_CELL.y),
                 );
@@ -531,49 +539,63 @@ impl WindowHandler for Editor {
         let mut output = self.context.run_ui(input, |ui| {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
-            let osc1_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
-            let osc_width = GAP * 2.0 + KNOB_CELL.x * 3.0;
-            let top_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
-            let osc2_x = GAP + osc1_width + GAP;
-            let osc3_x = osc2_x + osc_width + GAP;
-            let master_x = osc3_x + osc_width + GAP;
-            let bottom_y = GAP + top_height + GAP;
+            let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
+            let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
+            let single_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
+            let panel_height = single_height * 3.0 + GAP * 2.0;
+            let center_x = GAP + oscillator_width + GAP;
+            let master_x = center_x + filter_width + GAP;
             let groups = [
                 (
                     "Osc1",
                     &[0_usize] as &[usize],
                     &[&[6_usize, 7, 20, 22][..]][..],
-                    [GAP, GAP, osc1_width],
+                    [GAP, GAP, oscillator_width, single_height],
                 ),
                 (
                     "Osc2",
                     &[23],
                     &[&[24, 25, 29][..]][..],
-                    [osc2_x, GAP, osc_width],
+                    [
+                        GAP,
+                        GAP + single_height + GAP,
+                        oscillator_width,
+                        single_height,
+                    ],
                 ),
                 (
                     "Osc3",
                     &[26],
                     &[&[27, 28, 30][..]][..],
-                    [osc3_x, GAP, osc_width],
+                    [
+                        GAP,
+                        GAP + (single_height + GAP) * 2.0,
+                        oscillator_width,
+                        single_height,
+                    ],
                 ),
                 (
                     "Amp",
                     &[],
-                    &[&[1, 2, 3][..], &[4, 5][..]][..],
-                    [GAP, bottom_y, osc1_width],
+                    &[&[1, 2, 3, 4, 5][..]][..],
+                    [center_x, GAP, filter_width, single_height],
                 ),
                 (
                     "Filter",
                     &[9],
                     &[&[10, 11, 19][..], &[14, 15, 16, 17, 18][..]][..],
-                    [osc2_x, bottom_y, osc_width * 2.0 + GAP],
+                    [
+                        center_x,
+                        GAP + single_height + GAP,
+                        filter_width,
+                        panel_height - single_height - GAP,
+                    ],
                 ),
                 (
                     "Master",
                     &[12],
                     &[&[8][..], &[13][..], &[21][..]][..],
-                    [master_x, GAP, 144.0],
+                    [master_x, GAP, 144.0, panel_height],
                 ),
             ];
             for (title, choices, rows, bounds) in groups {
@@ -724,14 +746,14 @@ mod tests {
     use super::*;
     #[test]
     fn overlay_stays_inside_viewport_at_every_edge() {
-        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(872.0, 396.0));
-        for x in [0.0, 43.0, 436.0, 872.0] {
-            for y in [0.0, 114.0, 198.0, 396.0] {
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(784.0, 428.0));
+        for x in [0.0, 43.0, 392.0, 784.0] {
+            for y in [0.0, 114.0, 214.0, 428.0] {
                 let knob = egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(50.0, 50.0));
                 let bounds = overlay_rect(knob, viewport);
                 assert_eq!(bounds.size(), egui::vec2(224.0, 60.0));
                 assert!(viewport.contains_rect(bounds));
-                if (112.0..=760.0).contains(&x) {
+                if (112.0..=672.0).contains(&x) {
                     assert_eq!(bounds.center().x, x);
                 }
                 if y >= 91.0 {
