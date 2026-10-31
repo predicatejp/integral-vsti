@@ -60,7 +60,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(units->getUnitByBus(kEvent, kInput, 0, 16, id) == kResultFalse);
     assert(units->setUnitProgramData(0, 0, nullptr) == kNotImplemented);
     ParameterInfo info {};
-    assert(controller->getParameterInfo(31, info) == kResultOk && info.id == programId);
+    assert(controller->getParameterInfo(34, info) == kResultOk && info.id == programId);
     assert(info.unitId == unit.id && info.stepCount == list.programCount - 1);
     assert(info.flags == (ParameterInfo::kIsList | ParameterInfo::kIsProgramChange));
     assert(controller->getParamStringByValue(programId, 1.0, name) == kResultOk && std::u16string(name) == u"Sine");
@@ -71,7 +71,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(controller->setParamNormalized(programId, std::nan("")) == kInvalidArgument);
     assert(controller->setParamNormalized(programId, -1) == kInvalidArgument);
 
-    const std::array<double, 31> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0};
+    const std::array<double, 34> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,0,0,100};
     ProgramHandler handler; handler.controller = controller;
     assert(controller->setComponentHandler(&handler) == kResultOk);
     assert(controller->setParamNormalized(waveformId, 1.0) == kResultOk);

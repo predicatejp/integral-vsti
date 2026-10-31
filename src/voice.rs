@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use crate::distortion::{self, DistortionParameters};
 use crate::envelope::{DEFAULT_ENVELOPE, Envelope, EnvelopeParameters};
 use crate::filter::{Filter, FilterParameters, FilterType};
 use crate::oscillator::{Oscillator, OscillatorInput, PanningGains, PhaseMode, Waveform};
@@ -47,8 +48,10 @@ pub struct VoiceState {
     envelope: Envelope,
     /// Note Offの照合対象。発振器へノート情報を渡さない。
     note: Option<Note>,
-    /// Voiceの最終段のフィルタ。ノートオフ後も残響を処理する。
+    /// クリッパーへ渡すフィルタ。ノートオフ後も残響を処理する。
     filter: Filter,
+    /// フィルタ後に適用するクリップ方式・線形Gain・原音との混合率。
+    distortion: DistortionParameters,
     /// 選択中の応答と段数。Noneでは完全にバイパスする。
     filter_type: FilterType,
     /// ノート周波数に乗じる倍率。centからの換算は設定変更時に行う。
@@ -99,6 +102,7 @@ impl Voice {
                 envelope: Envelope::new(),
                 note: None,
                 filter: Filter::new(),
+                distortion: parameters::distortion(&values),
                 filter_type: parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
                 cutoff_ratio: 2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0),
                 resonance_q: parameters::to_plain(11, values[11]),
@@ -166,6 +170,10 @@ impl Voice {
         for input in &mut self.state.oscillator_inputs {
             input.active = false;
         }
+    }
+
+    pub fn set_distortion(&mut self, parameters: DistortionParameters) {
+        self.state.distortion = parameters;
     }
 
     pub fn set_filter(&mut self, filter_type: FilterType, cutoff_cents: f64, resonance_q: f64) {
@@ -298,7 +306,7 @@ impl Voice {
             sample_rate,
             1.0,
         );
-        output
+        distortion::process_sample(output, &self.state.distortion)
     }
 }
 

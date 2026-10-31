@@ -16,7 +16,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
 | サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
-| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・FM、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amountを公開。eguiでも操作可能 |
+| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・FM、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / Mixを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | レイテンシー0。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
@@ -94,7 +94,7 @@ Detune=0ではノイズ源1個にまとめ、Widthは無効です。Detune>0で�
 
 ## Voiceごとのフィルタ
 
-音源は `Synthesizer → Voice → Oscillator` の階層です。各コンポーネントは専用のStateを所有します。各VoiceはOsc1・Osc2・Osc3とそれぞれの定常入力を保持します。Osc1はユニゾンを生成し、Osc2/3は各1発振器です。各発振器のVolumeを適用して加算し、共通の音量AHDSR、最終段のフィルタの順に通した後、全Voiceを左右別に加算します。フィルタの係数は左右で共用し、積分器の履歴は独立させます。
+音源は `Synthesizer → Voice → Oscillator` の階層です。各コンポーネントは専用のStateを所有します。各VoiceはOsc1・Osc2・Osc3とそれぞれの定常入力を保持します。Osc1はユニゾンを生成し、Osc2/3は各1発振器です。各発振器のVolumeを適用して加算し、共通の音量AHDSR、フィルタ、ディストーションの順に通した後、全Voiceを左右別に加算します。フィルタの係数は左右で共用し、積分器の履歴は独立させます。
 Stateはデータ保持専用とし、所有コンポーネントのメソッドが処理とStateの更新を担当します。
 音声関数は1サンプルを`*_sample`、サンプル系列を`*_samples`で区別します。
 
@@ -152,7 +152,7 @@ Amountは10 cent刻みの整数ノブで操作します。
 
 ## マスターボリューム
 
-Volumeは全Voiceのフィルタ出力を加算した後の音量です（ParamID `0x4d564f4c`）。
+Volumeは全Voiceのディストーション出力を加算した後の音量です（ParamID `0x4d564f4c`）。
 全Volumeの範囲は−∞（完全消音）と−48〜＋12 dBです。MasterとOsc1の初期値は0 dB、Osc2/3は−∞です。
 整数ノブのtick=0は−∞、1〜601は`dB = (tick − 1) / 10 − 48`で換算し、0.1 dB刻みで設定します。
 振幅倍率は`10^(dB / 20)`（−∞では0）で、値の変更時だけ計算して保持します。
@@ -314,8 +314,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 
 | パラメーター | 変更点の間の処理 |
 | --- | --- |
-| Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase | 直前の値を保持し、変更点で切り替える |
-| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・FM・Width・Pan | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
+| Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper type | 直前の値を保持し、変更点で切り替える |
+| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・FM・Width・Pan・Gain・Mix | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
 
 最後の点以降は値を保持します。同位置ではパラメーターをキュー順に適用した後、ノートをイベントリスト順に処理します。
 
@@ -324,8 +324,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v13は252バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 FM/Osc3 FMを各f64。little endian）です。
-読み込みは現行形式v13のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v14は276バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 FM/Osc3 FM/Clipper type/Gain/Mixを各f64。little endian）です。
+読み込みは現行形式v14のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -353,14 +353,27 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
 音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
 連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
-編集内容は実際の31設定として保存し、復元時にも編集後の値を保持します。
+編集内容は実際の34設定として保存し、復元時にも編集後の値を保持します。
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
+
+## ディストーション
+
+各Voiceのフィルタ直後に適用し、処理後に全Voiceを加算します。
+
+| パラメーター | 範囲・初期値 | ParamID |
+| --- | --- | --- |
+| Clipper type | None（初期値）、Soft (tanh)、Hard | `0x43545950` |
+| Gain | 0〜+48 dB、0.1 dB刻み、初期値0 dB | `0x43474149` |
+| Mix | 0〜100%、1%刻み、初期値100% | `0x434d4958` |
+
+NoneはGainとMixを含めてバイパスします。Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`で処理します。
+Gainの線形倍率は`10^(dB/20)`です。Mixは0%でフィルタ出力の原音、100%で処理音になり、その間を線形混合します。Gain・Mixのオートメーションは正規化値を線形補間し、Clipper typeは変更点で切り替えます。
 
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左にOsc1/2/3を縦に並べ、中央上段にAmp、中央下段にカットオフAHDSRを統合したFilter、右にMasterを配置します。AmpのAHDSRは横一列です。WaveformとFilterのドロップダウンはタイトルの右に置きます。Masterは144px幅とし、Phaseラベルと選択欄を左揃えで上下にまとめ、その下にPoly・Vol・Panを縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左にOsc1/2/3を縦に並べ、中央上段にAmp、中央にカットオフAHDSRを統合したFilter、その下にDistortion、右にMasterを配置します。AmpのAHDSRは横一列です。WaveformとFilterのドロップダウンはタイトルの右に置きます。Masterは144px幅とし、Phaseラベルと選択欄を左揃えで上下にまとめ、その下にPoly・Vol・Panを縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
 ノブは行内を均等割りします。ノブ行は80px高、外周・グループ間・枠内の左右余白は8pxで統一します。各列の下端を揃え、見出しの下に残る高さは上余白・行間・下余白へ均等配分します。見出し行とドロップダウンは28px高です。
@@ -375,7 +388,7 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは784×472物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
+サイズは784×560物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
 `python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中・発音中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`、`target/gui-voices.png`へ保存します。
 Windowsでは、描画中に再描画と編集配送タイマーを意図的に再入させ、描画の延期と、描画終了後の編集通知を検証します。
 画面作成・描画・破棄と作成失敗時に、ホストのOpenGLコンテキストと描画先が復元されることも検証します。
@@ -666,8 +679,9 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した5波形オシレータ。
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
+- `src/distortion.rs`: フィルタ後のプリゲイン・クリップ・原音との線形混合。
 - `src/synth.rs`: Voiceの循環割り当て・加算出力と、共通の定位係数・マスター音量の管理。
-- `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilterの処理パイプライン。
+- `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilter → Distortionの処理パイプライン。
 - `src/float_mode.rs`: 音声処理中の非正規化数処理モードの保存・切り替え・復元。
 - `src/random.rs`: 位相とNoiseで共用するxoshiro256+乱数生成器。
 - `src/oscillator_tables.rs`: Detune倍率と四半周期正弦波の固定テーブル。

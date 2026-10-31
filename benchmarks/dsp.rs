@@ -4,6 +4,8 @@
 #![allow(dead_code)] // ABI・保存処理など、計測対象以外の既存定義も読み込む。
 #[path = "../src/abi.rs"]
 mod abi;
+#[path = "../src/distortion.rs"]
+mod distortion;
 #[path = "../src/envelope.rs"]
 mod envelope;
 #[path = "../src/filter.rs"]
@@ -125,6 +127,28 @@ fn main() {
         size_of::<Synthesizer>()
     );
     println!("case,unit,iterations,min_ns,median_ns,max_ns");
+    for clipper in [
+        distortion::ClipperType::None,
+        distortion::ClipperType::Soft,
+        distortion::ClipperType::Hard,
+    ] {
+        for mix in [0.0, 1.0] {
+            let parameters = distortion::DistortionParameters {
+                clipper,
+                gain: 10.0_f64.powf(12.0 / 20.0),
+                mix,
+            };
+            measure(
+                &format!("distortion/{clipper:?}/mix{mix}"),
+                "sample",
+                selection,
+                |i| {
+                    let x = (i % 1024) as f64 / 512.0 - 1.0;
+                    distortion::process_sample(black_box([x, -x]), black_box(&parameters))
+                },
+            );
+        }
+    }
     measure("baseline", "operation", selection, |i| black_box(i as f64));
     let envelope = EnvelopeParameters {
         hold_ms: 20.0,
@@ -261,7 +285,13 @@ fn main() {
                 &format!("voice/u{unison}/{kind:?}"),
                 "sample",
                 selection,
-                |_| black_box(&mut voice).generate_sample(black_box(rate), &[[1.0; 2]; 7], &[1.0; 2]),
+                |_| {
+                    black_box(&mut voice).generate_sample(
+                        black_box(rate),
+                        &[[1.0; 2]; 7],
+                        &[1.0; 2],
+                    )
+                },
             );
         }
     }
