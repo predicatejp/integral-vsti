@@ -4,6 +4,8 @@
 //! カテゴリ別のノブ・ドロップダウンとOpenGL描画を接続する。
 
 pub(crate) mod edits;
+#[cfg(target_os = "windows")]
+pub(crate) mod gl_context;
 mod pointer;
 use edits::{Edit, Edits};
 
@@ -660,7 +662,9 @@ impl WindowHandler for Editor {
         let shapes = self
             .context
             .tessellate(output.shapes, output.pixels_per_point);
-        // SAFETY: GL処理をこの描画呼び出し内に限定し、終了時にコンテキストを解除する。
+        #[cfg(target_os = "windows")]
+        let _restore = gl_context::RestoreContext::capture();
+        // SAFETY: GL処理をこの描画呼び出し内に限定する。Windowsでは元の設定を復元する。
         unsafe {
             self.gl.make_current()?;
         }
@@ -789,6 +793,8 @@ impl WindowHandler for Editor {
 impl Drop for Editor {
     fn drop(&mut self) {
         self.end_drag();
+        #[cfg(target_os = "windows")]
+        let _restore = gl_context::RestoreContext::capture();
         // SAFETY: baseviewは描画スレッドでhandlerを破棄する。GL資源も同じ場所で解放する。
         unsafe {
             if self.gl.make_current().is_ok() {

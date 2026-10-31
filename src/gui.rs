@@ -381,6 +381,9 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
     let parameters = Arc::clone(&state.state.parameters);
     let active_voices = Arc::clone(&state.state.active_voices);
     let edits = state.state.sender.clone();
+    // baseviewが画面作成中に使う一時GLコンテキストも、ホストへ戻る前に復元する。
+    #[cfg(target_os = "windows")]
+    let _restore = super::editor::gl_context::RestoreContext::capture();
     match baseview::Window::create(settings, move |window| {
         #[cfg(target_os = "windows")]
         let view = VIEWS
