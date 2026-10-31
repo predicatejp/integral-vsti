@@ -360,13 +360,13 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマで処理順に左からOsc1/2/3・Filter・Masterを配置します。
-Amplitude envelopeはOsc3の下、Cutoff envelopeはFilterの下へ配置します。各列とエンベロープの幅、グループ間隔を揃えています。各オシレータのWaveformはタイトルの右へ配置して高さを詰め、Masterのノブは縦に並べます。
+Amp envelopeはOsc3の下、Cutoff envelopeはFilterの下へ配置します。列ごとの幅・見出し・区切り線を揃え、WaveformとFilterの選択欄はタイトルの右へ配置します。Masterのノブは縦に並べます。淡いグリーンの操作盤に、白いノブと共通の深緑アクセントを使用します。
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
 ノブは直径44pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
-Waveform・Filter・Phaseはドロップダウン、その他のパラメーターはノブです。
+Waveform・Filter・Phaseはドロップダウン、その他のパラメーターはノブです。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
 ノブを左ボタンで押し、上へ4物理px動かすごとに1tick増加、下へ4pxで1tick減少します。
 操作中はカーソルを隠して移動のたびに基準位置へ戻し、ノブの中央直上に「正式名称」「現在値」を中央揃えの2行で表示します。オーバーレイは全パラメーター共通の224×60 pxとし、枠全体が画面内に収まるよう位置を補正します。
-Unison・Polyphonyは整数、連続パラメーターは小数点以下3桁と単位を表示します。
+Unison・Polyphonyは整数、連続パラメーターは小数点以下最大3桁と単位を表示し、末尾の不要なゼロは省略します。
 ボタン解放・Esc・フォーカス喪失・画面終了で調整を終了します。Escでも調整済みの値は保持します。
 Windowsではノブ操作の開始・終了でキーボードフォーカスを変更せず、ホストの入力先を維持します。既存の16msタイマーでEsc・フォーカス変更・マウスキャプチャの解除を検出して操作を終了します。Linuxでは終了時にプラグインが保持しているフォーカスをホストの親へ戻します。
 時間・音量などへの換算は整数tickから行い、各パラメーターの刻み幅は上記の仕様に従います。

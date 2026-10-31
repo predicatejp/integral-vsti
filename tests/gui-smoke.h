@@ -83,11 +83,11 @@ struct NativeParent {
         assert(value != CLR_INVALID);
         return value;
     }
-    void screenshot() {
+    void screenshot(const char* path = "target/gui-smoke.ppm") {
         HWND child = this->child(); assert(child);
         RECT rect; assert(GetClientRect(child, &rect));
         HDC dc = GetDC(child); assert(dc);
-        std::ofstream file("target/gui-smoke.ppm", std::ios::binary);
+        std::ofstream file(path, std::ios::binary);
         file << "P6\n" << rect.right << ' ' << rect.bottom << "\n255\n";
         for (int y = 0; y < rect.bottom; ++y) for (int x = 0; x < rect.right; ++x) {
             COLORREF pixel = GetPixel(dc, x, y);
@@ -142,13 +142,13 @@ struct NativeParent {
         XDestroyImage(image);
         return value;
     }
-    void screenshot() {
+    void screenshot(const char* path = "target/gui-smoke.ppm") {
         const auto target = child(); XWindowAttributes attributes;
         assert(XGetWindowAttributes(display, target, &attributes));
         XImage* image = XGetImage(display, target, 0, 0, static_cast<unsigned>(attributes.width),
                                  static_cast<unsigned>(attributes.height), AllPlanes, ZPixmap);
         assert(image);
-        std::ofstream file("target/gui-smoke.ppm", std::ios::binary);
+        std::ofstream file(path, std::ios::binary);
         file << "P6\n" << attributes.width << ' ' << attributes.height << "\n255\n";
         for (int y = 0; y < attributes.height; ++y) for (int x = 0; x < attributes.width; ++x) {
             unsigned long pixel = XGetPixel(image, x, y);
@@ -359,11 +359,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     };
     // グループ内のノブ中心と選択リスト。画面上の実入力で全設定を検証する。
     const std::array<std::pair<int, int>, 31> controls {{
-        {140, 67}, {43, 525}, {103, 525}, {163, 525}, {223, 525}, {283, 525},
-        {43, 114}, {103, 114}, {799, 166}, {400, 119}, {361, 166}, {421, 166},
-        {780, 119}, {799, 243}, {361, 303}, {421, 303}, {481, 303}, {541, 303},
-        {601, 303}, {661, 303}, {163, 114}, {799, 320}, {223, 114},
-        {140, 204}, {43, 251}, {103, 251}, {140, 341}, {43, 388}, {103, 388}, {163, 251}, {163, 388}
+        {287, 102}, {68, 628}, {131, 628}, {194, 628}, {257, 628}, {320, 628},
+        {76, 160}, {155, 160}, {904, 208}, {715, 102}, {489, 160}, {683, 160},
+        {938, 152}, {904, 302}, {424, 316}, {489, 316}, {554, 316}, {618, 316},
+        {683, 316}, {748, 316}, {234, 160}, {904, 396}, {313, 160},
+        {287, 258}, {89, 316}, {194, 316}, {287, 414}, {89, 472}, {194, 472}, {299, 316}, {299, 472}
     }};
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
@@ -381,6 +381,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
         waitFor([&] { return parent.drawn(1024, 768); }, "first rendered frame");
         pump();
+        if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
         choose(0, 4);
@@ -420,9 +421,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             const int overlayX = std::clamp(x - 112, 0, 800);
             const int overlayY = std::clamp(y - 91, 0, 708);
 #ifdef _WIN32
-            const uint32 overlayColor = RGB(255, 250, 220);
+            const uint32 overlayColor = RGB(37, 53, 51);
 #else
-            const uint32 overlayColor = 0xfffadc;
+            const uint32 overlayColor = 0x253533;
 #endif
             waitFor([&] {
                 return parent.pixel(overlayX + 4, overlayY + 4) == overlayColor &&
