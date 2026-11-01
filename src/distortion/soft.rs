@@ -6,17 +6,27 @@
 mod table;
 use table::TABLE;
 const H: f64 = 1.0 / 64.0;
+// Hermite補間の積分多項式は入力値によらないため、コンパイル時に生成する。
+static COEFFICIENTS: [[f64; 5]; 1024] = {
+    let mut out = [[0.0; 5]; 1024];
+    let mut i = 0;
+    while i < out.len() {
+        let [g, f, v] = TABLE[i];
+        let [_, f1, v1] = TABLE[i + 1];
+        out[i] = [
+            g,
+            H * f,
+            H * H * v / 2.,
+            H * (3. * (f1 - f) - H * (2. * v + v1)) / 3.,
+            H * (2. * (f - f1) + H * (v + v1)) / 4.,
+        ];
+        i += 1;
+    }
+    out
+};
 #[inline]
 fn coefficients(i: usize) -> [f64; 5] {
-    let [g, f, v] = TABLE[i];
-    let [_, f1, v1] = TABLE[i + 1];
-    [
-        g,
-        H * f,
-        H * H * v / 2.,
-        H * (3. * (f1 - f) - H * (2. * v + v1)) / 3.,
-        H * (2. * (f - f1) + H * (v + v1)) / 4.,
-    ]
+    COEFFICIENTS[i]
 }
 #[inline]
 pub(super) fn eval(x: f64) -> [f64; 4] {
@@ -32,9 +42,10 @@ pub(super) fn eval(x: f64) -> [f64; 4] {
         ];
     }
     let u = a / H;
-    let i = u as usize;
-    let t = u - i as f64;
-    let [g, b, c, d, e] = coefficients(i);
+    // 有限入力の表インデックスは0..1024。u64相当のusizeとの浮動小数点変換を避ける。
+    let i = u as u32;
+    let t = u - f64::from(i);
+    let [g, b, c, d, e] = coefficients(i as usize);
     [
         s * (g + t * (b + t * (c + t * (d + t * e)))),
         (b + t * (2. * c + t * (3. * d + t * 4. * e))) / H,
@@ -47,14 +58,14 @@ fn local_second(a: f64, b: f64, c: f64) -> Option<f64> {
     if a < 0. || c >= 16. {
         return None;
     }
-    let i = (a / H) as usize;
-    if i != (c / H) as usize {
+    let i = (a / H) as u32;
+    if i != (c / H) as u32 {
         return None;
     }
-    let x = a / H - i as f64;
-    let y = b / H - i as f64;
-    let z = c / H - i as f64;
-    let [_, _, p2, p3, p4] = coefficients(i);
+    let x = a / H - f64::from(i);
+    let y = b / H - f64::from(i);
+    let z = c / H - f64::from(i);
+    let [_, _, p2, p3, p4] = coefficients(i as usize);
     Some(
         2. / (H * H)
             * (p2 + p3 * (x + y + z) + p4 * (x * x + y * y + z * z + x * y + x * z + y * z)),
