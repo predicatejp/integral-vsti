@@ -1025,10 +1025,7 @@ fn apply_parameters(
     }
     let values = std::array::from_fn(|i| changes[i].value_at(offset));
     let changed = synth.set_parameters(values);
-    synth.set_distortion_interval([
-        changes[32].value_between(f64::from(offset) + 1.0),
-        changes[33].value_between(f64::from(offset) + 1.0),
-    ]);
+    synth.set_distortion_gain_end(changes[32].value_between(f64::from(offset) + 1.0));
     if loaded {
         plugin.processor_parameters.store(values);
     } else if changed {

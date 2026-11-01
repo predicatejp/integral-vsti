@@ -54,4 +54,12 @@ Width/Panの計測は`synth/p32/u7/width`（Width=100%固定）、`width-changin
 
 Noiseは`oscillator/Noise/`と`synth/p32/u7/noise`などで測定します。後者は32音・7ユニゾン・Detune=30 cent・LP2です。乱数の初期化は測定区間の前に行います。
 
-ディストーション単体は`distortion/`で計測します。ステレオ入力、Gain=12 dB、None/Soft/Hard、Mix=0/100%を比較します。
+ディストーション単体は`distortion/`で計測します。ステレオ入力、Gain=12 dB、None/Soft/Hard、ADAAなし／1次／2次のWet処理を比較します。
+
+SoftのADAA原始関数は`src/distortion/table.rs`（1025点×3列のf64、24,600 bytes）を全Voiceで共有します。
+再生成は次のコマンドで行います。
+
+```sh
+rustc --edition=2024 scripts/generate-distortion-table.rs -o target/generate-distortion-table
+target/generate-distortion-table > src/distortion/table.rs
+```

@@ -28,7 +28,7 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix", "OS",
+    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix", "Sample", "ADAA",
 ];
 
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
@@ -476,31 +476,37 @@ impl Editor {
             });
         }
         for (row, knobs) in rows.iter().enumerate() {
-            let width = (rect.width() - GAP * 2.0) / knobs.len() as f32;
-            for (k, &index) in knobs.iter().enumerate() {
+            let choices = knobs.iter().filter(|&&i| matches!(i, 34 | 35)).count();
+            let knob_width =
+                (rect.width() - GAP * 2.0 - choices as f32 * 96.0) / (knobs.len() - choices) as f32;
+            let mut left = GAP;
+            for &index in *knobs {
+                let width = if matches!(index, 34 | 35) {
+                    96.0
+                } else {
+                    knob_width
+                };
                 let area = egui::Rect::from_min_size(
-                    rect.min
-                        + egui::vec2(
-                            GAP + k as f32 * width,
-                            body_y + row as f32 * (KNOB_CELL.y + row_gap),
-                        ),
+                    rect.min + egui::vec2(left, body_y + row as f32 * (KNOB_CELL.y + row_gap)),
                     egui::vec2(width, KNOB_CELL.y),
                 );
+                left += width;
                 ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                    if index == 34 {
+                    if matches!(index, 34 | 35) {
+                        let label = area.min + egui::vec2(GAP / 2.0, 0.0);
                         let choice = egui::Rect::from_min_size(
-                            area.min + egui::vec2(GAP, 16.0),
-                            egui::vec2(width - GAP * 2.0, CHOICE_HEIGHT),
+                            label + egui::vec2(0.0, 18.0 + GAP),
+                            egui::vec2(width - GAP, CHOICE_HEIGHT),
                         );
                         ui.scope_builder(egui::UiBuilder::new().max_rect(choice), |ui| {
                             self.choice(ui, index, selected[index])
                         });
                         painter.text(
-                            egui::pos2(area.center().x, area.bottom() - 12.0),
-                            egui::Align2::CENTER_CENTER,
-                            "OS",
+                            label,
+                            egui::Align2::LEFT_TOP,
+                            KNOB_NAMES[index],
                             egui::FontId::proportional(18.0),
-                            INK,
+                            MUTED,
                         );
                     } else {
                         self.knob(ui, index, selected[index], width);
@@ -663,7 +669,7 @@ impl WindowHandler for Editor {
                 (
                     "Distortion",
                     &[31],
-                    &[&[32, 33, 34][..]][..],
+                    &[&[32, 33, 34, 35][..]][..],
                     [
                         center_x,
                         GAP + single_height + filter_height + GAP * 2.0,

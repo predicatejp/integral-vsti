@@ -292,7 +292,7 @@ public:
         assert(!GuiReentry::insideDraw);
 #endif
         assert(std::this_thread::get_id() == uiThread);
-        assert(id == 0x4f534d50 || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(id == 0x41444141 || id == 0x4f534d50 || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -420,13 +420,13 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
-    std::array<std::pair<int, int>, 35> controls {{
+    std::array<std::pair<int, int>, 36> controls {{
         {212, 30}, {328, 82}, {392, 82}, {456, 82}, {520, 82}, {584, 82},
         {48, 97}, {112, 97}, {704, 196}, {564, 170}, {349, 222}, {456, 222},
         {704, 118}, {704, 310}, {328, 310}, {392, 310}, {456, 310}, {520, 310},
         {584, 310}, {563, 222}, {176, 97}, {704, 424}, {240, 97},
         {212, 199}, {59, 266}, {144, 266}, {212, 369}, {59, 435}, {144, 435}, {229, 266}, {229, 435},
-        {564, 398}, {349, 450}, {456, 450}, {564, 450}
+        {564, 398}, {328, 450}, {392, 450}, {472, 460}, {568, 460}
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto choose = [&](int index, int item) {
@@ -434,7 +434,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         parent.click(x, y); pump(); assert(handler.sequence.empty());
         parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
         // 下段のOsc3は上側へ、それ以外は下側へ開く。
-        parent.click(x, (index == 26 ? y - 154 : index == 34 ? y - 94 : y + 34) + item * 30);
+        parent.click(x, (index == 26 ? y - 154 : index >= 34 ? y - 94 : y + 34) + item * 30);
         waitFor([&] { return handler.sequence.size() >= 3; }, "dropdown choice");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
@@ -523,9 +523,12 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             choose(31, item);
             assert(handler.editedId == 0x43545950 && handler.value == item / 2.0);
         }
-        for (int item : {1, 2, 0}) {
-            choose(34, item);
-            assert(handler.editedId == 0x4f534d50 && handler.value == item / 2.0);
+        for (const int index : {34, 35}) {
+            for (int item : {1, 2, 0}) {
+                choose(index, item);
+                assert(handler.editedId == (index == 34 ? 0x4f534d50u : 0x41444141u)
+                       && handler.value == item / 2.0);
+            }
         }
         // 全28ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());

@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::distortion::{self, DistortionParameters};
+use crate::distortion::{AdaaOrder, Distortion, DistortionParameters};
 use crate::envelope::{DEFAULT_ENVELOPE, Envelope, EnvelopeParameters};
 use crate::filter::{Filter, FilterParameters, FilterType};
 use crate::oscillator::{Oscillator, OscillatorInput, PanningGains, PhaseMode, Waveform};
@@ -51,8 +51,8 @@ pub struct VoiceState {
     note: Option<Note>,
     /// クリッパーへ渡すフィルタ。ノートオフ後も残響を処理する。
     filter: Filter,
-    /// フィルタ後に適用するクリップ方式・線形Gain・原音との混合率。
-    distortion: DistortionParameters,
+    /// フィルタ後のクリッパーと、左右独立のADAA履歴。
+    distortion: Distortion,
     /// ディストーション直前の補間履歴。発振器・SVFはホストレートで動く。
     upsampler: Upsampler,
     /// 選択中の応答と段数。Noneでは完全にバイパスする。
@@ -105,7 +105,7 @@ impl Voice {
                 envelope: Envelope::new(),
                 note: None,
                 filter: Filter::new(),
-                distortion: parameters::distortion(&values),
+                distortion: Distortion::new(),
                 upsampler: Upsampler::new(),
                 filter_type: parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
                 cutoff_ratio: 2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0),
@@ -179,10 +179,7 @@ impl Voice {
 
     pub fn reset_oversampling(&mut self) {
         self.state.upsampler.reset();
-    }
-
-    pub fn set_distortion(&mut self, parameters: DistortionParameters) {
-        self.state.distortion = parameters;
+        self.state.distortion.reset();
     }
 
     pub fn set_filter(&mut self, filter_type: FilterType, cutoff_cents: f64, resonance_q: f64) {
@@ -239,36 +236,29 @@ impl Voice {
         self.state.phase_depths = depths;
     }
 
-    /// x1の処理経路。発振器とSVFの時間は全倍率で共通。
-    pub fn generate_sample(
-        &mut self,
-        sample_rate: f64,
-        gains: &PanningGains,
-        mono_gains: &[f64; 2],
-    ) -> [f64; 2] {
-        let input = self.generate_filtered_sample(sample_rate, gains, mono_gains);
-        distortion::process_sample(input, &self.state.distortion)
-    }
-
-    /// 1ホストサンプル分を補間し、内部時刻ごとに歪ませる。
+    /// 1ホストサンプル分のDryと、補間・クリップ後のWet系列を返す。
     pub fn generate_oversampled_samples(
         &mut self,
         sample_rate: f64,
         gains: &PanningGains,
         mono_gains: &[f64; 2],
         mode: Mode,
+        order: AdaaOrder,
         parameters: &[DistortionParameters; 4],
-    ) -> [[f64; 2]; 4] {
-        let input = self.generate_filtered_sample(sample_rate, gains, mono_gains);
+    ) -> ([f64; 2], [[f64; 2]; 4]) {
+        let input = self.generate_sample(sample_rate, gains, mono_gains);
         let mut samples = self.state.upsampler.process_samples(input, mode);
         for (sample, parameters) in samples[..mode.factor()].iter_mut().zip(parameters) {
-            *sample = distortion::process_sample(*sample, parameters);
+            *sample = self
+                .state
+                .distortion
+                .process_sample(*sample, parameters, order);
         }
-        samples
+        (input, samples)
     }
 
     /// Voiceの3発振器・音量AHDSR・SVFまでをホストレートで処理する。
-    fn generate_filtered_sample(
+    pub fn generate_sample(
         &mut self,
         sample_rate: f64,
         gains: &PanningGains,

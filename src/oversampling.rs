@@ -7,8 +7,9 @@
 //! 下記は対称係数の前半（中心を含む）。補間時だけ利得2を適用する。
 
 type Stereo = [f64; 2];
-/// x1の純遅延、x2の32+32+4、x4の32+2+2+32を揃える。
-pub const LATENCY: usize = 68;
+/// リサンプリングの68サンプルとADAA整合用の1サンプルを全経路で揃える。
+pub const LATENCY: usize = 69;
+const RESAMPLING_LATENCY: usize = LATENCY - 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -32,11 +33,11 @@ struct HistoryState<const N: usize> {
     /// 次の書き込み位置。書き込み後は最古サンプルの位置になる。
     position: usize,
 }
-struct History<const N: usize> {
+pub(crate) struct History<const N: usize> {
     state: HistoryState<N>,
 }
 impl<const N: usize> History<N> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: HistoryState {
                 samples: [[[0.0; 2]; N]; 2],
@@ -44,7 +45,7 @@ impl<const N: usize> History<N> {
             },
         }
     }
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.state.samples = [[[0.0; 2]; N]; 2];
         self.state.position = 0;
     }
@@ -63,7 +64,7 @@ impl<const N: usize> History<N> {
         &self.state.samples.as_flattened()[self.state.position..self.state.position + N]
     }
     #[inline]
-    fn delay_sample(&mut self, input: Stereo) -> Stereo {
+    pub(crate) fn delay_sample(&mut self, input: Stereo) -> Stereo {
         let out = self.state.samples[0][self.state.position];
         self.push_sample(input);
         out
@@ -154,7 +155,7 @@ struct DownsamplerState {
     /// 4Fs→2Fsの17タップFIR履歴。
     half: History<17>,
     /// x1を他倍率の往復遅延へ揃える純遅延。
-    delay1: History<LATENCY>,
+    delay1: History<RESAMPLING_LATENCY>,
     /// x2の往復64サンプルへ追加する純遅延。
     delay2: History<4>,
 }
@@ -286,7 +287,7 @@ const HALF: [f64; 9] = [
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distortion::{self, ClipperType, DistortionParameters};
+    use crate::distortion::{AdaaOrder, ClipperType, Distortion, DistortionParameters};
 
     fn kernel(mode: Mode) -> Vec<f64> {
         let wide: Vec<_> = (0..129).map(|i| WIDE[i.min(128 - i)]).collect();
@@ -318,7 +319,7 @@ mod tests {
                     .map(|i| DistortionParameters {
                         clipper,
                         gain: 1.0 + i as f64 / 200.0,
-                        mix: 0.25 + i as f64 / (input.len() * r) as f64 * 0.75,
+                        mix: 1.0,
                     })
                     .collect();
                 let mut wet = vec![[0.0; 2]; input.len() * r];
@@ -331,14 +332,20 @@ mod tests {
                             }
                         }
                     }
-                    wet[t] = distortion::process_sample(up, &p[t]);
+                    wet[t] = up.map(|x| match clipper {
+                        ClipperType::None => x,
+                        ClipperType::Soft => (x * p[t].gain).tanh(),
+                        ClipperType::Hard => (x * p[t].gain).clamp(-1.0, 1.0),
+                    });
                 }
                 let mut up = Upsampler::new();
+                let mut distortion = Distortion::new();
                 let mut down = Downsampler::new();
                 for (n, input) in input.into_iter().enumerate() {
                     let mut samples = up.process_samples(input, mode);
                     for j in 0..r {
-                        samples[j] = distortion::process_sample(samples[j], &p[n * r + j]);
+                        samples[j] =
+                            distortion.process_sample(samples[j], &p[n * r + j], AdaaOrder::None);
                     }
                     let actual = down.process_sample(samples, mode);
                     let padding = if mode == Mode::X2 { 4 } else { 0 };
@@ -377,7 +384,7 @@ mod tests {
                     peak = (n, out[0].abs());
                 }
             }
-            assert_eq!(peak.0, LATENCY);
+            assert_eq!(peak.0, RESAMPLING_LATENCY);
             for _ in 0..200 {
                 down.process_sample(up.process_samples([0.2, -0.3], mode), mode);
             }

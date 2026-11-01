@@ -110,7 +110,7 @@ fn interfaces_share_identity_and_own_the_instance() {
         assert_eq!((component_table.unknown.release)(component), 1);
         // ファクトリーとComponentの参照を解放してもProcessorの所有参照は有効。
         assert_eq!((factory_table.unknown.release)(factory), 0);
-        assert_eq!((processor_table.get_latency_samples)(processor), 68);
+        assert_eq!((processor_table.get_latency_samples)(processor), 69);
         assert_eq!((processor_table.unknown.release)(processor), 0);
     }
 }
@@ -388,7 +388,7 @@ fn check_host_events(activate_events: bool) {
         assert_eq!((pt.process)(processor, &mut data), OK);
         let restart = release_start * (1.0 - 1000.0 / setup.sample_rate / 100.0);
         assert_eq!(*sample_ptr, 0.0);
-        // 固定遅延後の5サンプルを検証。排出中も現在ノートの位相は68サンプル進む。
+        // 固定遅延後の5サンプルを検証。排出中も現在ノートの位相は69サンプル進む。
         let expected = [
             0.0,
             0.0,
@@ -398,9 +398,9 @@ fn check_host_events(activate_events: bool) {
         ];
         data.input_events = ptr::null_mut();
         data.input_parameter_changes = ptr::null_mut();
-        for n in 0..68 {
+        for n in 0..69 {
             assert_eq!((pt.process)(processor, &mut data), OK);
-            let value = if n < 63 { 0.0 } else { expected[n - 63] };
+            let value = if n < 64 { 0.0 } else { expected[n - 64] };
             assert!((*sample_ptr - value).abs() < 1e-14);
         }
         data.input_events = events_ptr.cast();
@@ -429,9 +429,9 @@ fn check_host_events(activate_events: bool) {
         let peak = 0.5 * step * std::f64::consts::SQRT_2;
         let expected_sine = [
             0.0,
-            peak * sine(75.0),
-            2.0 * peak * sine(76.0),
-            3.0 * peak * sine(77.0),
+            peak * sine(76.0),
+            2.0 * peak * sine(77.0),
+            3.0 * peak * sine(78.0),
         ];
         assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0; 4]);
         assert_eq!((*data.outputs).silence_flags, STEREO);
@@ -452,14 +452,14 @@ fn check_host_events(activate_events: bool) {
         assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0; 4]);
         data.num_samples = 1;
         data.input_parameter_changes = ptr::null_mut();
-        for n in 0..68 {
+        for n in 0..69 {
             assert_eq!((pt.process)(processor, &mut data), OK);
-            if n < 60 {
+            if n < 61 {
                 assert_eq!(*sample_ptr, 0.0);
-            } else if n < 64 {
-                assert!((*sample_ptr - expected_sine[n - 60]).abs() < 1e-14);
+            } else if n < 65 {
+                assert!((*sample_ptr - expected_sine[n - 61]).abs() < 1e-14);
             } else {
-                assert!((sample_ptr.read().abs() - (n - 60) as f64 * 0.5 * step).abs() < 1e-14);
+                assert!((sample_ptr.read().abs() - (n - 61) as f64 * 0.5 * step).abs() < 1e-14);
             }
         }
         assert_eq!((pt.set_processing)(processor, 0), OK);
