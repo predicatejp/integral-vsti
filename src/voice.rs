@@ -182,9 +182,10 @@ impl Voice {
         self.state.distortion.reset();
     }
 
-    pub fn set_filter(&mut self, filter_type: FilterType, cutoff_cents: f64, resonance_q: f64) {
+    /// ノート基準Cutoffは親が換算した倍率を受け取る。
+    pub fn set_filter(&mut self, filter_type: FilterType, cutoff_ratio: f64, resonance_q: f64) {
         self.state.filter_type = filter_type;
-        self.state.cutoff_ratio = 2.0_f64.powf(cutoff_cents / 1200.0);
+        self.state.cutoff_ratio = cutoff_ratio;
         self.state.resonance_q = resonance_q;
     }
 
@@ -383,7 +384,7 @@ mod tests {
                         release_ms: 0.0,
                     };
                     voice.set_parameters(Waveform::Sine, shape, 3, 25.0, PhaseMode::Zero);
-                    voice.set_filter(FilterType::None, 4800.0, 1.0);
+                    voice.set_filter(FilterType::None, 16.0, 1.0);
                     voice.set_oscillator(1, wave, 2.0, 0.0);
                     voice.set_oscillator(2, wave, 0.5, 0.0);
                     voice.set_phase_modulation(depths);
@@ -456,7 +457,7 @@ mod tests {
                 for (i, r) in [1.0, ratio, 1.0 / ratio].into_iter().enumerate() {
                     voice.set_oscillator(i, Waveform::Sine, r, 1.0);
                 }
-                voice.set_filter(FilterType::LowPass2, 1200.0, 1.0);
+                voice.set_filter(FilterType::LowPass2, 2.0, 1.0);
                 let note = Note {
                     id: 1,
                     channel: 0,
@@ -525,7 +526,7 @@ mod tests {
             pitch: 69,
         };
         for voice in [&mut muted, &mut reference] {
-            voice.set_filter(FilterType::None, 4800.0, 1.0);
+            voice.set_filter(FilterType::None, 16.0, 1.0);
             voice.set_parameters(Waveform::Sine, shape, 7, 25.0, PhaseMode::Keep);
             voice.set_oscillator(0, Waveform::Sine, 1.0, 0.0);
             voice.set_oscillator(1, Waveform::Sine, 2.0, 1.0);
@@ -576,8 +577,8 @@ mod tests {
             channel: 0,
             pitch: 69,
         };
-        bypassed.set_filter(FilterType::None, 1200.0, 2.0);
-        reference.set_filter(FilterType::LowPass2, 1200.0, 2.0);
+        bypassed.set_filter(FilterType::None, 2.0, 2.0);
+        reference.set_filter(FilterType::LowPass2, 2.0, 2.0);
         for voice in [&mut bypassed, &mut reference] {
             voice.set_cutoff_envelope(DEFAULT_ENVELOPE, 2400.0);
             voice.note_on(note, 0.0, 1.0);
@@ -596,7 +597,7 @@ mod tests {
         }
         // 有効中に進めた参照側も、バイパス解除時と同じ無履歴から比較する。
         reference.state.filter.reset();
-        bypassed.set_filter(FilterType::LowPass2, 1200.0, 2.0);
+        bypassed.set_filter(FilterType::LowPass2, 2.0, 2.0);
         for _ in 0..128 {
             assert_eq!(
                 bypassed.generate_sample(48000.0, &[[1.0; 2]; 7], &[1.0; 2])[0],
@@ -628,7 +629,7 @@ mod tests {
                     sustain: 1.0,
                     release_ms: 0.0,
                 };
-                voice.set_filter(kind, -1200.0, 1.0);
+                voice.set_filter(kind, 0.5, 1.0);
                 voice.set_cutoff_envelope(shape, amount);
                 let mut oscillator = Oscillator::new();
                 let mut filter = Filter::new();
@@ -696,7 +697,7 @@ mod tests {
                     37.0,
                     PhaseMode::Keep,
                 );
-                voice.set_filter(filter_type, cents, 2.0);
+                voice.set_filter(filter_type, 2.0_f64.powf(cents / 1200.0), 2.0);
                 assert!(voice.note_on(
                     Note {
                         id: 1,

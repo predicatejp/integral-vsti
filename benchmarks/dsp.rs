@@ -279,7 +279,7 @@ fn main() {
                 30.0,
                 oscillator::PhaseMode::Keep,
             );
-            voice.set_filter(kind, 1200.0, p.resonance_q);
+            voice.set_filter(kind, 2.0, p.resonance_q);
             voice.note_on(note(0), 0.0, 1.0);
             for _ in 0..rate as usize {
                 voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);

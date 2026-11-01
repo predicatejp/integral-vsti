@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::distortion::{AdaaOrder, ClipperType, DistortionParameters};
+use crate::envelope::EnvelopeParameters;
 use crate::oscillator::{PanningGains, panning_gains};
 use crate::oversampling::{Downsampler, History, LATENCY, Mode};
 use crate::parameters;
@@ -31,6 +32,14 @@ pub struct SynthesizerState {
     sample_rate: f64,
     /// 適用済みの正規化値。変更時だけ実単位へ換算する。
     parameters: [f64; parameters::COUNT],
+    /// 換算済みの音量・カットオフAHDSR。発振器設定やAmountだけの変更時に再利用する。
+    envelopes: [EnvelopeParameters; 2],
+    /// 全Voice共通のTune倍率。Tuneが変更された場合だけ再計算する。
+    oscillator_tune_ratios: [f64; 3],
+    /// 全Voice共通のVol倍率。波形補正を含めず、Vol変更時だけ再計算する。
+    oscillator_volumes: [f64; 3],
+    /// 全Voice共通のノート基準Cutoff倍率。Filterタイプ・Qの変更時に再利用する。
+    cutoff_ratio: f64,
     /// 全Voiceのディストーション出力を加算した後に掛ける振幅倍率。Volume変更時だけ再計算する。
     master_gain: f64,
     /// 全Voice共通の定位係数。実発音数・有効なWidth・Panの変更時だけ更新する。
@@ -68,13 +77,21 @@ pub struct Synthesizer {
 
 impl Synthesizer {
     pub fn new() -> Self {
+        let values = parameters::defaults();
         Self {
             state: Box::new(SynthesizerState {
                 voices: std::array::from_fn(|_| Voice::new()),
                 next_oscillator_id: 0,
                 polyphony: 1,
                 sample_rate: 44100.0,
-                parameters: parameters::defaults(),
+                parameters: values,
+                envelopes: [
+                    parameters::envelope(&values, 1),
+                    parameters::envelope(&values, 14),
+                ],
+                oscillator_tune_ratios: [1.0; 3],
+                oscillator_volumes: [1.0, 0.0, 0.0],
+                cutoff_ratio: 2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0),
                 master_gain: 1.0,
                 panning_gains: [[1.0; 2]; 7],
                 mono_gains: [1.0; 2],
@@ -87,7 +104,7 @@ impl Synthesizer {
                 wet_delay: History::new(),
                 wet_alignment: std::array::from_fn(|_| History::new()),
                 previous_wet: [0.0; 2],
-                distortion: parameters::distortion(&parameters::defaults()),
+                distortion: parameters::distortion(&values),
                 distortion_gain_end: 0.0,
             }),
         }
@@ -129,19 +146,29 @@ impl Synthesizer {
         // 変更のないグループの時間換算（pow）なども省く。
         if oscillator_changed {
             let waveform = parameters::from_normalized(values[0]).expect("validated values");
-            let envelope = parameters::envelope(&values, 1);
+            if values[1..6] != previous[1..6] {
+                self.state.envelopes[0] = parameters::envelope(&values, 1);
+            }
             let unison_voices = parameters::to_plain(6, values[6]) as u32;
             let detune_cents = parameters::to_plain(7, values[7]);
             let phase_mode = parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize];
             for voice in &mut self.state.voices {
-                voice.set_parameters(waveform, envelope, unison_voices, detune_cents, phase_mode);
+                voice.set_parameters(
+                    waveform,
+                    self.state.envelopes[0],
+                    unison_voices,
+                    detune_cents,
+                    phase_mode,
+                );
             }
         }
         if envelope_changed {
-            let cutoff_envelope = parameters::envelope(&values, 14);
+            if values[14..19] != previous[14..19] {
+                self.state.envelopes[1] = parameters::envelope(&values, 14);
+            }
             let cutoff_amount = parameters::to_plain(19, values[19]);
             for voice in &mut self.state.voices {
-                voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
+                voice.set_cutoff_envelope(self.state.envelopes[1], cutoff_amount);
             }
         }
         if values[21] != previous[21] {
@@ -157,12 +184,23 @@ impl Synthesizer {
             {
                 let waveform =
                     parameters::from_normalized(values[wave]).expect("validated waveform");
-                let ratio = tune.map_or(1.0, |i| {
-                    2.0_f64.powf(parameters::to_plain(i, values[i]) / 1200.0)
-                });
-                let gain = 10.0_f64.powf(parameters::to_plain(volume, values[volume]) / 20.0);
+                if let Some(i) = tune
+                    && values[i] != previous[i]
+                {
+                    self.state.oscillator_tune_ratios[osc] =
+                        2.0_f64.powf(parameters::to_plain(i, values[i]) / 1200.0);
+                }
+                if values[volume] != previous[volume] {
+                    self.state.oscillator_volumes[osc] =
+                        10.0_f64.powf(parameters::to_plain(volume, values[volume]) / 20.0);
+                }
                 for voice in &mut self.state.voices {
-                    voice.set_oscillator(osc, waveform, ratio, gain);
+                    voice.set_oscillator(
+                        osc,
+                        waveform,
+                        self.state.oscillator_tune_ratios[osc],
+                        self.state.oscillator_volumes[osc],
+                    );
                 }
             }
         }
@@ -197,8 +235,13 @@ impl Synthesizer {
             }
         }
         if values[31..34] != previous[31..34] {
-            let distortion = parameters::distortion(&values);
-            self.state.distortion = distortion;
+            self.state.distortion.clipper =
+                parameters::CLIPPER_TYPES[parameters::to_plain(31, values[31]) as usize];
+            if values[32] != previous[32] {
+                self.state.distortion.gain =
+                    10.0_f64.powf(parameters::to_plain(32, values[32]) / 20.0);
+            }
+            self.state.distortion.mix = values[33];
             self.state.distortion_gain_end = values[32];
         }
         if values[31] != previous[31] || values[34..] != previous[34..] {
@@ -220,10 +263,13 @@ impl Synthesizer {
         }
         if filter_changed {
             let filter_type = parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize];
-            let cutoff_cents = parameters::to_plain(10, values[10]);
+            if values[10] != previous[10] {
+                self.state.cutoff_ratio =
+                    2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0);
+            }
             let resonance_q = parameters::to_plain(11, values[11]);
             for voice in &mut self.state.voices {
-                voice.set_filter(filter_type, cutoff_cents, resonance_q);
+                voice.set_filter(filter_type, self.state.cutoff_ratio, resonance_q);
             }
         }
         true
@@ -541,7 +587,7 @@ mod tests {
     #[test]
     fn individual_parameter_updates_reach_current_and_future_voices() {
         for index in (0..parameters::COUNT).filter(|&i| i != 8 && i != 12 && i != 34) {
-            for value in [0.0, 1.0] {
+            for (value, restore) in [(0.0, false), (1.0, false), (0.0, true), (1.0, true)] {
                 for count in [1, 32] {
                     let mut synth = Synthesizer::new();
                     synth.set_sample_rate(48000.0);
@@ -552,6 +598,10 @@ mod tests {
                     } else {
                         value
                     };
+                    // 別音色から戻し、換算済み値が残らず未発音枠にも反映されることを確認する。
+                    if restore {
+                        synth.set_parameters([0.37; parameters::COUNT]);
+                    }
                     synth.set_parameters(values);
                     // 設定を配送した後に使用枠を増やす。
                     values[8] = parameters::to_normalized(8, f64::from(count));
@@ -566,7 +616,7 @@ mod tests {
                     );
                     reference.set_filter(
                         parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
-                        parameters::to_plain(10, values[10]),
+                        2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0),
                         parameters::to_plain(11, values[11]),
                     );
                     reference.set_cutoff_envelope(
