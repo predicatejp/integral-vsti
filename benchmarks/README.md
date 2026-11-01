@@ -6,27 +6,83 @@
 ## 標準性能回帰スイート
 
 `standard.rs`は通常の演奏を模した固定21ケースです。全パラメーターを明示し、製品の初期値変更から独立させています。
-既定条件は48 kHz・256サンプル、各ケース2秒分のウォームアップ後に4秒分の演奏を5回計測します。
-同じCPU・ビルド条件で変更前後を逐次実行してください。
+変更前・変更後のGit worktreeを指定し、同一のハーネス・コンパイラー・オプションでそれぞれの`src/`のコピーをビルドします。
+基準値JSONを後日の測定と比較する方式は使わず、同じ実験の同じブロック内で変更前後を対応付けます。
+
+### 準備・実行
+
+統計解析にはPython 3.11以上、SciPy 1.17.1とNumPy 2.4.6を使います。
+`benchmarks/requirements.txt`で固定し、PyPIから取得します。追加のoptional extrasは使用しません。
+[SciPy](https://scipy.org/about/)・[NumPy](https://numpy.org/doc/stable/license.html)本体はBSD-3-Clauseです。
+ホイール同梱の数値ライブラリの通知は各パッケージのライセンスファイルに記載されています。
 
 ```sh
+python3 -m venv target/bench-venv
+target/bench-venv/bin/python -m pip install -r benchmarks/requirements.txt
+# 比較元を固定したworktreeを用意する（<before-commit>は比較元のコミットID）
+git worktree add --detach target/perf-before <before-commit>
 # ケース一覧
-python3 scripts/bench-standard.py --list
-# 変更前の基準値を保存（Linuxでは論理CPUを固定）
-python3 scripts/bench-standard.py --cpu 0 --output target/performance/baseline.json
-# 変更後を同じ条件で比較
-python3 scripts/bench-standard.py --cpu 0 --baseline target/performance/baseline.json --output target/performance/candidate.json
+target/bench-venv/bin/python scripts/bench-standard.py --list
+# 変更前後をまとめて測定
+target/bench-venv/bin/python scripts/bench-standard.py --before target/perf-before --after . --cpu 0 --output target/performance/paired.json
 ```
 
-`--rate 44100|48000|96000`、`--block 1..2048`、`--rounds 3|5|…|31`、`--seconds 4..60`で条件を指定できます。
-`--case auto-`などの接頭辞で対象を絞れます。Windowsでは`--cpu`を省略して実行し、必要に応じてOS側でCPUを固定してください。
+Windowsでは仮想環境の`Scripts/python.exe`を使用し、`--cpu`を省略します。必要に応じてOS側でCPUを固定してください。
+CPUクロック・温度・他プロセスの負荷をできるだけ一定に保ち、測定は逐次実行します。
 
-結果JSONにはコミット・作業ツリーの変更有無・ケース定義のハッシュ・Rust/OS/CPU・CPU affinity・計測条件を保存します。
-比較時は同じケース定義、環境、コンパイルオプション、計測条件を要求し、異なれば計測前に終了します。
-各ケースの中央値が基準値から10%を超えて増えた場合は終了コード1、正常時は0です。
-計測時間はステレオ1サンプル（左右1組）あたりのnsで表示します。
-しきい値は`--max-regression-percent`で指定します。最小・最大も併記するので、負荷増加時は同じ条件で再実行し、ばらつきと区別してください。
-CPUクロック・温度・他プロセスの負荷は実行間で揃えます。失敗した計測を新しい基準値へ自動で置き換えません。
+### ブロックと実行順
+
+- 既定は48 kHz・256サンプル、10ブロック。各ブロックに、選択した全ケースの変更前・変更後を1回ずつ含めます。
+- ブロック内の「ケース×変更前後」全実行をシャッフルします。順序を選り好みせず、seedを実行前に決めて保存します。
+- 各実行は独立したプロセスで、音源準備2秒分＋測定と同じ演奏4秒分を最低1周処理してburn-inします。測定区間で使う処理経路も事前に実行します。
+- 音源を初期化し直し、2秒分を生成して同じ演奏位置・履歴を作ります。この最終準備もburn-inの実時間に含めます。実時間の下限は既定10msで、短い場合は全体をもう1周処理します。
+- 続く4秒分の演奏を計測します。**音声の4秒分を生成する時間は実時間4秒ではありません。** 48 kHzなら192,000個のステレオサンプルを生成する所要時間です。burn-in・音源初期化・検査は計測区間の外です。
+- ブロック終了後に5秒間クールタイムを設けます。最初のブロックの前と最後のブロックの後には待機しません。
+- 全ブロックが完了してからケースごとに解析します。途中のp値を見て打ち切る、外れ値を自動で除外する、都合のよいseedを選ぶ運用は行いません。
+
+`--blocks`は10以上、`--burn-in-ms`は10ms以上、`--cooldown-seconds`は3秒以上を指定できます。
+`--block 1..2048`はホストの音声バッファ長、`--blocks`は統計上のブロック数です。
+`--rate 44100|48000|96000`、`--audio-seconds 4..60`で演奏条件を指定します。
+`--case auto-mix --case hard-x2-second`のように接頭辞を繰り返して対象を選べます。対象ケースとブロック数は測定前に決めます。
+`--seed`で同じ順序を再現できます。省略時は新しいseedを生成します。実際の全順序も保存します。
+burn-inの10msは実時間の下限で、上限ではありません。最低1周と最終準備を終えるまで処理するため、重いケースほど長くなります。
+音声の4秒分はノートオン／オフ・リリース・4秒周期のオートメーションを測定範囲に含めるため維持します。
+[burn-in短縮の比較実験と実時間の内訳](https://github.com/predicatejp/sample-vsti/wiki/Performance-duration-2026-11-02)を参照してください。
+
+### 統計量と解釈
+
+ケースごとに、ブロック番号をキーとして `d_i = after_i - before_i` を計算します。実行順や速度順で値を並べ替えて対応付けません。
+表示・JSON保存する内容は次のとおりです。
+
+- ブロック数N、変更前・変更後・対応差それぞれの平均、標本標準偏差、中央値、最小・最大（ns／ステレオ1サンプル）。
+- 対応のある両側t検定の `t = mean(d) / (sd(d) / sqrt(N))`、自由度N−1、未補正p値。
+- ケースごとの平均差の95%信頼区間（多重比較補正前のpointwise区間）。
+- 全選択ケースを1つの比較族としたHolm補正p値。有意水準は5%。補正p値が0.05未満なら、差の符号から`slower`／`faster`を表示。
+- 差のShapiro–Wilk検定p値とラグ1相関係数を、分布・時系列の診断情報として表示。
+
+`not_detected`は「差を検出できず」であり、「同等」「悪化なし」「採用可」を証明しません。
+差の標準偏差が0のときはt検定を定義できないため、t・p・信頼区間をnull、結果を`undefined`とします。
+`slower`または`undefined`が1件でもあれば終了コード1。それ以外の0は測定・解析の完了を表し、採用の自動承認ではありません。
+他ケースの改善で有意な悪化を相殺しません。効果量と信頼区間を確認し、対象とした改善より大きな悪化は採用前に再検討します。
+
+対応t検定は**ブロックごとの差の独立性と、おおむね正規的な分布**を前提とします。
+元の前後データに同じ分散を要求する検定ではありません。クールタイムと無作為化は偏りを減らす設計であり、独立性の証明ではありません。
+ケース数が多いブロックでは対応する2実行の時刻が離れます。実行時刻・順序・差の系列から時間変動や持ち越し効果を確認してください。
+10ブロックでは分布や相関を見抜く力にも限界があります。Shapiroの大きなp値や小さなラグ1相関だけで前提を成立済みとせず、
+診断結果を使って有意になるまでデータや検定を選び直さないでください。必要なブロック数は別の予備実験で決め、確認実験は固定した計画で実行します。
+
+数式と設計は[NISTの対応比較](https://www.itl.nist.gov/div898/handbook/prc/section3/prc311.htm)、
+[NISTの無作為化ブロック](https://www.itl.nist.gov/div898/handbook/pri/section3/pri332.htm)、
+[Holm補正のR公式解説](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/p.adjust.html)を参照。
+検定と信頼区間は[SciPyのttest_rel](https://docs.scipy.org/doc/scipy-1.17.0/reference/generated/scipy.stats.ttest_rel.html)を使用します。
+
+### 保存・検証
+
+JSONにはソースのコミット・変更有無・ソースとバイナリのハッシュ、共通ハーネスのハッシュ、Python／SciPy／NumPy／Rust・OS・CPU、
+CPU affinity、seed、全実行の順序・開始終了時刻・burn-in実時間／周回数・本測定の実時間（`measurement_ns`）、ブロックごとの測定値、音声ハッシュ・ピーク・RMS、全解析結果を保存します。
+同じ実装・ケースの反復出力は一致を要求し、変更前後の音声一致は`audio_same`で別に記録します。
+ペア不足・重複・不正値は検定前に拒否します。旧方式の独立した測定JSONを対応ペアとして再利用しません。
+回帰テストは`target/bench-venv/bin/python tests/bench-standard.py`で実行します。
 
 ### 音色と演奏の固定ケース
 
@@ -75,7 +131,7 @@ Cutoffは本体の`holds_between_points`に従い変更点まで保持します�
 これはSynthesizer入口での回帰試験で、VST3キューの走査・GUIは`check-abi.py`などの別の検証経路で扱います。
 
 毎回の出力について有限性・発音／無音・反復のビット一致を検査し、ハッシュ・ピーク・RMSも保存します。
-比較時の`audio=changed`は波形差の確認を促す表示で、性能の合否とは分けます。数値計算を変更した場合は音声側の回帰テストも実行します。
+`audio_same=false`は波形差の確認を促す表示で、時間差の検定とは分けます。数値計算を変更した場合は音声側の回帰テストも実行します。
 
 ## コンポーネント別マイクロベンチマーク
 

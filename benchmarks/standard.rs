@@ -27,7 +27,10 @@ mod voice;
 #[path = "../src/volume.rs"]
 mod volume;
 
-use std::{hint::black_box, time::Instant};
+use std::{
+    hint::black_box,
+    time::{Duration, Instant},
+};
 use voice::Note;
 
 // 設定はUIの初期値から独立させ、新パラメーターの追加時には明示的に見直す。
@@ -477,59 +480,43 @@ fn main() {
         }
         return;
     }
-    assert_eq!(
-        args.len(),
-        6,
-        "usage: standard RATE BLOCK ROUNDS SECONDS CASE_PREFIX"
-    );
+    assert_eq!(args.len(), 6, "usage: standard RATE BUFFER AUDIO_SECONDS CASE BURN_IN_MS");
     let rate: usize = args[1].parse().unwrap();
     let block: usize = args[2].parse().unwrap();
-    let rounds: usize = args[3].parse().unwrap();
-    let seconds: usize = args[4].parse().unwrap();
+    let seconds: usize = args[3].parse().unwrap();
+    let burn_in_ms: u64 = args[5].parse().unwrap();
     assert!(
         [44100, 48000, 96000].contains(&rate)
             && (1..=2048).contains(&block)
-            && (3..=31).contains(&rounds)
-            && rounds % 2 == 1
             && (4..=60).contains(&seconds)
+            && burn_in_ms >= 10
     );
+    let case = cases.iter().find(|c| c.name == args[4]).expect("unknown case");
     let warmup = 2 * rate;
     let length = seconds * rate;
-    println!("case,min_ns,median_ns,max_ns,fingerprint,peak,rms");
-    let mut matched = 0;
-    for case in cases.iter().filter(|c| c.name.starts_with(&args[5])) {
-        matched += 1;
-        let scenario = scenario(case, rate, block, warmup + length);
-        let mut warm = vec![[0.; 2]; warmup];
-        let mut output = vec![[0.; 2]; length];
-        let mut times = Vec::with_capacity(rounds);
-        let mut reference = None;
-        for _ in 0..rounds {
-            let mut playback = Playback::new(&scenario, rate);
-            playback.generate_samples(&scenario, block, &mut warm);
-            let start = Instant::now();
-            playback.generate_samples(&scenario, block, &mut output);
-            times.push(start.elapsed().as_secs_f64() * 1e9 / length as f64);
-            let check = fingerprint(&output);
-            assert_eq!(
-                matches!(case.phrase, Phrase::Idle),
-                check.1 == 0.0,
-                "unexpected silence/nonzero"
-            );
-            if let Some(old) = reference {
-                assert_eq!(check, old, "non-reproducible audio");
-            }
-            reference = Some(check);
+    let scenario = scenario(case, rate, block, warmup + length);
+    let mut warm = vec![[0.; 2]; warmup];
+    let mut output = vec![[0.; 2]; length];
+    // 演奏全体を最低1周処理して、測定区間で使う処理経路もウォームアップする。
+    let burn_start = Instant::now();
+    let mut burn_in_cycles = 0;
+    let mut playback = loop {
+        let mut playback = Playback::new(&scenario, rate);
+        playback.generate_samples(&scenario, block, &mut warm);
+        // 最終回の音源準備もburn-inに含め、常に同じ演奏位置から計測する。
+        if burn_in_cycles > 0 && burn_start.elapsed() >= Duration::from_millis(burn_in_ms) {
+            break playback;
         }
-        times.sort_by(f64::total_cmp);
-        let (hash, peak, rms) = reference.unwrap();
-        println!(
-            "{},{:.3},{:.3},{:.3},{hash:016x},{peak:.12},{rms:.12}",
-            case.name,
-            times[0],
-            times[rounds / 2],
-            times[rounds - 1]
-        );
-    }
-    assert!(matched > 0, "no matching cases");
+        playback.generate_samples(&scenario, block, &mut output);
+        burn_in_cycles += 1;
+    };
+    let burn_in_ns = burn_start.elapsed().as_nanos();
+    let start = Instant::now();
+    playback.generate_samples(&scenario, block, &mut output);
+    let measurement_ns = start.elapsed().as_nanos();
+    let ns = measurement_ns as f64 / length as f64;
+    let (hash, peak, rms) = fingerprint(&output);
+    assert_eq!(matches!(case.phrase, Phrase::Idle), peak == 0.0, "unexpected silence/nonzero");
+    println!("case,ns,burn_in_ns,burn_in_cycles,measurement_ns,fingerprint,peak,rms");
+    println!("{},{ns:.6},{burn_in_ns},{burn_in_cycles},{measurement_ns},{hash:016x},{peak:.12},{rms:.12}", case.name);
 }
