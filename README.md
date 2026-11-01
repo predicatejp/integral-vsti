@@ -591,7 +591,7 @@ Linuxでの確認済み環境: Linux x86_64、Rust 1.95.0 / 1.99.1、GCC 12.2、
 参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
 FL Studioで発音とGUI操作の動作報告があります。
 GUIの自動検証にはLinuxのXvfbとMesaを使用します。
-通常演奏21ケースの標準性能回帰スイートは`python3 scripts/bench-standard.py`で実行します。ケース一覧・基準値との比較とDSP単体の測定手順は[benchmarks/README.md](benchmarks/README.md)、比較実験の結果は[Wiki](https://github.com/predicatejp/sample-vsti/wiki)にまとめています。
+通常演奏21ケースの標準性能回帰スイートは、検証用Python環境を準備し、`scripts/bench-standard.py --before <変更前worktree> --after <変更後worktree>`で実行します。無作為化ブロックによる対応比較・統計検定とDSP単体の測定手順は[benchmarks/README.md](benchmarks/README.md)、比較実験の結果は[Wiki](https://github.com/predicatejp/sample-vsti/wiki)にまとめています。
 
 ## PRのテスト用ZIP
 
