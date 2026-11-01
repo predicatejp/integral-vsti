@@ -117,11 +117,16 @@ impl Svf {
         // 入力設定を書き換えず、係数計算時だけ20〜20,000 Hzへクランプする。
         // レートは44.1 kHz以上なので、20 kHzは常にNyquist未満となる。
         let cutoff_hz = parameters.cutoff_hz.clamp(20.0, 20_000.0);
-        // Qだけの変更ではプリワープ係数を再利用し、減衰係数と分母だけ更新する。
+        // 要求Hzが変わっても、クランプ後のHzが同じならプリワープを再利用する。
+        // Qも同じなら全係数を再利用し、次回の高速判定用に要求値だけ更新する。
         let g = match self.state.coefficients {
             Some((previous, rate, cached))
-                if previous.cutoff_hz == parameters.cutoff_hz && rate == sample_rate =>
+                if previous.cutoff_hz.clamp(20.0, 20_000.0) == cutoff_hz && rate == sample_rate =>
             {
+                if previous.resonance_q == parameters.resonance_q {
+                    self.state.coefficients = Some((*parameters, sample_rate, cached));
+                    return cached;
+                }
                 cached.g
             }
             _ => (std::f64::consts::PI * (cutoff_hz / sample_rate)).tan(),
@@ -305,7 +310,11 @@ mod tests {
             let mut rate = 48_000.0;
             for n in 0..256 {
                 if n % 7 == 0 {
-                    parameters.cutoff_hz = 100.0 + n as f64 * 71.0;
+                    // 上下限の内側・境界・外側を往復し、同じ境界内での要求変更も含める。
+                    parameters.cutoff_hz = [
+                        -100.0, 0.0, 19.0, 20.0, 21.0, 1000.0, 19_999.0, 20_000.0, 20_001.0,
+                        30_000.0, 40_000.0, 10_000.0,
+                    ][(n / 7) % 12];
                 }
                 if n % 11 == 0 {
                     parameters.resonance_q = 0.5 + (n % 17) as f64 * 0.5;
