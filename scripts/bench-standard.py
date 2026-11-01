@@ -56,17 +56,19 @@ def build(tree, destination, harness):
     return binary, metadata
 
 
-def measure(binary, case, rate, buffer, seconds, burn_in):
-    raw = capture(str(binary), str(rate), str(buffer), str(seconds), case, str(burn_in))
+def measure(binary, case, rate, buffer, audio_seconds, burn_in_ms):
+    raw = capture(str(binary), str(rate), str(buffer), str(audio_seconds), case, str(burn_in_ms))
     rows = list(csv.DictReader(io.StringIO(raw)))
     if len(rows) != 1 or rows[0]["case"] != case:
         raise ValueError("Unexpected benchmark case")
     row = rows[0]
     result = {k: float(row[k]) for k in ["ns", "peak", "rms"]}
-    result.update(burn_in_ns=int(row["burn_in_ns"]), fingerprint=row["fingerprint"])
+    result.update({k: int(row[k]) for k in ["burn_in_ns", "burn_in_cycles", "measurement_ns"]})
+    result["fingerprint"] = row["fingerprint"]
     if (not all(math.isfinite(result[k]) for k in ["ns", "peak", "rms"])
             or result["ns"] <= 0 or not 0 <= result["rms"] <= result["peak"]
-            or result["burn_in_ns"] < burn_in * 10**9):
+            or result["burn_in_ns"] < burn_in_ms * 10**6
+            or result["burn_in_cycles"] < 1 or result["measurement_ns"] <= 0):
         raise ValueError("Invalid measurement or insufficient burn-in")
     return result
 
@@ -183,11 +185,13 @@ def main():
     parser.add_argument("--after", type=Path, default=ROOT, help="Git worktree after the change")
     parser.add_argument("--output", type=Path, default=ROOT / "target/performance/paired.json")
     parser.add_argument("--blocks", type=int, default=10)
-    parser.add_argument("--burn-in-seconds", type=int, default=3)
+    parser.add_argument("--burn-in-ms", type=int, default=10,
+                        help="Wall-clock minimum, including at least one full scenario pass")
     parser.add_argument("--cooldown-seconds", type=int, default=5)
     parser.add_argument("--rate", type=int, choices=[44100, 48000, 96000], default=48000)
     parser.add_argument("--block", type=int, default=256, help="Host audio buffer size, not experiment blocks")
-    parser.add_argument("--seconds", type=int, choices=range(4, 61), default=4)
+    parser.add_argument("--audio-seconds", type=int, choices=range(4, 61), default=4,
+                        help="Generated audio duration, not wall-clock measurement time")
     parser.add_argument("--case", action="append", default=[], help="Case-name prefix (repeatable)")
     parser.add_argument("--seed", type=int, help="Replay an execution order; default is a fresh random seed")
     parser.add_argument("--cpu", type=int, help="Pin both implementations to this logical CPU (Linux)")
@@ -195,8 +199,8 @@ def main():
     args = parser.parse_args()
     if not args.list and args.before is None:
         parser.error("--before is required")
-    if args.blocks < 10 or args.burn_in_seconds < 3 or args.cooldown_seconds < 3:
-        parser.error("Require >=10 blocks, >=3s burn-in per run and >=3s cooldown")
+    if args.blocks < 10 or args.burn_in_ms < 10 or args.cooldown_seconds < 3:
+        parser.error("Require >=10 blocks, >=10ms burn-in per run and >=3s cooldown")
     if not 1 <= args.block <= 2048:
         parser.error("--block must be 1..2048")
     if args.cpu is not None:
@@ -224,17 +228,17 @@ def main():
         names = [name for name in names if not args.case or any(name.startswith(p) for p in args.case)]
         if not names:
             parser.error("No matching cases")
-        conditions = dict(schema=3, suite_sha256=hashlib.sha256(harness).hexdigest(),
+        conditions = dict(schema=4, suite_sha256=hashlib.sha256(harness).hexdigest(),
                           rustc=capture("rustc", "--version", "--verbose"), flags=FLAGS,
                           platform=platform.platform(), cpu=cpu,
                           affinity=sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
                           python=platform.python_version(), numpy=np.__version__, scipy=scipy.__version__,
-                          rate=args.rate, buffer=args.block, seconds=args.seconds, warmup_seconds=2,
-                          blocks=args.blocks, burn_in_seconds=args.burn_in_seconds,
+                          rate=args.rate, buffer=args.block, audio_seconds=args.audio_seconds, preparation_audio_seconds=2,
+                          blocks=args.blocks, burn_in_ms=args.burn_in_ms, minimum_burn_in_cycles=1,
                           cooldown_seconds=args.cooldown_seconds, seed=seed, cases=names,
                           alternative="two-sided", alpha=ALPHA, correction="holm")
         blocks = run_blocks(names, lambda side, name: measure(binaries[side], name, args.rate, args.block,
-                                                             args.seconds, args.burn_in_seconds),
+                                                             args.audio_seconds, args.burn_in_ms),
                             args.blocks, args.cooldown_seconds, seed)
     results = analyze(blocks, names)
     args.output.parent.mkdir(parents=True, exist_ok=True)

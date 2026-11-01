@@ -480,16 +480,16 @@ fn main() {
         }
         return;
     }
-    assert_eq!(args.len(), 6, "usage: standard RATE BUFFER SECONDS CASE BURN_IN_SECONDS");
+    assert_eq!(args.len(), 6, "usage: standard RATE BUFFER AUDIO_SECONDS CASE BURN_IN_MS");
     let rate: usize = args[1].parse().unwrap();
     let block: usize = args[2].parse().unwrap();
     let seconds: usize = args[3].parse().unwrap();
-    let burn_in: u64 = args[5].parse().unwrap();
+    let burn_in_ms: u64 = args[5].parse().unwrap();
     assert!(
         [44100, 48000, 96000].contains(&rate)
             && (1..=2048).contains(&block)
             && (4..=60).contains(&seconds)
-            && burn_in >= 3
+            && burn_in_ms >= 10
     );
     let case = cases.iter().find(|c| c.name == args[4]).expect("unknown case");
     let warmup = 2 * rate;
@@ -497,22 +497,26 @@ fn main() {
     let scenario = scenario(case, rate, block, warmup + length);
     let mut warm = vec![[0.; 2]; warmup];
     let mut output = vec![[0.; 2]; length];
-    // 各実装・各ケースの実行ごとに、実時間でDSPを動かしてburn-inする。
+    // 演奏全体を最低1周処理して、測定区間で使う処理経路もウォームアップする。
     let burn_start = Instant::now();
-    while burn_start.elapsed() < Duration::from_secs(burn_in) {
+    let mut burn_in_cycles = 0;
+    let mut playback = loop {
         let mut playback = Playback::new(&scenario, rate);
         playback.generate_samples(&scenario, block, &mut warm);
+        // 最終回の音源準備もburn-inに含め、常に同じ演奏位置から計測する。
+        if burn_in_cycles > 0 && burn_start.elapsed() >= Duration::from_millis(burn_in_ms) {
+            break playback;
+        }
         playback.generate_samples(&scenario, block, &mut output);
-    }
+        burn_in_cycles += 1;
+    };
     let burn_in_ns = burn_start.elapsed().as_nanos();
-    // burn-inの長さによらず、同じ演奏位置・履歴から計測を開始する。
-    let mut playback = Playback::new(&scenario, rate);
-    playback.generate_samples(&scenario, block, &mut warm);
     let start = Instant::now();
     playback.generate_samples(&scenario, block, &mut output);
-    let ns = start.elapsed().as_secs_f64() * 1e9 / length as f64;
+    let measurement_ns = start.elapsed().as_nanos();
+    let ns = measurement_ns as f64 / length as f64;
     let (hash, peak, rms) = fingerprint(&output);
     assert_eq!(matches!(case.phrase, Phrase::Idle), peak == 0.0, "unexpected silence/nonzero");
-    println!("case,ns,burn_in_ns,fingerprint,peak,rms");
-    println!("{},{ns:.6},{burn_in_ns},{hash:016x},{peak:.12},{rms:.12}", case.name);
+    println!("case,ns,burn_in_ns,burn_in_cycles,measurement_ns,fingerprint,peak,rms");
+    println!("{},{ns:.6},{burn_in_ns},{burn_in_cycles},{measurement_ns},{hash:016x},{peak:.12},{rms:.12}", case.name);
 }

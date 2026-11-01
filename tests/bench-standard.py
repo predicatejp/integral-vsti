@@ -102,16 +102,20 @@ class PairedTests(unittest.TestCase):
             orders.add(tuple(pairs))
         self.assertGreater(len(orders), 1)
 
-    def test_worker_burn_in_is_validated(self):
-        header = "case,ns,burn_in_ns,fingerprint,peak,rms\n"
+    def test_worker_burn_in_and_full_pass_are_validated(self):
+        header = "case,ns,burn_in_ns,burn_in_cycles,measurement_ns,fingerprint,peak,rms\n"
         measure = runner["measure"]
-        for ns in [2_999_999_999, 3_000_000_000]:
-            with patch.dict(measure.__globals__, capture=lambda *args: header + f"first,100,{ns},1234,1,0.5\n"):
-                if ns < 3_000_000_000:
+        for ns, cycles, duration in [(9_999_999, 1, 19200000), (10_000_000, 0, 19200000),
+                                      (10_000_000, 1, 0), (10_000_000, 1, 19200000)]:
+            row = header + f"first,100,{ns},{cycles},{duration},1234,1,0.5\n"
+            with patch.dict(measure.__globals__, capture=lambda *args: row):
+                if ns < 10_000_000 or cycles < 1 or duration <= 0:
                     with self.assertRaises(ValueError):
-                        measure(Path("unused"), "first", 48000, 256, 4, 3)
+                        measure(Path("unused"), "first", 48000, 256, 4, 10)
                 else:
-                    self.assertEqual(measure(Path("unused"), "first", 48000, 256, 4, 3)["ns"], 100)
+                    result = measure(Path("unused"), "first", 48000, 256, 4, 10)
+                    self.assertEqual(result["ns"], 100)
+                    self.assertEqual(result["measurement_ns"], 19200000)
 
     def test_report_does_not_reject_small_nonsignificant_increase(self):
         row = runner["paired_statistics"]([100.0] * 10, [100 + i - 4.4 for i in range(10)])
