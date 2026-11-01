@@ -27,7 +27,10 @@ mod voice;
 #[path = "../src/volume.rs"]
 mod volume;
 
-use std::{hint::black_box, time::Instant};
+use std::{
+    hint::black_box,
+    time::{Duration, Instant},
+};
 use voice::Note;
 
 // 設定はUIの初期値から独立させ、新パラメーターの追加時には明示的に見直す。
@@ -469,6 +472,7 @@ fn fingerprint(samples: &[[f64; 2]]) -> (u64, f64, f64) {
     (hash, peak, (sum / (samples.len() * 2) as f64).sqrt())
 }
 fn main() {
+    let startup = Instant::now();
     let args: Vec<_> = std::env::args().collect();
     let cases = cases();
     if args.get(1).is_some_and(|a| a == "--list") {
@@ -479,57 +483,80 @@ fn main() {
     }
     assert_eq!(
         args.len(),
-        6,
-        "usage: standard RATE BLOCK ROUNDS SECONDS CASE_PREFIX"
+        8,
+        "usage: standard RATE BLOCK ROUNDS SECONDS CASE_PREFIX BURN_IN_SECONDS INTERVAL_SECONDS"
     );
     let rate: usize = args[1].parse().unwrap();
     let block: usize = args[2].parse().unwrap();
     let rounds: usize = args[3].parse().unwrap();
     let seconds: usize = args[4].parse().unwrap();
+    let burn_in: u64 = args[6].parse().unwrap();
+    let interval: u64 = args[7].parse().unwrap();
     assert!(
         [44100, 48000, 96000].contains(&rate)
             && (1..=2048).contains(&block)
-            && (3..=31).contains(&rounds)
-            && rounds % 2 == 1
+            && (10..=100).contains(&rounds)
             && (4..=60).contains(&seconds)
+            && burn_in >= 30
+            && interval >= 1
     );
     let warmup = 2 * rate;
     let length = seconds * rate;
-    println!("case,min_ns,median_ns,max_ns,fingerprint,peak,rms");
-    let mut matched = 0;
-    for case in cases.iter().filter(|c| c.name.starts_with(&args[5])) {
-        matched += 1;
-        let scenario = scenario(case, rate, block, warmup + length);
-        let mut warm = vec![[0.; 2]; warmup];
-        let mut output = vec![[0.; 2]; length];
-        let mut times = Vec::with_capacity(rounds);
-        let mut reference = None;
-        for _ in 0..rounds {
-            let mut playback = Playback::new(&scenario, rate);
-            playback.generate_samples(&scenario, block, &mut warm);
+    let cases: Vec<_> = cases.iter().filter(|c| c.name.starts_with(&args[5])).collect();
+    assert!(!cases.is_empty(), "no matching cases");
+    let scenarios: Vec<_> = cases
+        .iter()
+        .map(|case| scenario(case, rate, block, warmup + length))
+        .collect();
+    let mut warm = vec![[0.; 2]; warmup];
+    let mut output = vec![[0.; 2]; length];
+    let mut references = vec![None; cases.len()];
+    let mut times = vec![0.; cases.len()];
+
+    // 音声の秒数ではなく実時間でDSPを動かす。準備時間やsleepはburn-inに数えない。
+    eprintln!("Burn-in: at least {burn_in}s of DSP processing");
+    let burn_start = Instant::now();
+    while burn_start.elapsed() < Duration::from_secs(burn_in) {
+        for scenario in &scenarios {
+            let mut playback = Playback::new(scenario, rate);
+            playback.generate_samples(scenario, block, &mut warm);
+            playback.generate_samples(scenario, block, &mut output);
+        }
+    }
+    println!("trial,started_ns,finished_ns,case,ns,fingerprint,peak,rms");
+    for trial in 0..rounds {
+        if trial > 0 {
+            std::thread::sleep(Duration::from_secs(interval));
+        }
+        eprintln!("Trial {}/{rounds}", trial + 1);
+        let started = startup.elapsed().as_nanos();
+        for (i, scenario) in scenarios.iter().enumerate() {
+            let mut playback = Playback::new(scenario, rate);
+            // 待機後にも同じ演奏位置・履歴から計測を開始する。
+            playback.generate_samples(scenario, block, &mut warm);
             let start = Instant::now();
-            playback.generate_samples(&scenario, block, &mut output);
-            times.push(start.elapsed().as_secs_f64() * 1e9 / length as f64);
+            playback.generate_samples(scenario, block, &mut output);
+            times[i] = start.elapsed().as_secs_f64() * 1e9 / length as f64;
             let check = fingerprint(&output);
             assert_eq!(
-                matches!(case.phrase, Phrase::Idle),
+                matches!(cases[i].phrase, Phrase::Idle),
                 check.1 == 0.0,
                 "unexpected silence/nonzero"
             );
-            if let Some(old) = reference {
+            if let Some(old) = references[i] {
                 assert_eq!(check, old, "non-reproducible audio");
             }
-            reference = Some(check);
+            references[i] = Some(check);
         }
-        times.sort_by(f64::total_cmp);
-        let (hash, peak, rms) = reference.unwrap();
-        println!(
-            "{},{:.3},{:.3},{:.3},{hash:016x},{peak:.12},{rms:.12}",
-            case.name,
-            times[0],
-            times[rounds / 2],
-            times[rounds - 1]
-        );
+        let finished = startup.elapsed().as_nanos();
+        for (i, case) in cases.iter().enumerate() {
+            let (hash, peak, rms) = references[i].unwrap();
+            println!(
+                "{},{started},{finished},{},{:.3},{hash:016x},{peak:.12},{rms:.12}",
+                trial + 1,
+                case.name,
+                times[i],
+            );
+        }
     }
-    assert!(matched > 0, "no matching cases");
 }
