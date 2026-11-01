@@ -1,7 +1,9 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use crate::distortion::DistortionParameters;
 use crate::oscillator::{PanningGains, panning_gains};
+use crate::oversampling::{Downsampler, Mode};
 use crate::parameters;
 use crate::voice::{Note, Voice};
 
@@ -22,18 +24,31 @@ pub struct SynthesizerState {
     panning_gains: PanningGains,
     /// ユニゾンを使わないOsc2/3の共通Pan係数。
     mono_gains: [f64; 2],
+    /// 現在の倍率と、GUI／ホストが指定した切り替え先。
+    oversampling: Mode,
+    requested_oversampling: Mode,
+    /// 32サンプルのfade-out、136の履歴充填、32のfade-inの残り。
+    transition: u16,
+    /// 発音前・停止中の設定を即時反映するための処理開始フラグ。
+    started: bool,
+    /// 全Voiceの加算後に1個だけ置く間引き器。x1も遅延を揃える。
+    downsampler: Downsampler,
+    /// 現在のクリップ設定。線形Gainは設定変更時に計算する。
+    distortion: DistortionParameters,
+    /// 次のホストサンプル境界のGain/Mix正規化値。内部時刻の補間用。
+    distortion_end: [f64; 2],
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
 pub struct Synthesizer {
     /// このコンポーネントの内部状態。
-    state: SynthesizerState,
+    state: Box<SynthesizerState>,
 }
 
 impl Synthesizer {
     pub fn new() -> Self {
         Self {
-            state: SynthesizerState {
+            state: Box::new(SynthesizerState {
                 voices: std::array::from_fn(|_| Voice::new()),
                 next_oscillator_id: 0,
                 polyphony: 1,
@@ -42,7 +57,14 @@ impl Synthesizer {
                 master_gain: 1.0,
                 panning_gains: [[1.0; 2]; 7],
                 mono_gains: [1.0; 2],
-            },
+                oversampling: Mode::X1,
+                requested_oversampling: Mode::X1,
+                transition: 0,
+                started: false,
+                downsampler: Downsampler::new(),
+                distortion: parameters::distortion(&parameters::defaults()),
+                distortion_end: [0.0, 1.0],
+            }),
         }
     }
 
@@ -63,6 +85,14 @@ impl Synthesizer {
             {
                 self.state.parameters = values;
                 return true;
+            }
+        }
+        if values[34] != self.state.parameters[34] {
+            self.state.requested_oversampling =
+                parameters::OVERSAMPLING_MODES[parameters::to_plain(34, values[34]) as usize];
+            if !self.state.started {
+                self.state.oversampling = self.state.requested_oversampling;
+                self.reset_oversampling();
             }
         }
         let previous = self.state.parameters;
@@ -151,6 +181,8 @@ impl Synthesizer {
         }
         if values[31..34] != previous[31..34] {
             let distortion = parameters::distortion(&values);
+            self.state.distortion = distortion;
+            self.state.distortion_end = [values[32], values[33]];
             for voice in &mut self.state.voices {
                 voice.set_distortion(distortion);
             }
@@ -182,7 +214,23 @@ impl Synthesizer {
         }
     }
 
+    fn reset_oversampling(&mut self) {
+        self.state.downsampler.reset();
+        for voice in &mut self.state.voices {
+            voice.reset_oversampling();
+        }
+    }
+
+    /// キューの既知の線分から得た次境界の値。未提供の未来を推測しない。
+    pub fn set_distortion_interval(&mut self, end: [f64; 2]) {
+        self.state.distortion_end = end;
+    }
+
     pub fn stop(&mut self) {
+        self.state.downsampler.reset();
+        self.state.started = false;
+        self.state.transition = 0;
+        self.state.oversampling = self.state.requested_oversampling;
         for voice in &mut self.state.voices {
             voice.stop();
         }
@@ -197,6 +245,64 @@ impl Synthesizer {
     }
 
     pub fn generate_sample(&mut self) -> [f64; 2] {
+        self.state.started = true;
+        if self.state.transition == 0
+            && self.state.oversampling != self.state.requested_oversampling
+        {
+            self.state.transition = 200;
+        }
+        if self.state.transition == 168 {
+            self.state.oversampling = self.state.requested_oversampling;
+            self.reset_oversampling();
+        }
+        let mode = self.state.oversampling;
+        let mut sum = [[0.0; 2]; 4];
+        if mode == Mode::X1 {
+            sum[0] = self.mix_sample();
+        } else {
+            let count = mode.factor();
+            let mut distortion = [self.state.distortion; 4];
+            let start = [self.state.parameters[32], self.state.parameters[33]];
+            if start != self.state.distortion_end {
+                for (i, p) in distortion.iter_mut().enumerate().take(count).skip(1) {
+                    let f = i as f64 / count as f64;
+                    p.gain = 10.0_f64.powf(
+                        (start[0] + (self.state.distortion_end[0] - start[0]) * f) * 48.0 / 20.0,
+                    );
+                    p.mix = start[1] + (self.state.distortion_end[1] - start[1]) * f;
+                }
+            }
+            for voice in &mut self.state.voices[..self.state.polyphony] {
+                let samples = voice.generate_oversampled_samples(
+                    self.state.sample_rate,
+                    &self.state.panning_gains,
+                    &self.state.mono_gains,
+                    mode,
+                    &distortion,
+                );
+                for i in 0..count {
+                    sum[i][0] += samples[i][0];
+                    sum[i][1] += samples[i][1];
+                }
+            }
+            for sample in &mut sum[..count] {
+                *sample = sample.map(|x| x * self.state.master_gain);
+            }
+        }
+        let out = self.state.downsampler.process_sample(sum, mode);
+        let remaining = self.state.transition;
+        let gain = match remaining {
+            0 => 1.0,
+            1..=32 => (32 - remaining) as f64 / 32.0,
+            33..=168 => 0.0,
+            _ => (remaining - 169) as f64 / 32.0,
+        };
+        self.state.transition = remaining.saturating_sub(1);
+        out.map(|x| x * gain)
+    }
+
+    /// x1の加算・Master適用。固定遅延の前の処理経路。
+    fn mix_sample(&mut self) -> [f64; 2] {
         let mut sum = [0.0; 2];
         for voice in &mut self.state.voices[..self.state.polyphony] {
             let sample = voice.generate_sample(
@@ -243,7 +349,7 @@ mod tests {
         assert_eq!(synth.active_voice_count(), 0);
         for id in 0..33 {
             assert!(synth.note_on(note(id, 0, 60), 0.0, 1.0));
-            synth.generate_sample();
+            synth.mix_sample();
             assert_eq!(synth.active_voice_count(), (id + 1).min(32) as u32);
         }
         // 上書きされた旧ノートのOffは新しいノートを消さない。
@@ -253,10 +359,10 @@ mod tests {
             synth.note_off(note(id, 0, 60));
         }
         for _ in 0..48 {
-            synth.generate_sample();
+            synth.mix_sample();
             assert_eq!(synth.active_voice_count(), 32);
         }
-        synth.generate_sample();
+        synth.mix_sample();
         assert_eq!(synth.active_voice_count(), 0);
         for id in 0..32 {
             synth.note_on(note(id, 0, 60), 0.0, 1.0);
@@ -269,7 +375,7 @@ mod tests {
         values[8] = 1.0;
         synth.set_parameters(values);
         assert_eq!(synth.active_voice_count(), 0);
-        synth.generate_sample();
+        synth.mix_sample();
         assert_eq!(synth.active_voice_count(), 0);
     }
 
@@ -295,10 +401,10 @@ mod tests {
                     assert!(synth.note_on(note(id, 0, 127), 0.0, 1.0));
                 }
                 for _ in 0..33 {
-                    assert!(synth.generate_sample().iter().all(|x| x.is_finite()));
+                    assert!(synth.mix_sample().iter().all(|x| x.is_finite()));
                 }
                 synth.stop();
-                assert_eq!(synth.generate_sample(), [0.0; 2]);
+                assert_eq!(synth.mix_sample(), [0.0; 2]);
             }
         }
     }
@@ -336,7 +442,7 @@ mod tests {
                                 expected[0] += gain * angle.cos();
                                 expected[1] += gain * angle.sin();
                             }
-                            let actual = synth.generate_sample();
+                            let actual = synth.mix_sample();
                             for ch in 0..2 {
                                 assert!(
                                     (actual[ch] - expected[ch]).abs() < polyphony as f64 * 1e-6
@@ -350,7 +456,7 @@ mod tests {
             values[20] = 0.43;
             values[21] = 0.31;
             synth.set_parameters(values);
-            assert_eq!(synth.generate_sample(), [0.0; 2]);
+            assert_eq!(synth.mix_sample(), [0.0; 2]);
             // 保存復元と同じ、発音前の設定配送が新しい全枠へ適用される。
             let mut restored = Synthesizer::new();
             restored.set_sample_rate(48000.0);
@@ -359,13 +465,13 @@ mod tests {
                 synth.note_on(note(id as i32, 0, 0), 0.0, 1.0);
                 restored.note_on(note(id as i32, 0, 0), 0.0, 1.0);
             }
-            assert_eq!(synth.generate_sample(), restored.generate_sample());
+            assert_eq!(synth.mix_sample(), restored.mix_sample());
         }
     }
 
     #[test]
     fn individual_parameter_updates_reach_current_and_future_voices() {
-        for index in (0..parameters::COUNT).filter(|&i| i != 8 && i != 12) {
+        for index in (0..parameters::COUNT).filter(|&i| i != 8 && i != 12 && i != 34) {
             for value in [0.0, 1.0] {
                 for count in [1, 32] {
                     let mut synth = Synthesizer::new();
@@ -425,7 +531,7 @@ mod tests {
                             &synth.state.mono_gains,
                         );
                         let expected = sample.map(|s| (0..count).map(|_| s).sum::<f64>() * gain);
-                        assert_eq!(synth.generate_sample(), expected, "parameter {index}");
+                        assert_eq!(synth.mix_sample(), expected, "parameter {index}");
                     }
                 }
             }
@@ -496,14 +602,13 @@ mod tests {
                     synth.set_parameters(values);
                     references[1].stop();
                 }
-                let expected: f64 = references.iter_mut().map(|s| s.generate_sample()[0]).sum();
+                let expected: f64 = references.iter_mut().map(|s| s.mix_sample()[0]).sum();
                 assert!(
-                    (synth.generate_sample()[0] - expected * 10.0_f64.powf(db / 20.0)).abs()
-                        < 1e-12
+                    (synth.mix_sample()[0] - expected * 10.0_f64.powf(db / 20.0)).abs() < 1e-12
                 );
             }
             synth.stop();
-            assert_eq!(synth.generate_sample()[0], 0.0);
+            assert_eq!(synth.mix_sample()[0], 0.0);
         }
     }
 
@@ -517,18 +622,18 @@ mod tests {
             }
             assert_eq!(synth.state.next_oscillator_id, 0);
             // 全枠の初回サンプルは矩形波の正側。音数による音量補正はしない。
-            assert!((synth.generate_sample()[0] - 0.5 * count as f64).abs() < 1e-12);
+            assert!((synth.mix_sample()[0] - 0.5 * count as f64).abs() < 1e-12);
             assert!(synth.note_on(note(100, 0, 100), 0.0, 0.5));
             synth.note_off(note(0, 0, 60)); // 上書き済みのノートでは新しい音を消さない。
             assert!(synth.state.voices[0].state.gate);
-            assert!((synth.generate_sample()[0] - (0.5 * count as f64 - 0.25)).abs() < 1e-12);
+            assert!((synth.mix_sample()[0] - (0.5 * count as f64 - 0.25)).abs() < 1e-12);
             let next = synth.state.next_oscillator_id;
             synth.note_off(note(100, 0, 100));
             assert_eq!(synth.state.next_oscillator_id, next);
             for id in 1..count {
                 synth.note_off(note(id as i32, 0, 60 + id as i16));
             }
-            assert_eq!(synth.generate_sample()[0], 0.0);
+            assert_eq!(synth.mix_sample()[0], 0.0);
             assert!(!synth.note_on(note(200, 16, 60), 0.0, 1.0));
             assert!(!synth.note_on(note(200, 0, 60), f32::MAX, 1.0));
             assert_eq!(synth.state.next_oscillator_id, next);
@@ -578,8 +683,8 @@ mod tests {
                     single.stop();
                 }
             }
-            let expected: f64 = references.iter_mut().map(|s| s.generate_sample()[0]).sum();
-            assert!((synth.generate_sample()[0] - expected).abs() < 1e-12);
+            let expected: f64 = references.iter_mut().map(|s| s.mix_sample()[0]).sum();
+            assert!((synth.mix_sample()[0] - expected).abs() < 1e-12);
         }
     }
 
@@ -589,18 +694,18 @@ mod tests {
         for id in 0..3 {
             synth.note_on(note(id, 0, 60), 0.0, 1.0);
         }
-        assert_eq!(synth.generate_sample()[0], 1.5);
+        assert_eq!(synth.mix_sample()[0], 1.5);
         let mut values = synth.state.parameters;
         values[8] = parameters::to_normalized(8, 2.0);
         synth.set_parameters(values);
         assert_eq!(synth.state.next_oscillator_id, 1); // 3 % 2
-        assert_eq!(synth.generate_sample()[0], 1.0);
+        assert_eq!(synth.mix_sample()[0], 1.0);
         values[8] = parameters::to_normalized(8, 4.0);
         synth.set_parameters(values);
-        assert_eq!(synth.generate_sample()[0], 1.0); // 除外したノートは復活しない。
+        assert_eq!(synth.mix_sample()[0], 1.0); // 除外したノートは復活しない。
         synth.note_on(note(4, 0, 60), 0.0, 1.0); // 1番を上書き。
         synth.note_on(note(5, 0, 60), 0.0, 1.0); // 2番を再使用。
-        assert_eq!(synth.generate_sample()[0], 1.5);
+        assert_eq!(synth.mix_sample()[0], 1.5);
         // サンプル処理を挟まず減少→増加→再割り当てしても古い振幅を引き継がない。
         values[8] = 0.0;
         synth.set_parameters(values);
@@ -609,9 +714,9 @@ mod tests {
         synth.set_parameters(values);
         synth.note_on(note(6, 0, 60), 0.0, 1.0);
         synth.note_on(note(7, 0, 60), 0.0, 1.0);
-        assert_eq!(synth.generate_sample()[0], 0.5);
+        assert_eq!(synth.mix_sample()[0], 0.5);
         synth.stop();
-        assert_eq!(synth.generate_sample()[0], 0.0);
+        assert_eq!(synth.mix_sample()[0], 0.0);
     }
 
     #[test]
@@ -625,15 +730,15 @@ mod tests {
         ] {
             synth.note_on(n, 0.0, 1.0);
         }
-        assert_eq!(synth.generate_sample()[0], 2.0);
+        assert_eq!(synth.mix_sample()[0], 2.0);
         synth.note_off(note(1, 0, 60));
-        assert_eq!(synth.generate_sample()[0], 1.5);
+        assert_eq!(synth.mix_sample()[0], 1.5);
         synth.note_off(note(-1, 2, 60)); // 別チャンネルは無関係。
-        assert_eq!(synth.generate_sample()[0], 1.5);
+        assert_eq!(synth.mix_sample()[0], 1.5);
         synth.note_off(note(-1, 1, 60)); // IDなし同音の全一致をrelease。
-        assert_eq!(synth.generate_sample()[0], 0.5);
+        assert_eq!(synth.mix_sample()[0], 0.5);
         synth.note_off(note(2, 0, 60));
-        assert_eq!(synth.generate_sample()[0], 0.0);
+        assert_eq!(synth.mix_sample()[0], 0.0);
         assert_eq!(synth.state.next_oscillator_id, 0);
     }
 
@@ -663,11 +768,11 @@ mod tests {
                     assert!(synth.note_on(note(1, 0, 69), 0.0, velocity));
                     // attack/decayが終わったsustain区間のRMSを測る。
                     for _ in 0..(f64::from(rate) * 0.003).ceil() as usize {
-                        synth.generate_sample();
+                        synth.mix_sample();
                     }
                     let mut energy = 0.0;
                     for _ in 0..samples {
-                        let sample = synth.generate_sample()[0];
+                        let sample = synth.mix_sample()[0];
                         assert!(sample.is_finite() && sample.abs() <= 1.0);
                         energy += sample * sample;
                     }
@@ -679,10 +784,10 @@ mod tests {
                     );
                     synth.note_off(note(1, 0, 69));
                     for _ in 0..(f64::from(rate) * 0.002).ceil() as usize {
-                        synth.generate_sample();
+                        synth.mix_sample();
                     }
                     for _ in 0..8 {
-                        assert_eq!(synth.generate_sample()[0], 0.0);
+                        assert_eq!(synth.mix_sample()[0], 0.0);
                     }
                 }
             }
@@ -696,7 +801,7 @@ mod tests {
         synth.state.voices[0].set_oscillator(0, Waveform::Square, 1.0, 1.0);
         synth.note_on(note(1, 0, 69), 0.0, 1.0);
         for i in 0..5 {
-            assert!((synth.generate_sample()[0].abs() - 0.05 * f64::from(i)).abs() < 1e-12);
+            assert!((synth.mix_sample()[0].abs() - 0.05 * f64::from(i)).abs() < 1e-12);
         }
         // attack中の0.25から、異なるベロシティの目標0.4まで10msで移行。
         synth.note_on(note(2, 0, 81), 0.0, 0.8);
@@ -704,26 +809,25 @@ mod tests {
         let peak = 0.5 * f64::from(0.8_f32);
         for i in 0..=10 {
             let expected = 0.25 + (peak - 0.25) * f64::from(i) / 10.0;
-            assert!((synth.generate_sample()[0].abs() - expected).abs() < 1e-12);
+            assert!((synth.mix_sample()[0].abs() - expected).abs() < 1e-12);
         }
         synth.note_off(note(2, 0, 81));
         let start = peak * 0.997; // decayを1ms進めた位置。
         for i in 0..=100 {
             assert!(
-                (synth.generate_sample()[0].abs() - start * (1.0 - f64::from(i) / 100.0)).abs()
-                    < 1e-12
+                (synth.mix_sample()[0].abs() - start * (1.0 - f64::from(i) / 100.0)).abs() < 1e-12
             );
         }
-        assert_eq!(synth.generate_sample()[0], 0.0);
+        assert_eq!(synth.mix_sample()[0], 0.0);
         synth.note_on(note(3, 0, 69), 0.0, 1.0);
-        assert_eq!(synth.generate_sample()[0], 0.0);
-        synth.generate_sample();
+        assert_eq!(synth.mix_sample()[0], 0.0);
+        synth.mix_sample();
         // stopの直後、サンプル処理前にNote Onが来ても古い音量を引き継がない。
         synth.stop();
         synth.note_on(note(4, 0, 69), 0.0, 1.0);
-        assert_eq!(synth.generate_sample()[0], 0.0);
+        assert_eq!(synth.mix_sample()[0], 0.0);
         synth.stop();
-        assert_eq!(synth.generate_sample()[0], 0.0);
+        assert_eq!(synth.mix_sample()[0], 0.0);
     }
 
     #[test]
@@ -733,7 +837,7 @@ mod tests {
         synth.state.voices[0].set_oscillator(0, Waveform::Square, 1.0, 1.0);
         synth.note_on(note(-1, 2, 69), 0.0, 1.0);
         for _ in 0..5 {
-            synth.generate_sample();
+            synth.mix_sample();
         }
         synth.note_off(note(-1, 3, 69));
         synth.note_off(note(-1, 2, 70));
@@ -741,12 +845,155 @@ mod tests {
         synth.note_on(note(10, 0, 128), 0.0, 1.0);
         synth.note_on(note(10, 0, 69), f32::MAX, 1.0);
         synth.note_on(note(10, 0, 69), 0.0, f32::NAN);
-        assert!((synth.generate_sample()[0].abs() - 0.25).abs() < 1e-12);
+        assert!((synth.mix_sample()[0].abs() - 0.25).abs() < 1e-12);
         synth.note_off(note(-1, 2, 69));
-        assert!((synth.generate_sample()[0].abs() - 0.3).abs() < 1e-12);
+        assert!((synth.mix_sample()[0].abs() - 0.3).abs() < 1e-12);
         for _ in 0..100 {
-            synth.generate_sample();
+            synth.mix_sample();
         }
-        assert_eq!(synth.generate_sample()[0], 0.0);
+        assert_eq!(synth.mix_sample()[0], 0.0);
+    }
+}
+
+#[cfg(test)]
+mod oversampling_tests {
+    use super::*;
+    use crate::oversampling::LATENCY;
+
+    fn settings(mode: f64) -> [f64; parameters::COUNT] {
+        let mut p = parameters::sine_preset();
+        for (i, v) in [
+            (0, 3.0),
+            (6, 7.0),
+            (7, 25.0),
+            (8, 4.0),
+            (9, 2.0),
+            (10, 1200.0),
+            (12, 1.0),
+            (31, 1.0),
+            (32, 12.0),
+            (34, mode),
+        ] {
+            p[i] = parameters::to_normalized(i, v);
+        }
+        p
+    }
+    #[test]
+    fn native_output_has_fixed_latency_and_stop_clears_history() {
+        let mut synth = Synthesizer::new();
+        let mut native = Synthesizer::new();
+        let p = settings(0.0);
+        synth.set_parameters(p);
+        native.set_parameters(p);
+        let mut expected = std::collections::VecDeque::from(vec![[0.0; 2]; LATENCY]);
+        for n in 0..200 {
+            for s in [&mut synth, &mut native] {
+                if n == 0 || n == 7 {
+                    s.note_on(
+                        Note {
+                            id: n,
+                            channel: 0,
+                            pitch: 60 + n as i16,
+                        },
+                        0.0,
+                        1.0,
+                    );
+                }
+                if n == 60 {
+                    s.note_off(Note {
+                        id: 0,
+                        channel: 0,
+                        pitch: 60,
+                    });
+                }
+            }
+            expected.push_back(native.mix_sample());
+            assert_eq!(synth.generate_sample(), expected.pop_front().unwrap());
+        }
+        synth.stop();
+        for _ in 0..150 {
+            assert_eq!(synth.generate_sample(), [0.0; 2]);
+        }
+    }
+    #[test]
+    fn shared_decimator_matches_sum_of_independent_voice_pipelines() {
+        for mode in [1.0, 2.0] {
+            let mut synth = Synthesizer::new();
+            let p = settings(mode);
+            synth.set_parameters(p);
+            let mut references: [Synthesizer; 4] = std::array::from_fn(|_| {
+                let mut s = Synthesizer::new();
+                let mut p = p;
+                p[8] = 0.0;
+                s.set_parameters(p);
+                s
+            });
+            for (i, s) in references.iter_mut().enumerate() {
+                let note = Note {
+                    id: i as i32,
+                    channel: 0,
+                    pitch: 60 + i as i16,
+                };
+                s.note_on(note, 0.0, 1.0);
+                synth.note_on(note, 0.0, 1.0);
+            }
+            for n in 0..220 {
+                if n == 80 {
+                    let note = Note {
+                        id: 1,
+                        channel: 0,
+                        pitch: 61,
+                    };
+                    synth.note_off(note);
+                    references[1].note_off(note);
+                }
+                let expected = references
+                    .iter_mut()
+                    .map(|s| s.generate_sample())
+                    .fold([0.0; 2], |sum, x| [sum[0] + x[0], sum[1] + x[1]]);
+                let actual = synth.generate_sample();
+                for ch in 0..2 {
+                    assert!((actual[ch] - expected[ch]).abs() < 1e-12);
+                }
+            }
+        }
+    }
+    #[test]
+    fn live_switch_preserves_note_time_and_converges_to_the_requested_mode() {
+        for rate in [44100.0, 48000.0, 96000.0] {
+            let mut synth = Synthesizer::new();
+            synth.set_sample_rate(rate);
+            let mut p = settings(0.0);
+            synth.set_parameters(p);
+            synth.note_on(
+                Note {
+                    id: 1,
+                    channel: 0,
+                    pitch: 69,
+                },
+                0.0,
+                1.0,
+            );
+            for target in [1.0, 2.0, 0.0] {
+                for _ in 0..200 {
+                    synth.generate_sample();
+                }
+                p[34] = parameters::to_normalized(34, target);
+                synth.set_parameters(p);
+                for n in 0..200 {
+                    let out = synth.generate_sample();
+                    assert!(out.into_iter().all(f64::is_finite));
+                    if (32..168).contains(&n) {
+                        assert_eq!(out, [0.0; 2]);
+                    }
+                    assert_eq!(synth.active_voice_count(), 1);
+                }
+                assert_eq!(
+                    synth.state.oversampling,
+                    parameters::OVERSAMPLING_MODES[target as usize]
+                );
+                assert_eq!(synth.state.transition, 0);
+            }
+        }
     }
 }

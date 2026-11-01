@@ -14,6 +14,8 @@ mod filter;
 mod float_mode;
 #[path = "../src/oscillator.rs"]
 mod oscillator;
+#[path = "../src/oversampling.rs"]
+mod oversampling;
 #[path = "../src/parameters.rs"]
 mod parameters;
 #[path = "../src/random.rs"]

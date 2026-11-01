@@ -5,6 +5,7 @@ use crate::distortion::{self, DistortionParameters};
 use crate::envelope::{DEFAULT_ENVELOPE, Envelope, EnvelopeParameters};
 use crate::filter::{Filter, FilterParameters, FilterType};
 use crate::oscillator::{Oscillator, OscillatorInput, PanningGains, PhaseMode, Waveform};
+use crate::oversampling::{Mode, Upsampler};
 use crate::{parameters, volume};
 
 /// 全波形共通のvelocityが1のときの基準実効値（RMS）。
@@ -52,6 +53,8 @@ pub struct VoiceState {
     filter: Filter,
     /// フィルタ後に適用するクリップ方式・線形Gain・原音との混合率。
     distortion: DistortionParameters,
+    /// ディストーション直前の補間履歴。発振器・SVFはホストレートで動く。
+    upsampler: Upsampler,
     /// 選択中の応答と段数。Noneでは完全にバイパスする。
     filter_type: FilterType,
     /// ノート周波数に乗じる倍率。centからの換算は設定変更時に行う。
@@ -103,6 +106,7 @@ impl Voice {
                 note: None,
                 filter: Filter::new(),
                 distortion: parameters::distortion(&values),
+                upsampler: Upsampler::new(),
                 filter_type: parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize],
                 cutoff_ratio: 2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0),
                 resonance_q: parameters::to_plain(11, values[11]),
@@ -167,9 +171,14 @@ impl Voice {
         self.state.reset_generation = self.state.reset_generation.wrapping_add(1);
         self.state.note = None;
         self.state.filter.reset();
+        self.reset_oversampling();
         for input in &mut self.state.oscillator_inputs {
             input.active = false;
         }
+    }
+
+    pub fn reset_oversampling(&mut self) {
+        self.state.upsampler.reset();
     }
 
     pub fn set_distortion(&mut self, parameters: DistortionParameters) {
@@ -230,8 +239,36 @@ impl Voice {
         self.state.phase_depths = depths;
     }
 
-    /// Voice内のステレオ処理パイプライン。生成した信号をSynthesizerが加算する。
+    /// x1の処理経路。発振器とSVFの時間は全倍率で共通。
     pub fn generate_sample(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+    ) -> [f64; 2] {
+        let input = self.generate_filtered_sample(sample_rate, gains, mono_gains);
+        distortion::process_sample(input, &self.state.distortion)
+    }
+
+    /// 1ホストサンプル分を補間し、内部時刻ごとに歪ませる。
+    pub fn generate_oversampled_samples(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+        mode: Mode,
+        parameters: &[DistortionParameters; 4],
+    ) -> [[f64; 2]; 4] {
+        let input = self.generate_filtered_sample(sample_rate, gains, mono_gains);
+        let mut samples = self.state.upsampler.process_samples(input, mode);
+        for (sample, parameters) in samples[..mode.factor()].iter_mut().zip(parameters) {
+            *sample = distortion::process_sample(*sample, parameters);
+        }
+        samples
+    }
+
+    /// Voiceの3発振器・音量AHDSR・SVFまでをホストレートで処理する。
+    fn generate_filtered_sample(
         &mut self,
         sample_rate: f64,
         gains: &PanningGains,
@@ -306,7 +343,7 @@ impl Voice {
             sample_rate,
             1.0,
         );
-        distortion::process_sample(output, &self.state.distortion)
+        output
     }
 }
 

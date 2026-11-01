@@ -28,7 +28,7 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix",
+    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix", "OS",
 ];
 
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
@@ -487,7 +487,24 @@ impl Editor {
                     egui::vec2(width, KNOB_CELL.y),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                    self.knob(ui, index, selected[index], width);
+                    if index == 34 {
+                        let choice = egui::Rect::from_min_size(
+                            area.min + egui::vec2(GAP, 16.0),
+                            egui::vec2(width - GAP * 2.0, CHOICE_HEIGHT),
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(choice), |ui| {
+                            self.choice(ui, index, selected[index])
+                        });
+                        painter.text(
+                            egui::pos2(area.center().x, area.bottom() - 12.0),
+                            egui::Align2::CENTER_CENTER,
+                            "OS",
+                            egui::FontId::proportional(18.0),
+                            INK,
+                        );
+                    } else {
+                        self.knob(ui, index, selected[index], width);
+                    }
                 });
             }
         }
@@ -646,7 +663,7 @@ impl WindowHandler for Editor {
                 (
                     "Distortion",
                     &[31],
-                    &[&[32, 33][..]][..],
+                    &[&[32, 33, 34][..]][..],
                     [
                         center_x,
                         GAP + single_height + filter_height + GAP * 2.0,

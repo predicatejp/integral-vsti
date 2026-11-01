@@ -110,7 +110,7 @@ fn interfaces_share_identity_and_own_the_instance() {
         assert_eq!((component_table.unknown.release)(component), 1);
         // ファクトリーとComponentの参照を解放してもProcessorの所有参照は有効。
         assert_eq!((factory_table.unknown.release)(factory), 0);
-        assert_eq!((processor_table.get_latency_samples)(processor), 0);
+        assert_eq!((processor_table.get_latency_samples)(processor), 68);
         assert_eq!((processor_table.unknown.release)(processor), 0);
     }
 }
@@ -360,7 +360,7 @@ fn check_host_events(activate_events: bool) {
         assert_eq!((pt.process)(processor, &mut data), OK);
         let step = 1000.0 / setup.sample_rate / 10.0;
         let sine = |position: f64| (std::f64::consts::TAU * position / 128.0).sin();
-        assert!((*sample_ptr - 0.5 * step * std::f64::consts::SQRT_2 * sine(1.0)).abs() < 1e-14);
+        assert_eq!(*sample_ptr, 0.0);
         (*events_ptr).event.event_type = 1;
         (*events_ptr).event.payload = EventPayload {
             note_off: NoteOffEvent {
@@ -373,7 +373,7 @@ fn check_host_events(activate_events: bool) {
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
         let release_start = 0.5 * (2.0 * step - step * step);
-        assert!((*sample_ptr - release_start * std::f64::consts::SQRT_2 * sine(3.0)).abs() < 1e-14);
+        assert_eq!(*sample_ptr, 0.0);
         (*events_ptr).event.event_type = 0;
         (*events_ptr).event.payload = EventPayload {
             note_on: NoteOnEvent {
@@ -387,7 +387,24 @@ fn check_host_events(activate_events: bool) {
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
         let restart = release_start * (1.0 - 1000.0 / setup.sample_rate / 100.0);
-        assert!((*sample_ptr - restart * std::f64::consts::SQRT_2 * sine(5.0)).abs() < 1e-14);
+        assert_eq!(*sample_ptr, 0.0);
+        // 固定遅延後の5サンプルを検証。排出中も現在ノートの位相は68サンプル進む。
+        let expected = [
+            0.0,
+            0.0,
+            0.5 * step * std::f64::consts::SQRT_2 * sine(1.0),
+            release_start * std::f64::consts::SQRT_2 * sine(3.0),
+            restart * std::f64::consts::SQRT_2 * sine(5.0),
+        ];
+        data.input_events = ptr::null_mut();
+        data.input_parameter_changes = ptr::null_mut();
+        for n in 0..68 {
+            assert_eq!((pt.process)(processor, &mut data), OK);
+            let value = if n < 63 { 0.0 } else { expected[n - 63] };
+            assert!((*sample_ptr - value).abs() < 1e-14);
+        }
+        data.input_events = events_ptr.cast();
+        data.input_parameter_changes = ptr::from_mut(&mut bypass_changes).cast();
         assert_eq!((pt.set_processing)(processor, 0), OK);
         assert_eq!((ct.set_active)(component, 0), OK);
         // 明示的な無効化は再開しても維持され、届いたNote Onを処理しない。
@@ -410,15 +427,14 @@ fn check_host_events(activate_events: bool) {
         assert_eq!((pt.set_processing)(processor, 1), OK);
         assert_eq!((pt.process)(processor, &mut data), OK);
         let peak = 0.5 * step * std::f64::consts::SQRT_2;
-        for (sample, expected) in sample_ptr.cast::<[f64; 4]>().read().into_iter().zip([
+        let expected_sine = [
             0.0,
-            peak * sine(7.0),
-            2.0 * peak * sine(8.0),
-            3.0 * peak * sine(9.0),
-        ]) {
-            assert!((sample - expected).abs() < 1e-14);
-        }
-        assert_eq!((*data.outputs).silence_flags, 0);
+            peak * sine(75.0),
+            2.0 * peak * sine(76.0),
+            3.0 * peak * sine(77.0),
+        ];
+        assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0; 4]);
+        assert_eq!((*data.outputs).silence_flags, STEREO);
         // 借用キュー経由で矩形波へ変更し、Miriでも入れ子の生ポインターを検査する。
         let mut point = TestPoint {
             vtable: &POINT_TABLE,
@@ -433,14 +449,18 @@ fn check_host_events(activate_events: bool) {
         data.input_parameter_changes = ptr::from_mut(&mut changes).cast();
         data.input_events = ptr::null_mut();
         assert_eq!((pt.process)(processor, &mut data), OK);
-        for (sample, multiple) in sample_ptr
-            .cast::<[f64; 4]>()
-            .read()
-            .into_iter()
-            .zip([-4.0, -5.0, 6.0, 7.0])
-        {
-            // 矩形波の不連続な境界の符号はpowfの丸めに依存するため、実効振幅を比較する。
-            assert!((sample.abs() - (multiple * 0.5 * step).abs()).abs() < 1e-14);
+        assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0; 4]);
+        data.num_samples = 1;
+        data.input_parameter_changes = ptr::null_mut();
+        for n in 0..68 {
+            assert_eq!((pt.process)(processor, &mut data), OK);
+            if n < 60 {
+                assert_eq!(*sample_ptr, 0.0);
+            } else if n < 64 {
+                assert!((*sample_ptr - expected_sine[n - 60]).abs() < 1e-14);
+            } else {
+                assert!((sample_ptr.read().abs() - (n - 60) as f64 * 0.5 * step).abs() < 1e-14);
+            }
         }
         assert_eq!((pt.set_processing)(processor, 0), OK);
         data.num_samples = 0;

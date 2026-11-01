@@ -49,7 +49,7 @@
 - 音源方式・主要機能: 各3発振器を持つ1〜32個の独立Voiceによる多声音音源。サイン波・三角波・矩形波・ノコギリ波・ホワイトノイズに対応。既定はサイン波。音量・カットオフ用の独立した線形AHDSRエンベロープ。同一ノートの1〜7ボイスユニゾン。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
 - サンプルレートは44.1 kHz以上の有限値を受理し、範囲外はVST3の`setupProcessing`で拒否する。フィルタも同じ下限を検証し、カットオフは内部で20〜20,000 Hzにクランプする。
-- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・FMも公開する。Clipper type・Gain・Mixも公開する。eguiで34パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計35パラメーター）。
+- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・FMも公開する。Clipper type・Gain・Mix・Oversamplingも公開する。eguiで35パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計36パラメーター）。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。
 バス構成、最大同時発音数、サンプル精度、対応サンプルレート、MIDI機能、独自GUIの有無は、実装時に対応範囲を明記すること。
@@ -145,6 +145,8 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - GUIからの編集は `beginEdit` / `performEdit` / `endEdit` など規定の通知を使うこと。ホストからの値更新を再通知して循環させず、GUIを開かなくてもDSPへ更新が反映される構成にすること。
 
 - ディストーションは各Voiceのフィルタ直後で左右独立に適用する。Clipper typeはNone（初期値・全体バイパス）/Soft（tanh）/Hard（±1）。Gainは0〜48 dB（初期値0）、GUIは0.1 dB刻み。Mixは原音と処理音の線形混合で0〜100%（初期値100）、GUIは1%刻み。原音側へGainを掛けない。履歴を持たない計算モジュールとし、Gainの線形換算は設定変更時だけ行う。GUIはFilterの下に配置し、タイプは選択リスト、Gain・Mixは整数tickのノブとする。
+
+- DistortionのOSはx1／x2／x4の整数選択。各VoiceのSVF後で補間しGain・Clipper・Mixを適用、全Voice加算後に共有FIRで間引く。発振器・AHDSR・SVFはホストレートで進める。129タップと、x4用17タップの対称FIRを使い、全倍率の申告遅延を68サンプルに揃える。倍率変更は32サンプルのフェードアウト・136サンプルの履歴充填・32サンプルのフェードインとし、ノートの時間を継続する。履歴は初期化時に確保し、処理中に確保しない。
 
 ### 状態保存とGUI
 
