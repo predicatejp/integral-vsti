@@ -32,6 +32,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     auto* component = static_cast<IComponent*>(object);
     auto* controller = query<IEditController>(component, IEditController_iid);
     auto* processor = query<IAudioProcessor>(component, IAudioProcessor_iid);
+    LatencyReference<Sample> reference(processor);
     auto* units = query<IUnitInfo>(controller, IUnitInfo_iid);
     auto* identity = query<FUnknown>(units, FUnknown_iid);
     assert(identity == component);
@@ -60,7 +61,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(units->getUnitByBus(kEvent, kInput, 0, 16, id) == kResultFalse);
     assert(units->setUnitProgramData(0, 0, nullptr) == kNotImplemented);
     ParameterInfo info {};
-    assert(controller->getParameterInfo(34, info) == kResultOk && info.id == programId);
+    assert(controller->getParameterInfo(36, info) == kResultOk && info.id == programId);
     assert(info.unitId == unit.id && info.stepCount == list.programCount - 1);
     assert(info.flags == (ParameterInfo::kIsList | ParameterInfo::kIsProgramChange));
     assert(controller->getParamStringByValue(programId, 1.0, name) == kResultOk && std::u16string(name) == u"Sine");
@@ -71,13 +72,13 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(controller->setParamNormalized(programId, std::nan("")) == kInvalidArgument);
     assert(controller->setParamNormalized(programId, -1) == kInvalidArgument);
 
-    const std::array<double, 34> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,0,0,100};
+    const std::array<double, 36> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,0,0,100,0,0};
     ProgramHandler handler; handler.controller = controller;
     assert(controller->setComponentHandler(&handler) == kResultOk);
     assert(controller->setParamNormalized(waveformId, 1.0) == kResultOk);
     assert(controller->setParamNormalized(programId, 0.0) == kResultOk);
     assert(handler.calls == 1 && handler.refs == 1);
-    for (int32 i = 0; i < 31; ++i) {
+    for (int32 i = 0; i < 36; ++i) {
         assert(controller->getParameterInfo(i, info) == kResultOk);
         const auto plain = controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id));
         assert(plain == sine[i] || std::abs(plain - sine[i]) < 1e-10);
@@ -90,7 +91,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     StateStream saved;
     assert(component->getState(&saved) == kResultOk);
     assert(controller->setComponentState(&saved) == kResultOk);
-    for (int32 i = 0; i < 31; ++i) {
+    for (int32 i = 0; i < 36; ++i) {
         assert(controller->getParameterInfo(i, info) == kResultOk);
         const auto plain = controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id));
         assert(plain == sine[i] || std::abs(plain - sine[i]) < 1e-10);
@@ -117,7 +118,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
         double expected = i < 31 ? .5 : 0.0;
         if ((i >= 5 && i < 9) || (i >= 23 && i < 31))
             expected = .5 * std::sqrt(2.0) * std::sin(2 * std::acos(-1.0) * i * 440 / 48000.0);
-        assert(std::abs(left[i] - expected) < 3e-7 && left[i] == right[i]);
+        assert(std::abs(left[i] - reference.next(expected)) < 3e-7 && left[i] == right[i]);
     }
     // Programと個別変更の結果が現在のDSP設定と同値でも、保存値を一致させる。
     data.numSamples = 0; events.values.clear(); program.values.clear(); wave.values = {{0, .5}};
@@ -138,9 +139,10 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
         const auto db = i < 4 ? -12.0 * (i + 1) / 9 : -12.0 * (i - 4) / 4;
         const auto gain = std::pow(10.0, db / 20);
         const auto expected = .5 * std::sqrt(2.0) * std::sin(2 * std::acos(-1.0) * i * 440 / 48000.0) * gain;
-        assert(std::abs(left[i] - expected) < 3e-7 && left[i] == right[i]);
+        assert(std::abs(left[i] - reference.next(expected)) < 3e-7 && left[i] == right[i]);
     }
     changes.queues = {&wave, &program};
+    reference.flush();
     assert(processor->setProcessing(false) == kResultOk);
     assert(component->setActive(false) == kResultOk);
     data = ProcessData {}; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;

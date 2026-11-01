@@ -92,7 +92,7 @@ static PROCESSOR: ProcessorVTable = ProcessorVTable {
     set_bus_arrangements,
     get_bus_arrangement,
     can_process_sample_size,
-    get_latency_samples: zero,
+    get_latency_samples: latency_samples,
     setup_processing,
     set_processing,
     process,
@@ -732,6 +732,10 @@ unsafe extern "system" fn can_process_sample_size(_: This, size: i32) -> TResult
     }
 }
 
+unsafe extern "system" fn latency_samples(_: This) -> u32 {
+    crate::oversampling::LATENCY as u32
+}
+
 unsafe extern "system" fn zero(_: This) -> u32 {
     0
 }
@@ -1021,6 +1025,7 @@ fn apply_parameters(
     }
     let values = std::array::from_fn(|i| changes[i].value_at(offset));
     let changed = synth.set_parameters(values);
+    synth.set_distortion_gain_end(changes[32].value_between(f64::from(offset) + 1.0));
     if loaded {
         plugin.processor_parameters.store(values);
     } else if changed {

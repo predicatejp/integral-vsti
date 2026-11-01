@@ -11,7 +11,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 34;
+pub const COUNT: usize = 36;
 /// Osc1・Osc2・Osc3のVolume設定位置。
 pub const OSCILLATOR_VOLUMES: [usize; 3] = [22, 25, 28];
 
@@ -65,12 +65,27 @@ pub fn sine_preset() -> [f64; COUNT] {
         0.0,               // Clipper: None
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
+        0.0,               // Rate: x1
+        0.0,               // Smooth: ADAAなし
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
+pub const OVERSAMPLING_MODES: [crate::oversampling::Mode; 3] = [
+    crate::oversampling::Mode::X1,
+    crate::oversampling::Mode::X2,
+    crate::oversampling::Mode::X4,
+];
+pub const ADAA_ORDERS: [crate::distortion::AdaaOrder; 3] = [
+    crate::distortion::AdaaOrder::None,
+    crate::distortion::AdaaOrder::First,
+    crate::distortion::AdaaOrder::Second,
+];
+pub const ADAA_NAMES: [&str; 3] = ["None", "1st", "2nd"];
+pub const OVERSAMPLING_NAMES: [&str; 3] = ["x1", "x2", "x4"];
+
 pub const CLIPPER_TYPES: [ClipperType; 3] =
     [ClipperType::None, ClipperType::Soft, ClipperType::Hard];
-pub const CLIPPER_NAMES: [&str; 3] = ["None", "Soft (tanh)", "Hard"];
+pub const CLIPPER_NAMES: [&str; 3] = ["None", "Soft", "Hard"];
 
 pub const PHASE_MODES: [PhaseMode; 3] = [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random];
 pub const PHASE_NAMES: [&str; 3] = ["Keep", "Zero", "Random"];
@@ -142,6 +157,8 @@ pub const IDS: [u32; COUNT] = [
     0x43545950, // CTYP
     0x43474149, // CGAI
     0x434d4958, // CMIX
+    0x4f534d50, // OSMP
+    0x41444141, // ADAA
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -178,6 +195,8 @@ pub const NAMES: [&str; COUNT] = [
     "Clipper type",
     "Gain",
     "Mix",
+    "Rate",
+    "Smooth",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -186,6 +205,8 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         9 => &FILTER_NAMES,
         12 => &PHASE_NAMES,
         31 => &CLIPPER_NAMES,
+        34 => &OVERSAMPLING_NAMES,
+        35 => &ADAA_NAMES,
         _ => &[],
     }
 }
@@ -247,7 +268,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 35 | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=601（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
@@ -300,7 +321,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         9 => return (normalized * 7.0).floor().min(6.0),
         10 => return normalized * 12000.0 - 2400.0,
         11 => return 0.5 + normalized * 9.5,
-        12 | 31 => return (normalized * 3.0).floor().min(2.0),
+        12 | 31 | 34 | 35 => return (normalized * 3.0).floor().min(2.0),
         24 | 27 => return normalized * 4800.0 - 2400.0,
         19 => return normalized * 9600.0 - 4800.0,
         _ => {}
@@ -337,7 +358,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         9 => return plain.clamp(0.0, 6.0).round() / 6.0,
         10 => return (plain + 2400.0) / 12000.0,
         11 => return (plain - 0.5) / 9.5,
-        12 | 31 => return plain.clamp(0.0, 2.0).round() / 2.0,
+        12 | 31 | 34 | 35 => return plain.clamp(0.0, 2.0).round() / 2.0,
         24 | 27 => return (plain + 2400.0) / 4800.0,
         19 => return (plain + 4800.0) / 9600.0,
         _ => {}
@@ -366,7 +387,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         9 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
         10 => (-2400.0..=9600.0).contains(&plain),
         11 => (0.5..=10.0).contains(&plain),
-        12 | 31 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
+        12 | 31 | 34 | 35 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
         24 | 27 => (-2400.0..=2400.0).contains(&plain),
         19 => (-4800.0..=4800.0).contains(&plain),
         32 => (0.0..=48.0).contains(&plain),
@@ -378,7 +399,7 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
     } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(index, 6 | 8 | 9 | 12 | 31) {
+    } else if matches!(index, 6 | 8 | 9 | 12 | 31 | 34 | 35) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -421,6 +442,8 @@ pub fn defaults() -> [f64; COUNT] {
         0.0,               // Clipper: None
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
+        0.0,               // Rate: x1
+        0.0,               // Smooth: ADAAなし
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -585,10 +608,15 @@ impl<'a> ParameterPoints<'a> {
             self.previous = (at, value);
             self.advance();
         }
+        self.value_between(f64::from(offset))
+    }
+
+    /// value_atで現在の整数位置まで進めた後、その区間内の内部時刻を評価する。
+    pub fn value_between(&self, offset: f64) -> f64 {
         if self.interpolates
             && let Some((at, value)) = self.next
         {
-            let fraction = f64::from(offset - self.previous.0) / f64::from(at - self.previous.0);
+            let fraction = (offset - f64::from(self.previous.0)) / f64::from(at - self.previous.0);
             return self.previous.1 + (value - self.previous.1) * fraction;
         }
         self.previous.1
@@ -622,9 +650,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v14: 固定276バイト。波形番号u32と、その他の実単位f64を保持する。
+// v16: 固定292バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x0e\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x10\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -708,6 +736,25 @@ pub unsafe fn write_state(stream: This, values: [f64; COUNT]) -> TResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internal_sample_positions_interpolate_only_known_continuous_intervals() {
+        // SAFETY: ProcessDataは整数とnull許容の生ポインターだけを持つ。
+        let mut data: ProcessData = unsafe { std::mem::zeroed() };
+        data.num_samples = 8;
+        // SAFETY: dataにはホストポインターがなく、このスコープ中有効。
+        let mut points = unsafe { ParameterPoints::new(&data, 32, 0.2) };
+        points.previous = (0, 0.2);
+        points.next = Some((4, 1.0));
+        for (at, expected) in [(0.25, 0.25), (0.5, 0.3), (0.75, 0.35), (1.0, 0.4)] {
+            assert!((points.value_between(at) - expected).abs() < 1e-15);
+        }
+        points.next = None;
+        assert_eq!(points.value_between(1.0), 0.2);
+        points.next = Some((4, 1.0));
+        points.interpolates = false;
+        assert_eq!(points.value_between(1.0), 0.2);
+    }
 
     #[repr(C)]
     struct Stream {
@@ -873,12 +920,12 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15] {
+                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17] {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                (*stream).bytes[4] = 14;
+                (*stream).bytes[4] = 16;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -942,6 +989,12 @@ mod tests {
                     (33, -0.1),
                     (33, 100.1),
                     (33, f64::INFINITY),
+                    (34, 3.0),
+                    (34, 0.5),
+                    (34, f64::NAN),
+                    (35, 3.0),
+                    (35, 0.5),
+                    (35, f64::NAN),
                 ] {
                     let offset = 12 + (index - 1) * 8;
                     let original: [u8; 8] =

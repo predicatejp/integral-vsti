@@ -18,6 +18,7 @@ mod float_mode;
 mod gui;
 mod host;
 mod oscillator;
+mod oversampling;
 mod parameters;
 mod plugin;
 mod random;

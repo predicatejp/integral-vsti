@@ -49,7 +49,7 @@
 - 音源方式・主要機能: 各3発振器を持つ1〜32個の独立Voiceによる多声音音源。サイン波・三角波・矩形波・ノコギリ波・ホワイトノイズに対応。既定はサイン波。音量・カットオフ用の独立した線形AHDSRエンベロープ。同一ノートの1〜7ボイスユニゾン。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
 - サンプルレートは44.1 kHz以上の有限値を受理し、範囲外はVST3の`setupProcessing`で拒否する。フィルタも同じ下限を検証し、カットオフは内部で20〜20,000 Hzにクランプする。
-- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・FMも公開する。Clipper type・Gain・Mixも公開する。eguiで34パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計35パラメーター）。
+- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・FMも公開する。Clipper type・Gain・Mix・Rate・Smoothも公開する。eguiで36パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計37パラメーター）。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。
 バス構成、最大同時発音数、サンプル精度、対応サンプルレート、MIDI機能、独自GUIの有無は、実装時に対応範囲を明記すること。
@@ -141,10 +141,12 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - パラメーターの列挙位置と安定した `ParamID` を区別し、正規化値 `[0, 1]`、実単位、離散値の変換を一貫させること。選択肢・単位・整数tickの換算は`src/parameters.rs`に集約し、GUIとVST3 Controllerで共用すること。
 - オートメーションは変更点の時刻と区間の意味を扱うこと。連続値の補間、離散値の切り替え、前ブロックからの値の保持を定め、最終点だけで全ブロックを処理しないこと。
 - 同じサンプル位置のパラメーター変更とノートイベントの処理順序を定義し、両者に共通の入力順序情報があるとは仮定しないこと。
-- Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper typeの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・全Volume・Osc2/3 Tune・FM・Width・Pan・Gain・Mixの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。
+- Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper type・Rate・Smoothの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・全Volume・Osc2/3 Tune・FM・Width・Pan・Gain・Mixの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。
 - GUIからの編集は `beginEdit` / `performEdit` / `endEdit` など規定の通知を使うこと。ホストからの値更新を再通知して循環させず、GUIを開かなくてもDSPへ更新が反映される構成にすること。
 
-- ディストーションは各Voiceのフィルタ直後で左右独立に適用する。Clipper typeはNone（初期値・全体バイパス）/Soft（tanh）/Hard（±1）。Gainは0〜48 dB（初期値0）、GUIは0.1 dB刻み。Mixは原音と処理音の線形混合で0〜100%（初期値100）、GUIは1%刻み。原音側へGainを掛けない。履歴を持たない計算モジュールとし、Gainの線形換算は設定変更時だけ行う。GUIはFilterの下に配置し、タイプは選択リスト、Gain・Mixは整数tickのノブとする。
+- ディストーションは各Voiceのフィルタ直後で左右独立に適用する。Clipper typeはNone（初期値・全体バイパス）/Soft（tanh）/Hard（±1）。Gainは0〜48 dB（初期値0）、GUIは0.1 dB刻み。Mixは原音と処理音の線形混合で0〜100%（初期値100）、GUIは1%刻み。原音側へGainを掛けない。DistortionがVoiceと左右ごとのADAA履歴を所有する。Gainの線形換算は設定変更時だけ行う。GUIはFilterの下に配置し、タイプは選択リスト、Gain・Mixは整数tickのノブとする。
+
+- DistortionのRateはx1／x2／x4、SmoothはADAAのNone／1st／2ndの独立した整数選択とする。Clipper=Noneでは選択値を保持して補間・間引き・ADAAを省く。各VoiceのSVF後で補間しGain・Clipper・ADAAを適用、全Voice加算後に共有の遅延整合とFIRで間引く。発振器・AHDSR・SVFはホストレートで進める。129タップと、x4用17タップの対称FIRを使う。1次ADAAのWetは2点平均で半サンプル遅延を補い、2次ADAAは1内部サンプルの遅延とする。全方式の申告遅延は整数遅延を加えて69ホストサンプルに揃える。Dryは69サンプルの純遅延だけを通し、出力時点のMixでWetと混合する。方式変更はWetの32サンプルのフェードアウト・138サンプルの履歴充填・32サンプルのフェードインとし、Dryとノートの時間を継続する。履歴は初期化時に確保し、処理中に確保しない。Rate／Smoothの名称はPhaseと同様に選択欄の上に左揃えで配置する。
 
 ### 状態保存とGUI
 
