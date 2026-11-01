@@ -3,6 +3,82 @@
 `dsp.rs`は本体のDSPモジュールを直接コンパイルする計測専用プログラムです。
 プラグインの動作・公開API・依存関係は変更しません。測定結果は[リポジトリのWiki](https://github.com/predicatejp/sample-vsti/wiki)へ記録します。
 
+## 標準性能回帰スイート
+
+`standard.rs`は通常の演奏を模した固定21ケースです。全パラメーターを明示し、製品の初期値変更から独立させています。
+既定条件は48 kHz・256サンプル、各ケース2秒分のウォームアップ後に4秒分の演奏を5回計測します。
+同じCPU・ビルド条件で変更前後を逐次実行してください。
+
+```sh
+# ケース一覧
+python3 scripts/bench-standard.py --list
+# 変更前の基準値を保存（Linuxでは論理CPUを固定）
+python3 scripts/bench-standard.py --cpu 0 --output target/performance/baseline.json
+# 変更後を同じ条件で比較
+python3 scripts/bench-standard.py --cpu 0 --baseline target/performance/baseline.json --output target/performance/candidate.json
+```
+
+`--rate 44100|48000|96000`、`--block 1..2048`、`--rounds 3|5|…|31`、`--seconds 4..60`で条件を指定できます。
+`--case auto-`などの接頭辞で対象を絞れます。Windowsでは`--cpu`を省略して実行し、必要に応じてOS側でCPUを固定してください。
+
+結果JSONにはコミット・作業ツリーの変更有無・ケース定義のハッシュ・Rust/OS/CPU・CPU affinity・計測条件を保存します。
+比較時は同じケース定義、環境、コンパイルオプション、計測条件を要求し、異なれば計測前に終了します。
+各ケースの中央値が基準値から10%を超えて増えた場合は終了コード1、正常時は0です。
+計測時間はステレオ1サンプル（左右1組）あたりのnsで表示します。
+しきい値は`--max-regression-percent`で指定します。最小・最大も併記するので、負荷増加時は同じ条件で再実行し、ばらつきと区別してください。
+CPUクロック・温度・他プロセスの負荷は実行間で揃えます。失敗した計測を新しい基準値へ自動で置き換えません。
+
+### 音色と演奏の固定ケース
+
+全ケースのPhaseはZero。ベロシティは0.65〜0.8、Masterは−6 dBです。
+基本AHDSRはA=10 ms、H=0、D=120 ms、S=0.7、R=100 ms。Osc1のVolは0 dB、表で変更していないOsc2/3はSine・Tune=0・Vol=−∞、変調量は0です。
+Cutoffはノート基準のcentで指定します。左右の音声出力と、ノートオン／オフによるエンベロープ・フィルタ残響を計測に含めます。
+
+| ケース | 音色・設定 | 演奏 |
+| --- | --- | --- |
+| `sine-mono` | Sine、Unison 1、Filterなし | モノのメロディー |
+| `saw-bass` | Saw、LP2、Cutoff +1200、Q=1.2、カットオフAHDSRのD=250 ms・S=0・Amount +2400、音量A=5 ms・D=180 ms・S=0.45 | 低音リフ |
+| `triangle-pluck` | Triangle、Poly 4、LP1、Cutoff +3600、音量A=2 ms・D=250 ms・S=0・R=180 ms | アルペジオ |
+| `square-lead` | Square、Unison 2、Detune 7 cent、LP2、Cutoff +2400、Q=0.9 | モノのメロディー |
+| `saw-chords` | Saw、Poly 8、Unison 3、Detune 9 cent、Width 60%、LP2、Cutoff +3600、Q=0.8、音量A=15 ms・D=200 ms・S=0.6・R=400 ms | 4音コード、releaseの重なりあり |
+| `slow-pad` | Saw、Poly 8、Unison 5、Detune 12 cent、Width 80%、LP2、Cutoff +2400、音量A=300 ms・D=500 ms・R=800 ms、カットオフA=600 ms・D=500 ms・Amount +1200 | 4音コード、releaseの重なりあり |
+| `three-osc-keys` | Poly 8、LP1、Saw −6 dB＋Triangle −12 dB/−1200 cent＋Sine −18 dB、音量R=400 ms | 4音コード |
+| `phase-mod-bell` | Sine、Poly 4、Osc2 Tune +1200・変調量30%、Osc3 Tune +1900・変調量10%、音量A=2 ms・D=1000 ms・S=0・R=300 ms | アルペジオ |
+| `soft-x1-off` | ベース＋Soft、Gain +9 dB、Mix 40%、Rate x1、Smooth None | 低音リフ |
+| `soft-x2-first` | 同上、Rate x2、Smooth 1st | 低音リフ |
+| `soft-x4-second` | 同上、Rate x4、Smooth 2nd | 低音リフ |
+| `hard-x2-second` | リード＋Hard、Gain +6 dB、Mix 25%、Rate x2、Smooth 2nd | モノのメロディー |
+| `idle-pad` | パッドの設定、ノートなし | 無音時の処理 |
+
+120 BPM相当で、メロディーは500 msごとに400 ms発音、低音リフは250 msごとに190 ms発音、アルペジオは250 msごとに160 ms発音します。
+コードはC系 `[48,55,60,64]` とF系 `[53,60,65,69]` を2000 msごとに切り替え、1750 msでノートオフします。
+Monoは1枠、プラック・ベルは4枠、コード・パッドは8枠の循環割り当てです。同時刻のノートはNote Off→Note Onとし、パラメーターを先に適用します。
+
+### オートメーションケース
+
+各ケースは1パラメーターだけを4秒周期の三角波で往復させ、何の更新が負荷を生むか比較できます。
+
+| ケース | 対象・範囲 | 基本音色 |
+| --- | --- | --- |
+| `auto-cutoff` | Cutoff +1200〜+4800 cent | コード |
+| `auto-resonance` | Q=0.7〜2.5 | コード |
+| `auto-drive` | Gain +3〜+15 dB | コード＋Soft、Rate x2、Smooth 1st、Mix 40% |
+| `auto-mix` | Mix 10〜50% | コード＋Soft、Rate x2、Smooth 1st、Gain +9 dB |
+| `auto-pan` | Pan −40〜+40% | コード |
+| `auto-volume` | Master −12〜0 dB | コード |
+| `auto-width` | Width 20〜80% | コード |
+| `auto-phase-mod` | Osc2の位相変調量10〜40% | ベル |
+
+ブロック末尾に1変更点が届く条件をモデル化します。連続パラメーターは前ブロック末尾の値から正規化値を線形補間し、
+Cutoffは本体の`holds_between_points`に従い変更点まで保持します。Gainの内部サンプル用の次境界値も、現在ブロックの既知点までで評価します。
+曲線とノート列は計測前に準備し、計測中は設定更新・ノート処理・DSP・ステレオ出力バッファ書き込みを行います。
+これはSynthesizer入口での回帰試験で、VST3キューの走査・GUIは`check-abi.py`などの別の検証経路で扱います。
+
+毎回の出力について有限性・発音／無音・反復のビット一致を検査し、ハッシュ・ピーク・RMSも保存します。
+比較時の`audio=changed`は波形差の確認を促す表示で、性能の合否とは分けます。数値計算を変更した場合は音声側の回帰テストも実行します。
+
+## コンポーネント別マイクロベンチマーク
+
 Linux x86_64での実行例（Rust 1.95以上）:
 
 ```sh
