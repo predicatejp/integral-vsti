@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Yusuke Oda
 # SPDX-License-Identifier: AGPL-3.0-only
-
-"""Build, run and compare the fixed DSP performance regression suite."""
+"""Randomized blocked before/after DSP measurements with paired t-tests."""
 
 import argparse
 import csv
@@ -13,144 +12,236 @@ import math
 import os
 from pathlib import Path
 import platform
+import random
+import secrets
+import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
+import time
+
+import numpy as np
+import scipy
+from scipy import stats
 
 ROOT = Path(__file__).resolve().parent.parent
 FLAGS = ["--edition=2024", "-D", "warnings", "-C", "opt-level=3",
          "-C", "panic=abort", "-C", "codegen-units=16"]
+SIDES = ("before", "after")
+ALPHA = 0.05
 
 
-def capture(*args):
-    return subprocess.check_output(args, cwd=ROOT, text=True).strip()
+def capture(*args, cwd=ROOT):
+    return subprocess.check_output(args, cwd=cwd, text=True).strip()
 
 
-def collect_results(raw, names, rounds, burn_in, interval):
-    results = {name: {"samples_ns": []} for name in names}
-    trials = []
+def build(tree, destination, harness):
+    # 同一ハーネスと、計測開始前に固定した各実装のソースを使う。
+    shutil.copytree(tree / "src", destination / "src")
+    (destination / "benchmarks").mkdir()
+    (destination / "benchmarks/standard.rs").write_bytes(harness)
+    digest = hashlib.sha256()
+    for path in sorted((destination / "src").rglob("*")):
+        if path.is_file():
+            digest.update(path.relative_to(destination).as_posix().encode() + b"\0")
+            digest.update(path.read_bytes())
+    metadata = {"commit": capture("git", "rev-parse", "HEAD", cwd=tree),
+                "dirty": bool(capture("git", "status", "--porcelain", "--", "src", cwd=tree)),
+                "source_sha256": digest.hexdigest()}
+    binary = destination / ("standard.exe" if os.name == "nt" else "standard")
+    subprocess.run(["rustc", *FLAGS, "benchmarks/standard.rs", "-o", str(binary)],
+                   cwd=destination, check=True)
+    metadata["binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
+    return binary, metadata
+
+
+def measure(binary, case, rate, buffer, seconds, burn_in):
+    raw = capture(str(binary), str(rate), str(buffer), str(seconds), case, str(burn_in))
     rows = list(csv.DictReader(io.StringIO(raw)))
-    if len(rows) != rounds * len(names):
-        raise ValueError("Incomplete benchmark results")
-    for trial in range(rounds):
-        batch = rows[trial * len(names):(trial + 1) * len(names)]
-        started, finished = int(batch[0]["started_ns"]), int(batch[0]["finished_ns"])
-        earliest = burn_in * 10**9 if trial == 0 else trials[-1]["finished_ns"] + interval * 10**9
-        if started < earliest or finished <= started:
-            raise ValueError("Insufficient burn-in or trial interval")
-        trials.append({"number": trial + 1, "started_ns": started, "finished_ns": finished})
-        if [row["case"] for row in batch] != names:
-            raise ValueError("Unexpected benchmark cases")
-        for row in batch:
-            if (int(row["trial"]), int(row["started_ns"]), int(row["finished_ns"])) != (trial + 1, started, finished):
-                raise ValueError("Inconsistent trial metadata")
-            ns, peak, rms = (float(row[k]) for k in ["ns", "peak", "rms"])
-            if not all(math.isfinite(v) for v in [ns, peak, rms]) or ns <= 0 or not 0 <= rms <= peak:
-                raise ValueError("Invalid benchmark measurement")
-            result = results[row["case"]]
-            audio = {"fingerprint": row["fingerprint"], "peak": peak, "rms": rms}
-            if trial and any(result[k] != v for k, v in audio.items()):
+    if len(rows) != 1 or rows[0]["case"] != case:
+        raise ValueError("Unexpected benchmark case")
+    row = rows[0]
+    result = {k: float(row[k]) for k in ["ns", "peak", "rms"]}
+    result.update(burn_in_ns=int(row["burn_in_ns"]), fingerprint=row["fingerprint"])
+    if (not all(math.isfinite(result[k]) for k in ["ns", "peak", "rms"])
+            or result["ns"] <= 0 or not 0 <= result["rms"] <= result["peak"]
+            or result["burn_in_ns"] < burn_in * 10**9):
+        raise ValueError("Invalid measurement or insufficient burn-in")
+    return result
+
+
+def run_blocks(names, measure_case, count, cooldown, seed, *, clock=time.perf_counter_ns, sleep=time.sleep):
+    rng = random.Random(seed)
+    origin = clock()
+    blocks = []
+    audio = {}
+    for number in range(count):
+        if blocks:
+            sleep(cooldown)
+        started = clock() - origin
+        if blocks and started - blocks[-1]["finished_ns"] < cooldown * 10**9:
+            raise ValueError("Insufficient block cooldown")
+        jobs = [(name, side) for name in names for side in SIDES]
+        rng.shuffle(jobs)
+        print(f"Block {number + 1}/{count}: {len(jobs)} randomized runs", file=sys.stderr)
+        runs = []
+        for name, side in jobs:
+            run_start = clock() - origin
+            result = measure_case(side, name)
+            run_end = clock() - origin
+            check = tuple(result[k] for k in ["fingerprint", "peak", "rms"])
+            key = (name, side)
+            if key in audio and audio[key] != check:
+                raise ValueError("Non-reproducible audio: " + name + "/" + side)
+            audio[key] = check
+            runs.append(dict(case=name, side=side, started_ns=run_start, finished_ns=run_end, **result))
+        blocks.append(dict(number=number + 1, started_ns=started, finished_ns=clock() - origin, runs=runs))
+    return blocks
+
+
+def summary(values):
+    return dict(mean=statistics.mean(values), sd=statistics.stdev(values),
+                median=statistics.median(values), min=min(values), max=max(values))
+
+
+def paired_statistics(before, after):
+    if len(before) != len(after) or len(before) < 10:
+        raise ValueError("At least 10 complete block pairs are required")
+    if not all(math.isfinite(x) and x > 0 for x in [*before, *after]):
+        raise ValueError("Invalid sample time")
+    differences = [a - b for b, a in zip(before, after)]
+    delta = summary(differences)
+    result = dict(blocks=len(before), before=summary(before), after=summary(after),
+                  difference=delta, differences_ns=differences, df=len(before) - 1,
+                  t=None, p=None, ci95=None, shapiro_p=None, lag1=None)
+    # 差の分散が0のときはt検定を定義できない。p=1で同等と扱わない。
+    if delta["sd"] == 0:
+        return result
+    test = stats.ttest_rel(after, before, alternative="two-sided", nan_policy="raise")
+    ci = test.confidence_interval(0.95)
+    result.update(t=float(test.statistic), p=float(test.pvalue), ci95=[float(ci.low), float(ci.high)],
+                  shapiro_p=float(stats.shapiro(differences).pvalue))
+    if statistics.pstdev(differences[:-1]) and statistics.pstdev(differences[1:]):
+        result["lag1"] = statistics.correlation(differences[:-1], differences[1:])
+    return result
+
+
+def holm(pvalues):
+    # 全ケースを1つの比較族とする。未定義の検定もケース数から除外しない。
+    ordered = sorted(range(len(pvalues)), key=lambda i: 1.0 if pvalues[i] is None else pvalues[i])
+    adjusted = [None] * len(pvalues)
+    previous = 0.0
+    for rank, index in enumerate(ordered):
+        if pvalues[index] is not None:
+            previous = min(1.0, max(previous, (len(pvalues) - rank) * pvalues[index]))
+            adjusted[index] = previous
+    return adjusted
+
+
+def analyze(blocks, names):
+    samples = {name: {side: [] for side in SIDES} for name in names}
+    expected = {(name, side) for name in names for side in SIDES}
+    audio = {}
+    for number, block in enumerate(blocks, 1):
+        runs = block["runs"]
+        if (block["number"] != number or len(runs) != len(expected)
+                or {(r["case"], r["side"]) for r in runs} != expected):
+            raise ValueError("Missing or duplicate block pairs")
+        for run in runs:
+            key = (run["case"], run["side"])
+            check = tuple(run[k] for k in ["fingerprint", "peak", "rms"])
+            if key in audio and audio[key] != check:
                 raise ValueError("Non-reproducible audio")
-            result.update(audio)
-            result["samples_ns"].append(ns)
-    for result in results.values():
-        samples = result["samples_ns"]
-        result.update(min_ns=min(samples), median_ns=statistics.median(samples), max_ns=max(samples))
-    return results, trials
+            audio[key] = check
+            samples[run["case"]][run["side"]].append(run["ns"])
+    results = {name: paired_statistics(**values) for name, values in samples.items()}
+    for (name, result), p in zip(results.items(), holm([r["p"] for r in results.values()])):
+        result["p_holm"] = p
+        result["audio_same"] = audio[(name, "before")] == audio[(name, "after")]
+        result["status"] = ("undefined" if p is None else
+                            "not_detected" if p >= ALPHA else
+                            "slower" if result["difference"]["mean"] > 0 else "faster")
+    return results
 
 
-def report_results(results, baseline):
-    if baseline is not None and set(baseline) != set(results):
-        raise ValueError("Baseline cases differ")
-    print(f"{'case':25} {'median ns':>10} {'min..max ns':>21} {'change':>10}  audio")
-    worse = []
-    for name, row in results.items():
-        change, audio = "", ""
-        if baseline is not None:
-            old = baseline[name]
-            delta = (row["median_ns"] / old["median_ns"] - 1.0) * 100.0
-            change = f"{delta:+.3f}%"
-            if row["median_ns"] > old["median_ns"]:
-                worse.append(name)
-                change += " !"
-            audio = "same" if row["fingerprint"] == old["fingerprint"] else "changed"
-        spread = f"{row['min_ns']:.1f}..{row['max_ns']:.1f}"
-        print(f"{name:25} {row['median_ns']:10.1f} {spread:>21} {change:>10}  {audio}")
-    if worse:
-        print("Review required: median increased in " + ", ".join(worse), file=sys.stderr)
-    return 1 if worse else 0
+def report(results):
+    for name, r in results.items():
+        print(f"{name}: blocks={r['blocks']}, df={r['df']}, {r['status']}, audio={'same' if r['audio_same'] else 'changed'}")
+        for key in ["before", "after", "difference"]:
+            x = r[key]
+            print(f"  {key:10} mean={x['mean']:.4f} sd={x['sd']:.4f} median={x['median']:.4f} min={x['min']:.4f} max={x['max']:.4f} ns")
+        print(f"  t={r['t']} p(two-sided)={r['p']} p(Holm)={r['p_holm']} CI95(per case)={r['ci95']}")
+        print(f"  diagnostics: Shapiro p={r['shapiro_p']}, difference lag-1 r={r['lag1']}")
+    print("not_detected means no detected difference, not equivalence or approval.")
+    return int(any(r["status"] in ["slower", "undefined"] for r in results.values()))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "target/performance/current.json")
-    parser.add_argument("--baseline", type=Path, help="Compare against a saved run with identical conditions")
+    parser.add_argument("--before", type=Path, help="Git worktree for the implementation before the change")
+    parser.add_argument("--after", type=Path, default=ROOT, help="Git worktree after the change")
+    parser.add_argument("--output", type=Path, default=ROOT / "target/performance/paired.json")
+    parser.add_argument("--blocks", type=int, default=10)
+    parser.add_argument("--burn-in-seconds", type=int, default=3)
+    parser.add_argument("--cooldown-seconds", type=int, default=5)
     parser.add_argument("--rate", type=int, choices=[44100, 48000, 96000], default=48000)
-    parser.add_argument("--block", type=int, default=256)
-    parser.add_argument("--rounds", type=int, default=10)
-    parser.add_argument("--burn-in-seconds", type=int, default=30, help="Wall-clock DSP burn-in, at least 30s")
-    parser.add_argument("--interval-seconds", type=int, default=5, help="Sleep between complete trials, at least 1s")
+    parser.add_argument("--block", type=int, default=256, help="Host audio buffer size, not experiment blocks")
     parser.add_argument("--seconds", type=int, choices=range(4, 61), default=4)
-    parser.add_argument("--case", default="", help="Case-name prefix")
-    parser.add_argument("--cpu", type=int, help="Pin to this logical CPU (Linux)")
-    parser.add_argument("--list", action="store_true", help="List case names")
+    parser.add_argument("--case", action="append", default=[], help="Case-name prefix (repeatable)")
+    parser.add_argument("--seed", type=int, help="Replay an execution order; default is a fresh random seed")
+    parser.add_argument("--cpu", type=int, help="Pin both implementations to this logical CPU (Linux)")
+    parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
-    if not 10 <= args.rounds <= 100:
-        parser.error("--rounds must be 10..100")
-    if args.burn_in_seconds < 30 or args.interval_seconds < 1:
-        parser.error("--burn-in-seconds must be >=30 and --interval-seconds must be >=1")
+    if not args.list and args.before is None:
+        parser.error("--before is required")
+    if args.blocks < 10 or args.burn_in_seconds < 3 or args.cooldown_seconds < 3:
+        parser.error("Require >=10 blocks, >=3s burn-in per run and >=3s cooldown")
     if not 1 <= args.block <= 2048:
         parser.error("--block must be 1..2048")
-    if args.baseline and args.output.resolve() == args.baseline.resolve():
-        parser.error("--output must differ from --baseline")
     if args.cpu is not None:
-        if not hasattr(os, "sched_setaffinity"):
-            parser.error("--cpu requires Linux; otherwise set affinity outside this script")
-        if args.cpu not in os.sched_getaffinity(0):
-            parser.error("--cpu is outside this process's allowed CPU set")
+        if not hasattr(os, "sched_setaffinity") or args.cpu not in os.sched_getaffinity(0):
+            parser.error("--cpu requires an allowed Linux logical CPU")
         os.sched_setaffinity(0, {args.cpu})
-
+    seed = args.seed if args.seed is not None else secrets.randbits(64)
     cpu = platform.processor()
     if Path("/proc/cpuinfo").is_file():
         cpu = next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
                     if line.startswith("model name")), cpu)
-    conditions = {
-        "schema": 2,
-        "suite_sha256": hashlib.sha256((ROOT / "benchmarks/standard.rs").read_bytes()).hexdigest(),
-        "rustc": capture("rustc", "--version", "--verbose"),
-        "flags": FLAGS,
-        "platform": platform.platform(), "cpu": cpu,
-        "affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
-        "rate": args.rate, "block": args.block, "rounds": args.rounds,
-        "seconds": args.seconds, "warmup_seconds": 2, "case_prefix": args.case,
-        "burn_in_seconds": args.burn_in_seconds, "interval_seconds": args.interval_seconds,
-    }
-    baseline = None
-    if args.baseline:
-        baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
-        differences = [k for k, v in conditions.items() if baseline["conditions"].get(k) != v]
-        if differences:
-            parser.error("Baseline conditions differ: " + ", ".join(differences))
-
-    binary = ROOT / "target" / ("bench-standard.exe" if os.name == "nt" else "bench-standard")
-    binary.parent.mkdir(exist_ok=True)
-    subprocess.run(["rustc", *FLAGS, "benchmarks/standard.rs", "-o", str(binary)], cwd=ROOT, check=True)
-    names = capture(str(binary), "--list").splitlines()
-    if args.list:
-        print("\n".join(names))
-        return 0
-    if not any(name.startswith(args.case) for name in names):
-        parser.error("No matching cases")
-    raw = capture(str(binary), str(args.rate), str(args.block), str(args.rounds), str(args.seconds), args.case,
-                  str(args.burn_in_seconds), str(args.interval_seconds))
-    results, trials = collect_results(raw, [name for name in names if name.startswith(args.case)],
-                                     args.rounds, args.burn_in_seconds, args.interval_seconds)
-    result = {"conditions": conditions, "commit": capture("git", "rev-parse", "HEAD"),
-              "dirty": bool(capture("git", "status", "--porcelain")), "trials": trials, "cases": results}
+    harness = (ROOT / "benchmarks/standard.rs").read_bytes()
+    (ROOT / "target").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="paired-bench-", dir=ROOT / "target") as temp:
+        binaries, implementations = {}, {}
+        for side in (["after"] if args.list else SIDES):
+            tree = getattr(args, side).resolve()
+            binaries[side], implementations[side] = build(tree, Path(temp) / side, harness)
+        names = capture(str(binaries["after"]), "--list").splitlines()
+        if args.list:
+            print("\n".join(names))
+            return 0
+        if capture(str(binaries["before"]), "--list").splitlines() != names:
+            raise ValueError("Different case lists")
+        names = [name for name in names if not args.case or any(name.startswith(p) for p in args.case)]
+        if not names:
+            parser.error("No matching cases")
+        conditions = dict(schema=3, suite_sha256=hashlib.sha256(harness).hexdigest(),
+                          rustc=capture("rustc", "--version", "--verbose"), flags=FLAGS,
+                          platform=platform.platform(), cpu=cpu,
+                          affinity=sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+                          python=platform.python_version(), numpy=np.__version__, scipy=scipy.__version__,
+                          rate=args.rate, buffer=args.block, seconds=args.seconds, warmup_seconds=2,
+                          blocks=args.blocks, burn_in_seconds=args.burn_in_seconds,
+                          cooldown_seconds=args.cooldown_seconds, seed=seed, cases=names,
+                          alternative="two-sided", alpha=ALPHA, correction="holm")
+        blocks = run_blocks(names, lambda side, name: measure(binaries[side], name, args.rate, args.block,
+                                                             args.seconds, args.burn_in_seconds),
+                            args.blocks, args.cooldown_seconds, seed)
+    results = analyze(blocks, names)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    args.output.write_text(json.dumps(dict(conditions=conditions, implementations=implementations,
+                                          blocks=blocks, cases=results), indent=2, allow_nan=False) + "\n")
     print(f"Result: {args.output}")
-    return report_results(results, baseline["cases"] if baseline else None)
+    return report(results)
 
 
 if __name__ == "__main__":
