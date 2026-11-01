@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::distortion::DistortionParameters;
+use crate::distortion::{ClipperType, DistortionParameters};
 use crate::oscillator::{PanningGains, panning_gains};
 use crate::oversampling::{Downsampler, Mode};
 use crate::parameters;
@@ -24,7 +24,7 @@ pub struct SynthesizerState {
     panning_gains: PanningGains,
     /// ユニゾンを使わないOsc2/3の共通Pan係数。
     mono_gains: [f64; 2],
-    /// 現在の倍率と、GUI／ホストが指定した切り替え先。
+    /// 現在の処理倍率と切り替え先。Noneでは選択値をparametersへ保持し、処理はx1とする。
     oversampling: Mode,
     requested_oversampling: Mode,
     /// 32サンプルのfade-out、136の履歴充填、32のfade-inの残り。
@@ -85,14 +85,6 @@ impl Synthesizer {
             {
                 self.state.parameters = values;
                 return true;
-            }
-        }
-        if values[34] != self.state.parameters[34] {
-            self.state.requested_oversampling =
-                parameters::OVERSAMPLING_MODES[parameters::to_plain(34, values[34]) as usize];
-            if !self.state.started {
-                self.state.oversampling = self.state.requested_oversampling;
-                self.reset_oversampling();
             }
         }
         let previous = self.state.parameters;
@@ -185,6 +177,19 @@ impl Synthesizer {
             self.state.distortion_end = [values[32], values[33]];
             for voice in &mut self.state.voices {
                 voice.set_distortion(distortion);
+            }
+        }
+        if values[31] != previous[31] || values[34] != previous[34] {
+            // Noneは補間・間引きも省き、既存のx1経路で68サンプルの遅延だけを保つ。
+            self.state.requested_oversampling =
+                if self.state.distortion.clipper == ClipperType::None {
+                    Mode::X1
+                } else {
+                    parameters::OVERSAMPLING_MODES[parameters::to_plain(34, values[34]) as usize]
+                };
+            if !self.state.started {
+                self.state.oversampling = self.state.requested_oversampling;
+                self.reset_oversampling();
             }
         }
         if filter_changed {
@@ -878,6 +883,89 @@ mod oversampling_tests {
         }
         p
     }
+    #[test]
+    fn none_ignores_selected_rate_without_fading_or_changing_output() {
+        let mut synth = Synthesizer::new();
+        let mut reference = Synthesizer::new();
+        let mut p = settings(2.0);
+        p[31] = 0.0;
+        synth.set_parameters(p); // 保存状態からNone + x4を復元した場合。
+        let mut native = p;
+        native[34] = 0.0;
+        reference.set_parameters(native);
+        for s in [&mut synth, &mut reference] {
+            s.note_on(
+                Note {
+                    id: 1,
+                    channel: 0,
+                    pitch: 69,
+                },
+                0.0,
+                1.0,
+            );
+        }
+        for n in 0..500 {
+            p[34] = (n % 3) as f64 / 2.0;
+            synth.set_parameters(p);
+            assert_eq!(synth.generate_sample(), reference.generate_sample());
+            assert_eq!(synth.state.oversampling, Mode::X1);
+            assert_eq!(synth.state.transition, 0);
+            assert_eq!(synth.state.parameters[34], p[34]);
+        }
+    }
+
+    #[test]
+    fn clipper_switch_restores_selected_rate_and_none_returns_to_native_output() {
+        for selected in [1.0, 2.0] {
+            let mut synth = Synthesizer::new();
+            let mut reference = Synthesizer::new();
+            let mut p = settings(selected);
+            p[31] = 0.0;
+            synth.set_parameters(p);
+            let mut native = p;
+            native[34] = 0.0;
+            reference.set_parameters(native);
+            for s in [&mut synth, &mut reference] {
+                s.note_on(
+                    Note {
+                        id: 1,
+                        channel: 0,
+                        pitch: 69,
+                    },
+                    0.0,
+                    1.0,
+                );
+                s.generate_sample();
+            }
+            for clipper in [1.0, 0.0, 2.0, 0.0] {
+                p[31] = parameters::to_normalized(31, clipper);
+                synth.set_parameters(p);
+                for n in 0..300 {
+                    let actual = synth.generate_sample();
+                    let expected = reference.generate_sample();
+                    assert!(actual.into_iter().all(f64::is_finite));
+                    assert_eq!(synth.active_voice_count(), 1);
+                    if clipper == 0.0 && n >= 200 {
+                        assert_eq!(actual, expected);
+                    }
+                }
+                assert_eq!(synth.state.transition, 0);
+                assert_eq!(synth.state.parameters[34], p[34]);
+                assert_eq!(
+                    synth.state.oversampling,
+                    if clipper == 0.0 {
+                        Mode::X1
+                    } else {
+                        parameters::OVERSAMPLING_MODES[selected as usize]
+                    }
+                );
+            }
+            synth.stop();
+            assert_eq!(synth.generate_sample(), [0.0; 2]);
+            assert_eq!(synth.state.oversampling, Mode::X1);
+        }
+    }
+
     #[test]
     fn native_output_has_fixed_latency_and_stop_clears_history() {
         let mut synth = Synthesizer::new();
