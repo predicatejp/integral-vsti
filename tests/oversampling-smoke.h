@@ -6,10 +6,10 @@ template <typename Sample>
 void checkOversampling(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
     ParameterInfo info {};
     assert(controller->getParameterInfo(34, info) == kResultOk);
-    assert(info.id == 0x4f534d50 && info.stepCount == 2 && std::u16string(info.title) == u"Sample");
+    assert(info.id == 0x4f534d50 && info.stepCount == 2 && std::u16string(info.title) == u"Rate");
     ParameterInfo adaaInfo {};
     assert(controller->getParameterInfo(35, adaaInfo) == kResultOk);
-    assert(adaaInfo.id == 0x41444141 && adaaInfo.stepCount == 2 && std::u16string(adaaInfo.title) == u"ADAA");
+    assert(adaaInfo.id == 0x41444141 && adaaInfo.stepCount == 2 && std::u16string(adaaInfo.title) == u"Smooth");
     for (int m = 0; m < 3; ++m) {
         String128 text {};
         assert(controller->getParamStringByValue(adaaInfo.id, m / 2.0, text) == kResultOk);

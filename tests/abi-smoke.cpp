@@ -784,7 +784,7 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
         assert(info.stepCount == (i == 0 ? 2 : 0));
         assert(controller->normalizedParamToPlain(info.id, info.defaultNormalizedValue) == (i == 2 ? 100 : 0));
     }
-    const std::array<std::u16string, 3> names {u"None", u"Soft (tanh)", u"Hard"};
+    const std::array<std::u16string, 3> names {u"None", u"Soft", u"Hard"};
     for (int type = 0; type < 3; ++type) {
         String128 text; double parsed = -1;
         assert(controller->getParamStringByValue(ids[0], type / 2.0, text) == kResultOk && std::u16string(text) == names[type]);

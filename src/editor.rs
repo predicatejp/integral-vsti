@@ -28,7 +28,7 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix", "Sample", "ADAA",
+    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix", "Rate", "Smooth",
 ];
 
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。

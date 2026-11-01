@@ -65,8 +65,8 @@ pub fn sine_preset() -> [f64; COUNT] {
         0.0,               // Clipper: None
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
-        0.0,               // Sample: x1
-        0.0,               // ADAA: None
+        0.0,               // Rate: x1
+        0.0,               // Smooth: ADAAなし
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -85,7 +85,7 @@ pub const OVERSAMPLING_NAMES: [&str; 3] = ["x1", "x2", "x4"];
 
 pub const CLIPPER_TYPES: [ClipperType; 3] =
     [ClipperType::None, ClipperType::Soft, ClipperType::Hard];
-pub const CLIPPER_NAMES: [&str; 3] = ["None", "Soft (tanh)", "Hard"];
+pub const CLIPPER_NAMES: [&str; 3] = ["None", "Soft", "Hard"];
 
 pub const PHASE_MODES: [PhaseMode; 3] = [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random];
 pub const PHASE_NAMES: [&str; 3] = ["Keep", "Zero", "Random"];
@@ -195,8 +195,8 @@ pub const NAMES: [&str; COUNT] = [
     "Clipper type",
     "Gain",
     "Mix",
-    "Sample",
-    "ADAA",
+    "Rate",
+    "Smooth",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -442,8 +442,8 @@ pub fn defaults() -> [f64; COUNT] {
         0.0,               // Clipper: None
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
-        0.0,               // Sample: x1
-        0.0,               // ADAA: None
+        0.0,               // Rate: x1
+        0.0,               // Smooth: ADAAなし
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
