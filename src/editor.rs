@@ -39,8 +39,8 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     4, 3, 4, 4, 4, // Distortion
 ];
 
-/// ドラッグ中に到達した吸着値から離れる最初の1tickに必要な移動量（物理px）。
-const KNOB_DETENT_PIXELS: u32 = 100;
+/// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
+const KNOB_DETENT_PIXELS: u32 = 80;
 
 /// 描画目盛りとは独立した吸着対象。最大・最小値は除外する。
 fn is_detent(index: usize, tick: u32) -> bool {
@@ -135,47 +135,54 @@ struct DragState {
     index: usize,
     /// 操作中の整数tick。ホストへの配送遅延で巻き戻さない。
     tick: u32,
-    /// 次のtickへ進むまでの未消費移動量。吸着中もここに蓄積する（物理px）。
+    /// 通常時は未消費の符号付き移動量、吸着中は0〜80の内部位置（物理px）。
     remainder: f32,
-    /// 現在の値にドラッグ中に到達して吸着しているか。操作開始時はfalse。
-    detent: bool,
     /// 入力開始時のクライアント座標。
     anchor: egui::Pos2,
     /// ホストからの連続値を押下だけで丸めないための変更フラグ。
     changed: bool,
 }
 
-/// 基準値で吸着分の移動量を消費する。範囲外へ向かう余分な移動は捨てる。
-fn move_tick(
-    index: usize,
-    mut tick: u32,
-    remainder: f32,
-    dy: f32,
-    mut detent: bool,
-) -> (u32, f32, bool) {
+/// 吸着区間の両端から隣のtickへ抜ける。余った移動量は次のtickへ持ち越す。
+fn move_tick(index: usize, mut tick: u32, mut remainder: f32, dy: f32) -> (u32, f32) {
     let max = parameters::max_tick(index);
-    let mut pixels = remainder - dy;
-    loop {
-        if (tick == 0 && pixels < 0.0) || (tick == max && pixels > 0.0) {
-            return (tick, 0.0, false);
+    let mut pixels = -dy;
+    while pixels != 0.0 {
+        let detent = is_detent(index, tick);
+        if !detent {
+            pixels += remainder;
+            remainder = 0.0;
+            if (tick == 0 && pixels < 0.0) || (tick == max && pixels > 0.0) {
+                return (tick, 0.0);
+            }
         }
+        let increasing = pixels > 0.0;
         let distance = if detent {
-            KNOB_DETENT_PIXELS
+            if increasing {
+                KNOB_DETENT_PIXELS as f32 - remainder
+            } else {
+                remainder
+            }
         } else {
-            KNOB_PIXELS_PER_TICK[index]
-        } as f32;
+            KNOB_PIXELS_PER_TICK[index] as f32
+        };
         if pixels.abs() < distance {
-            return (tick, pixels, detent);
+            return (tick, remainder + pixels);
         }
-        if pixels > 0.0 {
+        if increasing {
             tick += 1;
             pixels -= distance;
         } else {
             tick -= 1;
             pixels += distance;
         }
-        detent = is_detent(index, tick);
+        remainder = if is_detent(index, tick) && !increasing {
+            KNOB_DETENT_PIXELS as f32
+        } else {
+            0.0
+        };
     }
+    (tick, remainder)
 }
 
 pub(super) struct Editor {
@@ -403,13 +410,17 @@ impl Editor {
         if !self.edits.push(Edit::Begin(index)) {
             return;
         }
+        let tick = parameters::to_tick(index, selected);
         self.state.borrow_mut().drag = Some(DragState {
             #[cfg(target_os = "windows")]
             keyboard_focus: self.keyboard_focus(),
             index,
-            tick: parameters::to_tick(index, selected),
-            remainder: 0.0,
-            detent: false,
+            tick,
+            remainder: if is_detent(index, tick) {
+                KNOB_DETENT_PIXELS as f32 / 2.0
+            } else {
+                0.0
+            },
             anchor,
             changed: false,
         });
@@ -429,15 +440,13 @@ impl Editor {
             let Some(drag) = state.drag.as_mut() else {
                 return;
             };
-            let (tick, rest, detent) = move_tick(
+            let (tick, rest) = move_tick(
                 drag.index,
                 drag.tick,
                 drag.remainder,
                 position.y - drag.anchor.y,
-                drag.detent,
             );
             drag.remainder = rest;
-            drag.detent = detent;
             if tick != drag.tick {
                 drag.tick = tick;
                 drag.changed = true;
@@ -956,28 +965,29 @@ mod tests {
             }
             let max = parameters::max_tick(index);
             for tick in 0..=max {
-                for detent in [false, true] {
-                    if detent && !is_detent(index, tick) {
+                let initial = if is_detent(index, tick) { 40.0 } else { 0.0 };
+                let distance = if is_detent(index, tick) {
+                    40.0
+                } else {
+                    pixels as f32
+                };
+                for (dy, next) in [(-distance, tick + 1), (distance, tick.saturating_sub(1))] {
+                    if (tick == 0 && dy > 0.0) || (tick == max && dy < 0.0) {
                         continue;
                     }
-                    // 開始値は常に通常距離。到達した対象値だけ100px。
-                    let distance = if detent { 100.0 } else { pixels as f32 };
-                    for (dy, next) in [(-distance, tick + 1), (distance, tick.saturating_sub(1))] {
-                        if (tick == 0 && dy > 0.0) || (tick == max && dy < 0.0) {
-                            continue;
-                        }
-                        let partial = dy - dy.signum();
-                        let held = move_tick(index, tick, 0.0, partial, detent);
-                        assert_eq!(held, (tick, -partial, detent));
-                        assert_eq!(
-                            move_tick(index, held.0, held.1, dy.signum(), held.2),
-                            (next, 0.0, is_detent(index, next))
-                        );
-                    }
+                    let partial = dy - dy.signum();
+                    let held = move_tick(index, tick, initial, partial);
+                    assert_eq!(held, (tick, initial - partial));
+                    let entry = if is_detent(index, next) && dy > 0.0 {
+                        80.0
+                    } else {
+                        0.0
+                    };
+                    assert_eq!(move_tick(index, held.0, held.1, dy.signum()), (next, entry));
                 }
             }
-            assert_eq!(move_tick(index, max, 0.0, -100.0, false), (max, 0.0, false));
-            assert_eq!(move_tick(index, 0, 0.0, 100.0, false), (0, 0.0, false));
+            assert_eq!(move_tick(index, max, 0.0, -100.0), (max, 0.0));
+            assert_eq!(move_tick(index, 0, 0.0, 100.0), (0, 0.0));
         }
     }
 
@@ -1009,26 +1019,40 @@ mod tests {
     }
 
     #[test]
-    fn detent_starts_on_arrival_and_resets_for_a_new_drag() {
-        assert_eq!(move_tick(21, 99, 0.0, -4.0, false), (100, 0.0, true));
-        assert_eq!(move_tick(21, 100, 0.0, -99.0, true), (100, 99.0, true));
-        assert_eq!(move_tick(21, 100, 99.0, -1.0, true), (101, 0.0, false));
-        assert_eq!(move_tick(21, 101, 0.0, 4.0, false), (100, 0.0, true));
-        assert_eq!(move_tick(21, 100, 0.0, 99.0, true), (100, -99.0, true));
-        assert_eq!(move_tick(21, 100, -99.0, 1.0, true), (99, 0.0, false));
-        // 中央から掴み直すと通常距離。離れて再び到達すると再吸着する。
-        assert_eq!(move_tick(21, 100, 0.0, -4.0, false), (101, 0.0, false));
-        assert_eq!(move_tick(21, 101, 0.0, 4.0, false), (100, 0.0, true));
-        assert_eq!(move_tick(21, 100, 7.0, 7.0, true), (100, 0.0, true));
-        // 1イベントで跨いでも吸着距離を消費する。
-        assert_eq!(move_tick(21, 99, 0.0, -108.0, false), (102, 0.0, false));
+    fn detent_position_tracks_entry_direction_and_reversal() {
+        assert_eq!(move_tick(21, 99, 0.0, -4.0), (100, 0.0));
+        assert_eq!(move_tick(21, 100, 0.0, 0.0), (100, 0.0));
+        assert_eq!(move_tick(21, 100, 0.0, -79.0), (100, 79.0));
+        assert_eq!(move_tick(21, 100, 79.0, -1.0), (101, 0.0));
+        assert_eq!(move_tick(21, 101, 0.0, 4.0), (100, 80.0));
+        assert_eq!(move_tick(21, 100, 80.0, 0.0), (100, 80.0));
+        assert_eq!(move_tick(21, 100, 80.0, 79.0), (100, 1.0));
+        assert_eq!(move_tick(21, 100, 1.0, 1.0), (99, 0.0));
+        // 進入した側へすぐ戻す場合、80pxの移動を要求しない。
+        assert_eq!(move_tick(21, 100, 0.0, 1.0), (99, -1.0));
+        assert_eq!(move_tick(21, 100, 80.0, -1.0), (101, 1.0));
+        // 内部で20px進んでから20px戻すと、小さい側へ抜ける。
+        assert_eq!(move_tick(21, 100, 0.0, -20.0), (100, 20.0));
+        assert_eq!(move_tick(21, 100, 20.0, 19.0), (100, 1.0));
+        assert_eq!(move_tick(21, 100, 1.0, 1.0), (99, 0.0));
+        // 吸着点から開始する場合は中間の40pxから両方向へ抜ける。
+        for dy in [-39.0_f32, 39.0] {
+            let held = move_tick(21, 100, 40.0, dy);
+            assert_eq!(held, (100, 40.0 - dy));
+            assert_eq!(
+                move_tick(21, held.0, held.1, dy.signum()),
+                (if dy < 0.0 { 101 } else { 99 }, 0.0)
+            );
+        }
+        assert_eq!(move_tick(21, 99, 0.0, -88.0), (102, 0.0));
         for index in [10, 13, 19, 21, 24] {
             for dy in [-700.0_f32, 700.0] {
                 let tick = parameters::max_tick(index) / 2;
-                let whole = move_tick(index, tick, 0.0, dy, false);
-                let mut split = (tick, 0.0, false);
+                let initial = if is_detent(index, tick) { 40.0 } else { 0.0 };
+                let whole = move_tick(index, tick, initial, dy);
+                let mut split = (tick, initial);
                 for _ in 0..700 {
-                    split = move_tick(index, split.0, split.1, dy.signum(), split.2);
+                    split = move_tick(index, split.0, split.1, dy.signum());
                 }
                 assert_eq!(whole, split);
             }
