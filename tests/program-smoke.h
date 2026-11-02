@@ -130,7 +130,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     // Programの切替後はプリセット値から次のVolume点まで補間する。
     Points phase, volume;
     phase.id = 0x50484153; phase.values = {{0, .5}}; // Zero
-    volume.id = 0x4d564f4c; volume.values = {{8, 361.0/601}}; // -12 dB
+    volume.id = 0x4d564f4c; volume.values = {{8, 480.0/720}}; // -12 dB
     wave.values = {{0, 0.0}}; program.values = {{4, 0.0}};
     changes.queues = {&program, &wave, &phase, &volume};
     data.numSamples = 9; events.values = {note(true, 0, 3)};

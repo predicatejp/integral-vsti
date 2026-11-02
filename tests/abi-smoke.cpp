@@ -1141,9 +1141,9 @@ void checkVolume(IComponent* component, IAudioProcessor* processor, IEditControl
     ParameterInfo info;
     assert(controller->getParameterInfo(13, info) == kResultOk && info.id == volumeId);
     assert(std::u16string(info.title) == u"Volume" && std::u16string(info.units) == u"dB");
-    assert(info.stepCount == 0 && info.defaultNormalizedValue == 481.0 / 601.0);
-    for (double db : {-48.0, -12.3, 0.0, 12.0}) {
-        const double normalized = ((db + 48) * 10 + 1) / 601;
+    assert(info.stepCount == 0 && info.defaultNormalizedValue == 600.0 / 720.0);
+    for (double db : {-60.0, -59.9, -54.0, -12.3, 0.0, 12.0}) {
+        const double normalized = (db + 60) / 72;
         String128 text; double parsed = -1;
         assert(controller->getParamStringByValue(volumeId, normalized, text) == kResultOk);
         assert(controller->getParamValueByString(volumeId, text, parsed) == kResultOk);
@@ -1181,10 +1181,12 @@ void checkVolume(IComponent* component, IAudioProcessor* processor, IEditControl
         }
     };
     check({0}); events.values.clear();
-    volume.values = {{0, 1.0/601}, {3, 241.0/601}}; check({-48, -40, -32, -24});
+    volume.values = {{0, 120.0/720}, {3, 360.0/720}}; check({-48, -40, -32, -24});
     volume.values.clear(); check({-24, -24});
-    volume.values = {{0, 1}, {1, 1}, {3, 481.0/601}}; check({12, 12, 6, 0});
-    volume.values = {{0, ((48 - 12.3) * 10 + 1) / 601}}; check({-12.3});
+    volume.values = {{0, 1}, {1, 1}, {3, 600.0/720}}; check({12, 12, 6, 0});
+    volume.values = {{0, (60 - 12.3) / 72}}; check({-12.3});
+    volume.values = {{0, 0}}; check({-std::numeric_limits<double>::infinity()});
+    volume.values.clear(); check({-std::numeric_limits<double>::infinity()});
     reference.flush();
     assert(processor->setProcessing(false) == kResultOk && component->setActive(false) == kResultOk);
     // 停止中のゼロサンプル変更も保存・復元へ反映する。

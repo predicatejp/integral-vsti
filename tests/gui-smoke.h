@@ -575,7 +575,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
             const double plain = time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
-                                 i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -48.0 : (i == 24 || i == 27) ? -2390.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : (i == 29 || i == 30 || i == 33) ? 1.0 : i == 32 ? .1 : .01;
+                                 i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -59.9 : (i == 24 || i == 27) ? -2390.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : (i == 29 || i == 30 || i == 33) ? 1.0 : i == 32 ? .1 : .01;
             assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
             assert(parent.pointerAt(x, y));
             point.id = info.id; point.values = {{0, handler.value}};
@@ -608,7 +608,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(parent.cursorVisible());
             handler.sequence.clear();
             if (i == 21) {
-                // 中央からの開始は4px。戻って到達した中央からは160pxで離れる。
+                // 中央からの開始は4px。戻って到達した中央からは100pxで離れる。
                 assert(controller->setParamNormalized(info.id, .5) == kResultOk);
                 parent.movePointer(x, y); pump(); parent.knobButton(true);
                 waitFor([&] { return handler.sequence.size() == 1; }, "pan center begin");
@@ -618,7 +618,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 parent.movePointer(x, y + 4);
                 waitFor([&] { return handler.sequence.size() == 3; }, "pan center arrival");
                 assert(handler.value == .5);
-                for (int step : {32, 32, 32, 32, 31}) {
+                for (int step : {32, 32, 32, 3}) {
                     parent.movePointer(x, y - step); pump();
                 }
                 assert(handler.sequence.size() == 3 && handler.value == .5);

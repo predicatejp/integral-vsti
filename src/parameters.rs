@@ -222,7 +222,7 @@ pub fn max_tick(index: usize) -> u32 {
             19 => 960,
             21 | 29 | 30 => 200,
             10 => 1200,
-            13 | 22 | 25 | 28 => 601,
+            13 | 22 | 25 | 28 => 720,
             24 | 27 | 32 => 480,
             11 => 950,
             _ => 100,
@@ -271,13 +271,13 @@ pub fn holds_between_points(index: usize) -> bool {
         0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 35 | PROGRAM_INDEX
     )
 }
-/// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=601（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
+/// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
 pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
     if is_volume(index) {
         if tick == 0 {
             f64::NEG_INFINITY
         } else {
-            -48.0 + f64::from(tick - 1) / 10.0
+            -60.0 + f64::from(tick) / 10.0
         }
     } else if is_time(index) {
         if tick == 0 {
@@ -304,7 +304,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         return if normalized == 0.0 {
             f64::NEG_INFINITY
         } else {
-            ((normalized * 601.0 - 1.0) / 10.0 - 48.0).max(-48.0)
+            normalized * 72.0 - 60.0
         };
     }
     if is_waveform(index) {
@@ -341,7 +341,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         return if plain == f64::NEG_INFINITY {
             0.0
         } else {
-            ((plain + 48.0) * 10.0 + 1.0) / 601.0
+            (plain + 60.0) / 72.0
         };
     }
     if is_waveform(index) {
@@ -374,7 +374,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
 }
 pub fn valid_plain(index: usize, plain: f64) -> bool {
     if is_volume(index) {
-        return plain == f64::NEG_INFINITY || (-48.0..=12.0).contains(&plain);
+        return plain == f64::NEG_INFINITY || (-60.0..=12.0).contains(&plain);
     }
     match index {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
@@ -846,10 +846,10 @@ mod tests {
             (9, 6),
             (10, 1200),
             (11, 950),
-            (13, 601),
-            (22, 601),
-            (25, 601),
-            (28, 601),
+            (13, 720),
+            (22, 720),
+            (25, 720),
+            (28, 720),
             (24, 480),
             (27, 480),
             (19, 960),
@@ -879,6 +879,19 @@ mod tests {
     }
 
     #[test]
+    fn volume_minimum_is_silence_and_next_tick_is_minus_59_9_db() {
+        for index in [13, 22, 25, 28] {
+            assert_eq!(to_normalized(index, -60.0), 0.0);
+            assert_eq!(to_plain(index, 0.0), f64::NEG_INFINITY);
+            assert_eq!(tick_to_plain(index, 0), f64::NEG_INFINITY);
+            assert_eq!(tick_to_plain(index, 1), -59.9);
+            assert_eq!(tick_to_plain(index, 600), 0.0);
+            assert_eq!(tick_to_plain(index, 720), 12.0);
+            assert_eq!(10.0_f64.powf(to_plain(index, 0.0) / 20.0), 0.0);
+        }
+    }
+
+    #[test]
     fn state_stream_handles_short_transfers_and_rejects_truncation() {
         for waveform in WAVEFORMS {
             let mut stream = Stream {
@@ -902,7 +915,7 @@ mod tests {
                 values[10] = to_normalized(10, -1200.125);
                 values[11] = to_normalized(11, 5.125);
                 values[12] = to_normalized(12, 2.0);
-                values[13] = to_normalized(13, -12.345);
+                values[13] = to_normalized(13, -59.95);
                 values[20] = to_normalized(20, 62.5);
                 values[21] = to_normalized(21, -35.25);
                 for (i, plain) in [7500.25, 10000.0, 6000.0, 0.4567, 10000.0, -1234.125]
@@ -953,7 +966,7 @@ mod tests {
                     (12, 3.0),
                     (12, 1.5),
                     (12, f64::NAN),
-                    (13, -48.1),
+                    (13, -60.1),
                     (13, 12.1),
                     (13, f64::NAN),
                     (13, f64::INFINITY),
@@ -972,7 +985,7 @@ mod tests {
                     (21, -100.1),
                     (21, 100.1),
                     (21, f64::INFINITY),
-                    (22, -48.1),
+                    (22, -60.1),
                     (25, f64::INFINITY),
                     (28, f64::NAN),
                     (23, 5.0),

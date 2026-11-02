@@ -40,7 +40,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
 ];
 
 /// ドラッグ中に到達した吸着値から離れる最初の1tickに必要な移動量（物理px）。
-const KNOB_DETENT_PIXELS: u32 = 160;
+const KNOB_DETENT_PIXELS: u32 = 100;
 
 /// 描画目盛りとは独立した吸着対象。最大・最小値は除外する。
 fn is_detent(index: usize, tick: u32) -> bool {
@@ -49,7 +49,7 @@ fn is_detent(index: usize, tick: u32) -> bool {
     }
     match index {
         10 | 19 | 24 | 27 => tick.is_multiple_of(120), // Cutoff / Amount / Tune: 1200 cent
-        13 | 22 | 25 | 28 => (tick - 1).is_multiple_of(60), // Volume: 6 dB
+        13 | 22 | 25 | 28 => tick.is_multiple_of(60),  // Volume: 6 dB
         21 => tick == 100,                             // Pan: 中央
         _ => false,
     }
@@ -70,10 +70,10 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
             240,
         ),
         11 => (&[0, 50, 150, 350, 550, 750, 950], 50), // Q: 0.5/1/2/4/6/8/10
-        // −∞と−48〜+12 dBの6 dB刻み。全ての吸着位置に目盛りを置く。
+        // −∞と−54〜+12 dBの6 dB刻み。全ての吸着位置に目盛りを置く。
         13 | 22 | 25 | 28 => (
-            &[0, 1, 61, 121, 181, 241, 301, 361, 421, 481, 541, 601],
-            481,
+            &[0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660, 720],
+            600,
         ),
         19 => (&[0, 120, 240, 360, 480, 600, 720, 840, 960], 480), // Amount: −4〜+4 oct
         21 => (&[0, 50, 100, 150, 200], 100),                      // Pan: 中央を強調
@@ -960,8 +960,8 @@ mod tests {
                     if detent && !is_detent(index, tick) {
                         continue;
                     }
-                    // 開始値は常に通常距離。到達した対象値だけ160px。
-                    let distance = if detent { 160.0 } else { pixels as f32 };
+                    // 開始値は常に通常距離。到達した対象値だけ100px。
+                    let distance = if detent { 100.0 } else { pixels as f32 };
                     for (dy, next) in [(-distance, tick + 1), (distance, tick.saturating_sub(1))] {
                         if (tick == 0 && dy > 0.0) || (tick == max && dy < 0.0) {
                             continue;
@@ -988,7 +988,7 @@ mod tests {
                 let targets: &[u32] = match index {
                     10 => &[120, 240, 360, 480, 600, 720, 840, 960, 1080],
                     24 | 27 => &[120, 240, 360],
-                    13 | 22 | 25 | 28 => &[1, 61, 121, 181, 241, 301, 361, 421, 481, 541],
+                    13 | 22 | 25 | 28 => &[60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660],
                     19 => &[120, 240, 360, 480, 600, 720, 840],
                     21 => &[100],
                     _ => &[],
@@ -1011,17 +1011,17 @@ mod tests {
     #[test]
     fn detent_starts_on_arrival_and_resets_for_a_new_drag() {
         assert_eq!(move_tick(21, 99, 0.0, -4.0, false), (100, 0.0, true));
-        assert_eq!(move_tick(21, 100, 0.0, -159.0, true), (100, 159.0, true));
-        assert_eq!(move_tick(21, 100, 159.0, -1.0, true), (101, 0.0, false));
+        assert_eq!(move_tick(21, 100, 0.0, -99.0, true), (100, 99.0, true));
+        assert_eq!(move_tick(21, 100, 99.0, -1.0, true), (101, 0.0, false));
         assert_eq!(move_tick(21, 101, 0.0, 4.0, false), (100, 0.0, true));
-        assert_eq!(move_tick(21, 100, 0.0, 159.0, true), (100, -159.0, true));
-        assert_eq!(move_tick(21, 100, -159.0, 1.0, true), (99, 0.0, false));
+        assert_eq!(move_tick(21, 100, 0.0, 99.0, true), (100, -99.0, true));
+        assert_eq!(move_tick(21, 100, -99.0, 1.0, true), (99, 0.0, false));
         // 中央から掴み直すと通常距離。離れて再び到達すると再吸着する。
         assert_eq!(move_tick(21, 100, 0.0, -4.0, false), (101, 0.0, false));
         assert_eq!(move_tick(21, 101, 0.0, 4.0, false), (100, 0.0, true));
         assert_eq!(move_tick(21, 100, 7.0, 7.0, true), (100, 0.0, true));
         // 1イベントで跨いでも吸着距離を消費する。
-        assert_eq!(move_tick(21, 99, 0.0, -168.0, false), (102, 0.0, false));
+        assert_eq!(move_tick(21, 99, 0.0, -108.0, false), (102, 0.0, false));
         for index in [10, 13, 19, 21, 24] {
             for dy in [-700.0_f32, 700.0] {
                 let tick = parameters::max_tick(index) / 2;
