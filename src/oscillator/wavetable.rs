@@ -25,9 +25,11 @@ impl Table {
     #[inline]
     fn read_sample(&self, phase: f64) -> f64 {
         let position = phase * self.length;
-        let index = position as usize;
-        let t = position - index as f64;
-        let at = self.offset + index * 16;
+        // SAFETY: 呼出し側は検証済みの位相[0,1]を[0,0.5]へ折り返す。
+        // 生成済みテーブルのlengthは最大131072なのでpositionは有限の[0,65536]。
+        let index = unsafe { position.to_int_unchecked::<i32>() };
+        let t = position - f64::from(index);
+        let at = self.offset + index as usize * 16;
         let bytes: &[u8; 16] = COEFFICIENTS[at..at + 16].try_into().unwrap();
         let coefficient = |i| f64::from(f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()));
         coefficient(0) + t * (coefficient(4) + t * (coefficient(8) + t * coefficient(12)))
@@ -86,7 +88,8 @@ impl Selection {
         )
     }
 
-    #[inline(never)] // 帯域別の参照を分離し、既存のSine/Noiseのループを小さく保つ。
+    /// phaseは発振器の保持位相または変調後の、有限の[0,1]。
+    #[inline(always)] // 帯域別のユニゾンループ内へ展開し、サンプルごとの呼出しを省く。
     pub fn generate_sample(&self, wave: Waveform, phase: f64) -> f64 {
         let half = 0.5 - (phase - 0.5).abs();
         let folded = if wave == Waveform::Sawtooth {
@@ -100,5 +103,29 @@ impl Selection {
             value += (tables[self.index - 1].read_sample(folded) - value) * self.mix;
         }
         value * (self.normalization.copysign(0.5 - phase))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_table_positions_fit_fast_integer_conversion() {
+        for wave in [Waveform::Sawtooth, Waveform::Square, Waveform::Triangle] {
+            let end = if wave == Waveform::Sawtooth {
+                0.5
+            } else {
+                0.25
+            };
+            for table in tables(wave) {
+                assert!((4.0..=131072.0).contains(&table.length));
+                assert_eq!(table.length.fract(), 0.0);
+                assert!(table.length * end <= 65536.0);
+                for phase in [0.0, end / 2.0, end] {
+                    assert!(table.read_sample(phase).is_finite());
+                }
+            }
+        }
     }
 }

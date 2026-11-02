@@ -254,27 +254,51 @@ impl Oscillator {
     /// 位相変調は読出し位置だけへ適用する。Noiseはユニゾンごとに乱数を一つ進める。
     #[inline]
     fn generate_waveform_sample(&mut self, input: &OscillatorInput) -> OscillatorSample {
+        match input.waveform {
+            Waveform::Noise => {
+                let count = input.rendered_voices();
+                let mut values = [0.0; 7];
+                for value in &mut values[..count] {
+                    *value = 2.0 * self.state.noise.next_f64() - 1.0;
+                }
+                OscillatorSample { values, count }
+            }
+            Waveform::Sine => self.generate_periodic_sample::<false>(input),
+            _ => self.generate_bandlimited_sample(input),
+        }
+    }
+
+    // 帯域別のループを分離してSine/Noiseを小さく保ち、ユニゾンごとの関数呼出しを省く。
+    #[inline(never)]
+    fn generate_bandlimited_sample(&self, input: &OscillatorInput) -> OscillatorSample {
+        self.generate_periodic_sample::<true>(input)
+    }
+
+    /// 波形別に展開する周期波の読出し。位相変調の処理は両経路で共通にする。
+    #[inline(always)]
+    fn generate_periodic_sample<const BANDED: bool>(
+        &self,
+        input: &OscillatorInput,
+    ) -> OscillatorSample {
         let count = input.rendered_voices();
         let mut values = [0.0; 7];
-        if input.waveform == Waveform::Noise {
-            for value in &mut values[..count] {
-                *value = 2.0 * self.state.noise.next_f64() - 1.0;
+        // 整数周期を先に除き、±1/±2回転では元の位相を厳密に保持する。
+        // SAFETY: generate_sampleで位相変調が有限の−2〜2であることを検証済み。
+        let cycles = unsafe { input.phase_modulation.to_int_unchecked::<i32>() };
+        let offset = input.phase_modulation - f64::from(cycles);
+        if offset == 0.0 {
+            for (k, (value, &phase)) in values[..count]
+                .iter_mut()
+                .zip(&self.state.phases)
+                .enumerate()
+            {
+                *value = if BANDED {
+                    self.state.bands[k].generate_sample(input.waveform, phase)
+                } else {
+                    sine_sample(phase)
+                };
             }
         } else {
-            // 整数周期を先に除き、±1/±2回転では元の位相を厳密に保持する。
-            // SAFETY: generate_sampleで位相変調が有限の−2〜2であることを検証済み。
-            let cycles = unsafe { input.phase_modulation.to_int_unchecked::<i32>() };
-            let offset = input.phase_modulation - f64::from(cycles);
-            if offset == 0.0 {
-                for (k, (value, &phase)) in values[..count]
-                    .iter_mut()
-                    .zip(&self.state.phases)
-                    .enumerate()
-                {
-                    *value = self.read_sample(input.waveform, phase, k);
-                }
-                return OscillatorSample { values, count };
-            }
             for (k, (value, &phase)) in values[..count]
                 .iter_mut()
                 .zip(&self.state.phases)
@@ -283,7 +307,11 @@ impl Oscillator {
                 let position = phase + offset;
                 let wrapped = position + f64::from((position < 0.0) as u8)
                     - f64::from((position >= 1.0) as u8);
-                *value = self.read_sample(input.waveform, wrapped, k);
+                *value = if BANDED {
+                    self.state.bands[k].generate_sample(input.waveform, wrapped)
+                } else {
+                    sine_sample(wrapped)
+                };
             }
         }
         OscillatorSample { values, count }
@@ -294,7 +322,7 @@ impl Oscillator {
         &self.state.peak_scales
     }
 
-    #[inline(always)] // Sine/Noiseの読出しを関数呼出しにせず、帯域別の処理だけ外へ出す。
+    #[cfg(test)]
     fn read_sample(&self, wave: Waveform, phase: f64, k: usize) -> f64 {
         match wave {
             Waveform::Sine => sine_sample(phase),
@@ -425,6 +453,34 @@ mod tests {
                 };
                 for _ in 0..8 {
                     assert_eq!(oscillator.generate_sample(&input, 48000.0).values[0], 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // スイープのFourier照合は通常のCPUテストで行う。
+    fn frequency_sweeps_cross_bands_without_holding_the_old_table() {
+        for wave in BANDLIMITED {
+            for harmonic in [2, 4, 8, 16, 32, 64, 128] {
+                for reverse in [false, true] {
+                    let mut oscillator = Oscillator::new();
+                    let mut phase = 0.137;
+                    oscillator.state.phases[0] = phase;
+                    for n in 0..129 {
+                        let position = f64::from(if reverse { 128 - n } else { n }) / 128.0;
+                        let increment = (0.85 + 0.20 * position) * 0.5 / f64::from(harmonic);
+                        let input = OscillatorInput {
+                            waveform: wave,
+                            frequency_hz: increment * 48000.0,
+                            ..test_input()
+                        };
+                        let raw = oscillator.generate_sample(&input, 48000.0).values[0];
+                        let actual = raw * oscillator.peak_scales()[0];
+                        let expected = reference::audio_sample(wave, phase, increment);
+                        assert!((actual - expected).abs() < 5e-6);
+                        phase = (phase + input.frequency_hz / 48000.0).fract();
+                    }
                 }
             }
         }
