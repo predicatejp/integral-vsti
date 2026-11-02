@@ -306,6 +306,30 @@ public:
     tresult PLUGIN_API tell(int64*) override { assert(false); return kNotImplemented; }
 };
 
+// 音声倍率込みの有限Fourier級数。波形切替の期待値をテーブル実装から独立に求める。
+double bandlimited(int wave, double phase, double increment) {
+    std::vector<int> bands;
+    for (int i = 0; i <= 28; ++i) {
+        const int h = static_cast<int>(std::pow(2.0, i / 2.0));
+        if (bands.empty() || bands.back() != h) bands.push_back(h);
+    }
+    size_t index = 0;
+    for (size_t i = 0; i < bands.size(); ++i) if (bands[i] * increment < .5) index = i;
+    const int high = bands[index], low = bands[index ? index - 1 : 0];
+    const double fade = std::clamp((increment * high * 2 - .9) * 10, 0.0, 1.0);
+    double value = 0;
+    for (int h = 1; h <= high; ++h) {
+        const double x = std::acos(-1.0) * h;
+        double a = wave == 3 ? -2/x : 0;
+        if (h % 2) {
+            if (wave == 2) a = 4/x;
+            if (wave == 1) a = 8*(h % 4 == 1 ? 1 : -1)/(x*x);
+        }
+        value += a * (index == 0 || h > low ? 1 - fade : 1) * std::sin(2*x*phase);
+    }
+    return value * .5 * (wave == 2 ? 1 : std::sqrt(3.0));
+}
+
 template <typename Sample>
 void checkParameters(IComponent* component, IAudioProcessor* processor, IEditController* controller,
                      int32 precision, int32 mode) {
@@ -380,22 +404,21 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
         assert(bus.silenceFlags == (nonzero ? 0u : 3u));
     };
     points.values.clear();
-    check({0.5, 0.5}); // 位相0, 1/8。
+    check({0, bandlimited(2, .125, .125)}); // 位相0, 1/8。
     events.values.clear();
-    const double triangle = 0.5 * std::sqrt(3.0);
     // 変更点までは矩形波を保持。最後のサンプルでノコギリ波へ切り替える。
     points.values = {{1, 0.25}, {4, 0.75}};
-    check({0.5, triangle * 0.5, 0.0, -triangle * 0.5, triangle * 0.5});
-    points.values.clear(); check({triangle * 0.75}); // 次ブロックにも最後の値を保持、位相7/8。
+    check({bandlimited(2, .25, .125), bandlimited(1, .375, .125), 0, bandlimited(1, .625, .125), bandlimited(3, .75, .125)});
+    points.values.clear(); check({bandlimited(3, .875, .125)}); // 次ブロックにも最後の値を保持、位相7/8。
     // 同位置の変更はキュー順、ノートより先に処理。波形変更で位相はリセットしない。
     points.values = {{0, 0.25}, {0, 0.5}};
     events.values = {note(false, 0, 1), note(true, 0, 2, 81)};
-    check({0.5}); // 位相0から1/4へ。
+    check({0}); // 位相0から1/4へ。
     events.values.clear();
     points.values = {{-1, 0.0}, {3, 0.0}, {0, std::numeric_limits<double>::quiet_NaN()},
                      {0, 1.1}, {0, 0.0}, {2, 0.25}, {1, 0.0}};
     points.failedIndex = 4;
-    check({0.5, -0.5, -triangle}); // 無効・範囲外・逆順・取得失敗の点は無視。
+    check({bandlimited(2, .25, .25), 0, bandlimited(1, .75, .25)}); // 無効・範囲外・逆順・取得失敗の点は無視。
     points.failedIndex = -1;
     // サイン波への単一点変更。その後の値を保持し、線形補間はしない。
     points.values = {{0, 0.0}};
@@ -442,7 +465,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(component->setState(nullptr) == kInvalidArgument);
     assert(controller->setComponentState(nullptr) == kInvalidArgument);
     events.values = {note(true, 0, 3)};
-    check({-triangle}); // 復元で位相を変えず、保存したノコギリ波を発音。
+    check({0}); // 復元で位相を変えず、保存したノコギリ波を発音。
     reference.flush();
     assert(processor->setProcessing(false) == kResultOk);
     assert(component->setActive(false) == kResultOk);
@@ -471,7 +494,7 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
             assert(controller->getParamValueByString(info.id, text, parsed) == kResultOk && parsed == value);
         }
     }
-    Points wave; wave.values = {{0, 0.5}};
+    Points wave; wave.values = {{0, 0.0}};
     Changes changes; changes.queues = {&wave};
     Events events;
     std::array<Sample, 16> buffer;
@@ -485,12 +508,21 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
     assert(component->setActive(true) == kResultOk);
     assert(processor->setProcessing(true) == kResultOk);
     data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
+    double phase = 0, frequency = 440; bool gate = false; int id = -1;
     auto check = [&](std::initializer_list<double> expected) {
         data.numSamples = static_cast<int32>(expected.size());
         assert(processor->process(data) == kResultOk);
         size_t i = 0; bool audible = false;
         for (double value : expected) {
-            value = reference.next(value);
+            for (const auto& event : events.values) if (event.sampleOffset == static_cast<int>(i)) {
+                if (event.type == Event::kNoteOnEvent) {
+                    gate = true; id = event.noteOn.noteId;
+                    frequency = 440 * std::pow(2.0, (event.noteOn.pitch - 69) / 12.0);
+                } else if (event.noteOff.noteId == id) gate = false;
+            }
+            const double signal = value * std::sqrt(2.0) * std::sin(2*std::acos(-1.0)*phase);
+            if (gate || value != 0) phase = std::fmod(phase + frequency/setup.sampleRate, 1.0);
+            value = reference.next(std::abs(signal));
             assert(std::abs(std::abs(buffer[i++]) - value) < 1e-6);
             audible |= value != 0.0;
         }
@@ -633,7 +665,7 @@ void checkPolyphony(IComponent* component, IAudioProcessor* processor, IEditCont
     ProcessSetup setup {mode, precision, 8, 48000.0};
     assert(processor->setupProcessing(setup) == kResultOk);
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
-    Points wave, poly; wave.values = {{0, 0.5}};
+    Points wave, poly; wave.values = {{0, 0.0}};
     poly.id = polyphonyId; poly.values = {{0, 1.0 / 31.0}};
     Changes changes; changes.queues = {&wave, &poly};
     ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
@@ -648,18 +680,39 @@ void checkPolyphony(IComponent* component, IAudioProcessor* processor, IEditCont
     data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
     assert(component->setActive(true) == kResultOk);
     assert(processor->setProcessing(true) == kResultOk);
+    struct Voice { double phase = 0, frequency = 0, amplitude = 0; int id = -1; };
+    std::array<Voice, 32> voices {};
+    size_t count = 2, next = 0;
     auto check = [&](std::initializer_list<double> expected) {
         data.numSamples = static_cast<int32>(expected.size());
         assert(processor->process(data) == kResultOk);
         size_t i = 0; bool audible = false;
         for (double value : expected) {
-            value = reference.next(value);
-            assert(std::abs(buffer[i++] - value) < 1e-6);
+            for (const auto& point : poly.values) if (point.first == static_cast<int>(i)) {
+                count = static_cast<size_t>(std::round(1 + point.second * 31)); next %= count;
+                for (size_t k = count; k < voices.size(); ++k) voices[k].amplitude = 0;
+            }
+            for (const auto& event : events.values) if (event.sampleOffset == static_cast<int>(i)) {
+                if (event.type == Event::kNoteOnEvent) {
+                    auto& voice = voices[next]; next = (next + 1) % count;
+                    voice.id = event.noteOn.noteId; voice.amplitude = .5 * event.noteOn.velocity;
+                    voice.frequency = 440 * std::pow(2.0, (event.noteOn.pitch - 69) / 12.0);
+                } else for (auto& voice : voices) if (voice.id == event.noteOff.noteId) voice.amplitude = 0;
+            }
+            double sum = 0, amplitude = 0;
+            for (auto& voice : voices) if (voice.amplitude != 0) {
+                amplitude += voice.amplitude;
+                sum += voice.amplitude * std::sqrt(2.0) * std::sin(2*std::acos(-1.0)*voice.phase);
+                voice.phase = std::fmod(voice.phase + voice.frequency/setup.sampleRate, 1.0);
+            }
+            assert(std::abs(amplitude - value) < 1e-12);
+            value = reference.next(sum);
+            assert(std::abs(buffer[i++] - value) < 1e-5);
             audible |= value != 0.0;
         }
         assert(bus.silenceFlags == (audible ? 0u : 3u));
     };
-    // 低い音程で矩形波の正側を維持し、サンプルごとの加算値を検証。
+    // 音程・ベロシティの異なるSineを、サンプルごとの独立した和で検証。
     events.values = {note(true, 1, 1, 12), note(true, 3, 2, 16)};
     check({0, .5, .5, 1, 1, 1});
     events.values = {note(true, 2, 3, 19, 0, .5f), note(false, 2, 1, 12), note(false, 4, 2, 16)};
@@ -734,13 +787,14 @@ void checkFilter(IComponent* component, IAudioProcessor* processor, IEditControl
     Changes changes; changes.queues = {&type, &cutoff, &resonance, &wave, &poly};
     Events events;
     ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
+    double phases[2] {};
     for (int t = 0; t < 7; ++t) {
         String128 text; double parsed = -1;
         assert(controller->getParamStringByValue(filterIds[0], t / 6.0, text) == kResultOk && std::u16string(text) == names[t]);
         assert(controller->getParamValueByString(filterIds[0], text, parsed) == kResultOk && parsed == t / 6.0);
         const double q0 = 1 / std::sqrt(2.0), q1 = 4.0;
         type.values = {{0, t / 6.0}}; cutoff.values = {{0, .3}};
-        resonance.values = {{0, (q0 - .5) / 9.5}}; wave.values = {{0, 0.5}}; poly.values = {{0, 1.0 / 31.0}};
+        resonance.values = {{0, (q0 - .5) / 9.5}}; wave.values = {{0, 0.0}}; poly.values = {{0, 1.0 / 31.0}};
         data.numSamples = 0; data.numOutputs = 0; data.inputEvents = nullptr;
         assert(processor->process(data) == kResultOk); // 停止中のフラッシュ。
         assert(processor->setProcessing(true) == kResultOk);
@@ -757,7 +811,9 @@ void checkFilter(IComponent* component, IAudioProcessor* processor, IEditControl
             for (int v = 0; v < 2; ++v) {
                 // Note On前のVoiceは無音。発音後はノートごとのカットオフで独立処理。
                 const double hz = 440 * std::pow(2.0, (12 + 12 * v - 69) / 12.0) * std::pow(2.0, cents / 1200.0);
-                expected += refs[v].process(n >= v * 2 ? .5 : 0, t, hz, q, 48000);
+                const double source = n >= v*2 ? std::sqrt(.5)*std::sin(2*std::acos(-1.0)*phases[v]) : 0;
+                if (n >= v*2) phases[v] = std::fmod(phases[v] + 440*std::pow(2.0, (12+12*v-69)/12.0)/48000, 1.0);
+                expected += refs[v].process(source, t, hz, q, 48000);
             }
             assert(std::abs(buffer[n] - reference.next(expected)) < 1e-5);
         }
@@ -768,6 +824,7 @@ void checkFilter(IComponent* component, IAudioProcessor* processor, IEditControl
         assert(controller->getParamNormalized(filterIds[1]) == 1.0);
         assert(std::abs(controller->normalizedParamToPlain(filterIds[2], controller->getParamNormalized(filterIds[2])) - q1) < 1e-12);
         reference.flush(); reference.reset();
+        for (int v = 0; v < 2; ++v) phases[v] = std::fmod(phases[v] + 69*440*std::pow(2.0, (12+12*v-69)/12.0)/48000, 1.0);
         assert(processor->setProcessing(false) == kResultOk);
     }
     assert(component->setActive(false) == kResultOk);
@@ -803,7 +860,7 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
     for (int initial = 0; initial < 3; ++initial) {
         std::array<Points, 9> points;
         const std::array<int, 9> indices {9, 10, 8, 0, 12, 31, 32, 33, 13};
-        const std::array<double, 9> plain {1, 4800, 2, 2, 1, double(initial), 0, 25, -6};
+        const std::array<double, 9> plain {1, 4800, 2, 0, 1, double(initial), 0, 25, -6};
         Changes changes;
         for (size_t i = 0; i < points.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(indices[i], info) == kResultOk);
@@ -829,7 +886,8 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
                 double expected = 0;
                 for (int v = 0; v < 2; ++v) {
                     const double hz = 440 * std::pow(2.0, (12 + 12 * v - 69) / 12.0 + 4);
-                    const double dry = filters[v].process(at >= v * 2 && at < 10 ? .5 : 0, 1, hz, 1, 48000);
+                    const double source = at >= v*2 && at < 10 ? std::sqrt(.5) * std::sin(2*std::acos(-1.0)*(at-v*2)*hz/16/48000) : 0;
+                    const double dry = filters[v].process(source, 1, hz, 1, 48000);
                     const double wet = type == 1 ? std::tanh(dry * gain) : std::clamp(dry * gain, -1.0, 1.0);
                     expected += type == 0 ? dry : dry * (1 - mix) + wet * mix;
                 }
@@ -972,16 +1030,24 @@ void checkFm(IComponent* component, IAudioProcessor* processor, IEditController*
     else bus.channelBuffers64 = channels;
     data.numSamples = 33; data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
     assert(processor->process(data) == kResultOk);
+    // 2段PMでの微小な位相差の増幅を避け、正弦波は本体と同じ4096区間の線形補間で評価する。
+    auto sine = [](double phase) {
+        const double position = (phase - std::floor(phase))*4096;
+        const double index = std::floor(position), t = position-index;
+        const double a = std::sin(2*std::acos(-1.0)*index/4096);
+        const double b = std::sin(2*std::acos(-1.0)*(index+1)/4096);
+        return a+(b-a)*t;
+    };
     std::array<double, 3> phase {};
     for (int n = 0; n < 33; ++n) {
         if (n == 23) phase.fill(0);
         const double fm2 = n < 16 ? .25 + 1.75 * (n + 1) / 16. : 2;
         const double fm3 = n <= 8 ? .5 : n < 16 ? .5 + 1.5 * (n - 8) / 8. : 2;
-        const double m3 = std::sin(2 * std::acos(-1.) * phase[2]);
-        const double m2 = std::sin(2 * std::acos(-1.) * (phase[1] + fm3 * m3));
+        const double m3 = sine(phase[2]);
+        const double m2 = sine(phase[1] + fm3 * m3);
         const double modulated = phase[0] + fm2 * m2;
         const double wrapped = modulated - std::floor(modulated);
-        const double expected = n < 31 ? .5 * std::sqrt(6.) * (2 * wrapped - 1) : 0;
+        const double expected = n < 31 ? std::sqrt(2.) * bandlimited(3, wrapped, 440.0/48000) : 0;
         const auto delayed = reference.next(0, expected);
         assert(left[n] == delayed[0] && std::abs(right[n] - delayed[1]) < 2e-5);
         phase[0] = std::fmod(phase[0] + 440 / 48000., 1.);
@@ -998,9 +1064,9 @@ void checkFm(IComponent* component, IAudioProcessor* processor, IEditController*
     data.numSamples = 33; data.numOutputs = 1; data.inputEvents = &events;
     assert(processor->process(data) == kResultOk);
     for (int n = 0; n < 33; ++n) {
-        const double expected = .5 * std::sqrt(6.) * (2 * n * 440 / 48000. - 1);
+        const double expected = std::sqrt(2.) * bandlimited(3, n*440.0/48000, 440.0/48000);
         const auto delayed = reference.next(0, expected);
-        assert(left[n] == delayed[0] && std::abs(right[n] - delayed[1]) < 3e-7);
+        assert(left[n] == delayed[0] && std::abs(right[n] - delayed[1]) < 2e-6);
     }
     reference.flush();
     assert(processor->setProcessing(false) == kResultOk);
@@ -1047,7 +1113,7 @@ void checkPhase(IComponent* component, IAudioProcessor* processor, IEditControll
         data.numSamples = static_cast<int32>(expected.size());
         assert(processor->process(data) == kResultOk);
         size_t i = 0;
-        for (double value : expected) assert(std::abs(buffer[i++] - reference.next(value * peak)) < 1e-6);
+        for (double value : expected) assert(std::abs(buffer[i++] - reference.next(bandlimited(3, (value + 1)/2, .125))) < 1e-6);
     };
     events.values = {note(true, 0, 1)};
     check({-1, -.75, -.5});
@@ -1085,7 +1151,7 @@ void checkVolume(IComponent* component, IAudioProcessor* processor, IEditControl
     configureEnvelope(processor, true);
     Points volume, waveform, polyphony;
     volume.id = volumeId; polyphony.id = polyphonyId;
-    waveform.values = {{0, 0.5}}; polyphony.values = {{0, 1.0 / 31.0}};
+    waveform.values = {{0, 0.0}}; polyphony.values = {{0, 1.0 / 31.0}};
     Changes changes; changes.queues = {&volume, &waveform, &polyphony};
     ProcessData data; data.symbolicSampleSize = precision; data.inputParameterChanges = &changes;
     assert(processor->process(data) == kResultOk);
@@ -1101,12 +1167,17 @@ void checkVolume(IComponent* component, IAudioProcessor* processor, IEditControl
     else bus.channelBuffers64 = channels;
     Events events; events.values = {note(true, 0, 1), note(true, 0, 2)};
     data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
+    double phase = 0;
     auto check = [&](std::initializer_list<double> decibels) {
         data.numSamples = static_cast<int32>(decibels.size());
         assert(processor->process(data) == kResultOk);
         size_t i = 0;
-        // 振幅0.5の矩形波2ボイスを加算した後に、dBの振幅倍率を掛ける。
-        for (double db : decibels) assert(std::abs(buffer[i++] - reference.next(std::pow(10.0, db / 20.0))) < 1e-6);
+        // Sine2ボイスを加算した後に、dBの振幅倍率を掛ける。
+        for (double db : decibels) {
+            const double source = std::sqrt(2.0) * std::sin(2*std::acos(-1.0)*phase);
+            phase = std::fmod(phase + 440.0/setup.sampleRate, 1.0);
+            assert(std::abs(buffer[i++] - reference.next(source * std::pow(10.0, db / 20.0))) < 3e-6);
+        }
     };
     check({0}); events.values.clear();
     volume.values = {{0, 1.0/601}, {3, 241.0/601}}; check({-48, -40, -32, -24});
@@ -1136,7 +1207,7 @@ void checkPanning(IComponent* component, IAudioProcessor* processor, IEditContro
     }
     configureEnvelope(processor, true);
     Points waveform, unison, detune, width, pan, filter;
-    waveform.values = {{0, 0.5}};
+    waveform.values = {{0, 0.0}};
     unison.id = unisonId; unison.values = {{0, 1.0 / 6.0}};
     detune.id = detuneId; detune.values = {{0, .25}};
     width.id = widthId; pan.id = panId;
@@ -1158,12 +1229,21 @@ void checkPanning(IComponent* component, IAudioProcessor* processor, IEditContro
     data.numSamples = 8; data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
     width.values = {{3, 1}}; pan.values = {{7, 1}};
     assert(processor->process(data) == kResultOk);
+    std::array<double, 2> phases {};
+    auto tones = [&]() {
+        std::array<double, 2> result;
+        for (int k = 0; k < 2; ++k) {
+            result[k] = std::sin(2*std::acos(-1.0)*phases[k]);
+            phases[k] = std::fmod(phases[k] + 440*std::pow(2.0, (k*50-25)/1200.0)/setup.sampleRate, 1.0);
+        }
+        return result;
+    };
     for (int i = 0; i < 8; ++i) {
         const double w = std::min(1.0, (i + 1) / 4.0), p = (i + 1) / 8.0;
-        double l = 0, r = 0;
+        double l = 0, r = 0; const auto tone = tones(); int k = 0;
         for (double side : {-1.0, 1.0}) {
             const double angle = (1 + p + (1 - p) * w * side) * std::acos(-1.0) / 4;
-            l += .5 * std::cos(angle); r += .5 * std::sin(angle);
+            l += std::sqrt(.5) * tone[k] * std::cos(angle); r += std::sqrt(.5) * tone[k++] * std::sin(angle);
         }
         const auto delayed = reference.next(l, r);
         assert(std::abs(left[i]-delayed[0])<1e-6 && std::abs(right[i]-delayed[1])<1e-6);
@@ -1172,11 +1252,11 @@ void checkPanning(IComponent* component, IAudioProcessor* processor, IEditContro
     width.values.clear(); pan.values.clear(); events.values.clear();
     assert(processor->process(data) == kResultOk); // 最終値を次のブロックでも保持。
     assert(bus.silenceFlags == 3);
-    for (int i = 0; i < 8; ++i) { const auto delayed=reference.next(0,1); assert(std::abs(left[i]-delayed[0])<1e-6 && std::abs(right[i]-delayed[1])<1e-6); }
+    for (int i = 0; i < 8; ++i) { const auto tone=tones(); const auto delayed=reference.next(0,std::sqrt(.5)*(tone[0]+tone[1])); assert(std::abs(left[i]-delayed[0])<1e-6 && std::abs(right[i]-delayed[1])<1e-6); }
     pan.values = {{0, 0}};
     assert(processor->process(data) == kResultOk);
     assert(bus.silenceFlags == 3);
-    for (int i = 0; i < 8; ++i) { const auto delayed=reference.next(1,0); assert(std::abs(left[i]-delayed[0])<1e-6 && std::abs(right[i]-delayed[1])<1e-6); }
+    for (int i = 0; i < 8; ++i) { const auto tone=tones(); const auto delayed=reference.next(std::sqrt(.5)*(tone[0]+tone[1]),0); assert(std::abs(left[i]-delayed[0])<1e-6 && std::abs(right[i]-delayed[1])<1e-6); }
     reference.flush();
     assert(processor->setProcessing(false) == kResultOk && component->setActive(false) == kResultOk);
 }
@@ -1198,7 +1278,7 @@ void checkCutoffEnvelope(IComponent* component, IAudioProcessor* processor, IEdi
         changes.queues.push_back(&points[i]);
     }
     configureEnvelope(processor, true);
-    points[6].id = waveformId; points[6].values = {{0, 0.5}};
+    points[6].id = waveformId; points[6].values = {{0, 0.0}};
     points[7].id = filterIds[0]; points[7].values = {{0, 2.0 / 6.0}};
     points[8].id = filterIds[1]; points[8].values = {{0, .1}}; // -1200 cent
     for (int i = 6; i < 9; ++i) changes.queues.push_back(&points[i]);
@@ -1226,7 +1306,7 @@ void checkCutoffEnvelope(IComponent* component, IAudioProcessor* processor, IEdi
     double phase = 0;
     for (int n = 0; n < 24; ++n) {
         const bool gate = n < 8 || (n >= 10 && n < 19);
-        const double source = gate ? (phase < .5 ? .5 : -.5) : 0;
+        const double source = gate ? std::sqrt(.5) * std::sin(2*std::acos(-1.0)*phase) : 0;
         if (gate) phase = std::fmod(phase + 440.0 / setup.sampleRate, 1.0);
         const double amount = n <= 3 ? 1200 : (n <= 7 ? 1200 - (n - 3) * 600 : -1200 + (n - 8) * 400);
         const double hz = 440 * std::pow(2.0, (-1200 + amount * levels[n]) / 1200);
@@ -1274,7 +1354,7 @@ void checkNoise(IComponent* component, IAudioProcessor* processor, IEditControll
     ProcessData data; data.symbolicSampleSize = precision; data.numSamples = 257;
     data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events; data.inputParameterChanges = &changes;
     assert(processor->process(data) == kResultOk);
-    assert(left[69] == Sample(.5) && left == right && bus.silenceFlags == 0);
+    assert(left[69] == Sample(0) && left == right && bus.silenceFlags == 0);
     for (int i = 1; i < 257; ++i) assert(std::isfinite(left[i]) && std::abs(left[i]) <= .5 * std::sqrt(3.0));
     StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes[8] == 4);
     assert(controller->setComponentState(&saved) == kResultOk);

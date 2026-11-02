@@ -302,15 +302,24 @@ impl Voice {
             self.state.oscillator_inputs[i].active = active;
             let input = &mut self.state.oscillator_inputs[i];
             input.phase_modulation = modulation;
-            let current = self.state.oscillators[i].generate_sample(input, sample_rate);
+            let mut current = self.state.oscillators[i].generate_sample(input, sample_rate);
             modulation = current.values[0] * depths[i];
-            let audio = volume::process_sample(
-                &current.values[..current.count],
-                if i == 0 { gains } else { &mono },
-                self.state.oscillator_gains[i],
-            );
-            sample[0] += audio[0];
-            sample[1] += audio[1];
+            if self.state.oscillator_gains[i] != 0.0 {
+                // 無音の変調源はrawだけを使い、音声用のピーク復元・定位を省く。
+                if !matches!(input.waveform, Waveform::Sine | Waveform::Noise) {
+                    volume::restore_peak_sample(
+                        &mut current.values[..current.count],
+                        self.state.oscillators[i].peak_scales(),
+                    );
+                }
+                let audio = volume::process_sample(
+                    &current.values[..current.count],
+                    if i == 0 { gains } else { &mono },
+                    self.state.oscillator_gains[i],
+                );
+                sample[0] += audio[0];
+                sample[1] += audio[1];
+            }
         }
         let sample = sample.map(|value| value * amplitude);
         let output = self.state.filter.process_sample(
@@ -343,23 +352,14 @@ impl Voice {
 mod tests {
     use super::*;
 
+    fn audio_values(oscillator: &mut Oscillator, input: &OscillatorInput, rate: f64) -> [f64; 7] {
+        let mut current = oscillator.generate_sample(input, rate);
+        volume::restore_peak_sample(&mut current.values, oscillator.peak_scales());
+        current.values
+    }
+
     #[test]
     fn phase_modulation_chain_matches_same_sample_raw_waveforms() {
-        fn raw(wave: Waveform, phase: f64) -> f64 {
-            match wave {
-                Waveform::Sine => (std::f64::consts::TAU * phase).sin(),
-                Waveform::Triangle => 4.0 * ((phase - 0.25).abs() - 0.5).abs() - 1.0,
-                Waveform::Square => {
-                    if phase < 0.5 {
-                        1.0
-                    } else {
-                        -1.0
-                    }
-                }
-                Waveform::Sawtooth => 2.0 * phase - 1.0,
-                Waveform::Noise => unreachable!(),
-            }
-        }
         for rate in [44100.0, 48000.0, 96000.0] {
             for wave in [
                 Waveform::Sine,
@@ -404,8 +404,16 @@ mod tests {
                             carrier.fill(0.0);
                             modulators.fill(0.0);
                         }
-                        let m3 = raw(wave, modulators[1]);
-                        let m2 = raw(wave, (modulators[0] + depths[1] * m3).rem_euclid(1.0));
+                        let m3 = crate::oscillator::reference::raw_sample(
+                            wave,
+                            modulators[1],
+                            220.0 / rate,
+                        );
+                        let m2 = crate::oscillator::reference::raw_sample(
+                            wave,
+                            (modulators[0] + depths[1] * m3).rem_euclid(1.0),
+                            880.0 / rate,
+                        );
                         let expected = carrier
                             .iter()
                             .map(|p| (std::f64::consts::TAU * (p + depths[0] * m2)).sin())
@@ -650,7 +658,7 @@ mod tests {
                     input.active = voice.state.gate;
                     let expected = filter.process_sample(
                         volume::process_sample(
-                            &oscillator.generate_sample(&input, 1000.0).values
+                            &audio_values(&mut oscillator, &input, 1000.0)
                                 [..input.rendered_voices()],
                             &[[1.0; 2]; 7],
                             voice.state.amplitude
@@ -719,7 +727,7 @@ mod tests {
                 for _ in 0..64 {
                     let expected = reference.process_sample(
                         volume::process_sample(
-                            &oscillator.generate_sample(&input, 48_000.0).values
+                            &audio_values(&mut oscillator, &input, 48_000.0)
                                 [..input.rendered_voices()],
                             &[[1.0; 2]; 7],
                             voice.state.amplitude
@@ -744,7 +752,7 @@ mod tests {
                 for _ in 0..16 {
                     let expected = reference.process_sample(
                         volume::process_sample(
-                            &oscillator.generate_sample(&input, 48_000.0).values
+                            &audio_values(&mut oscillator, &input, 48_000.0)
                                 [..input.rendered_voices()],
                             &[[1.0; 2]; 7],
                             voice.state.amplitude

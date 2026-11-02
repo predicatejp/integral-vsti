@@ -459,7 +459,13 @@ fn check_host_events(activate_events: bool) {
             } else if n < 65 {
                 assert!((*sample_ptr - expected_sine[n - 61]).abs() < 1e-14);
             } else {
-                assert!((sample_ptr.read().abs() - (n - 61) as f64 * 0.5 * step).abs() < 1e-14);
+                let square = crate::oscillator::reference::audio_sample(
+                    crate::oscillator::Waveform::Square,
+                    (n + 14) as f64 / 128.0,
+                    1.0 / 128.0,
+                );
+                let expected = (n - 61) as f64 * 0.5 * step * square;
+                assert!((sample_ptr.read() - expected).abs() < 1e-7);
             }
         }
         assert_eq!((pt.set_processing)(processor, 0), OK);

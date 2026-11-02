@@ -483,7 +483,7 @@ mod tests {
         for polyphony in [1, 4] {
             let mut synth = polyphonic(polyphony);
             let mut values = synth.state.parameters;
-            // 設定配送中も全音の矩形波が正側に留まる低音を使う。
+            let mut phases = [0.0_f64; 7];
             for id in 0..polyphony {
                 synth.note_on(note(id as i32, 0, 0), 0.0, 1.0);
             }
@@ -498,7 +498,7 @@ mod tests {
                             synth.set_parameters(values);
                             let count = if detune == 0.0 { 1 } else { unison };
                             let mut expected = [0.0; 2];
-                            for k in 0..count {
+                            for (k, phase) in phases.iter_mut().enumerate().take(count) {
                                 let spread = if count == 1 {
                                     0.0
                                 } else {
@@ -506,8 +506,13 @@ mod tests {
                                 };
                                 let position = pan + (1.0 - pan.abs()) * width * spread;
                                 let angle = (position + 1.0) * std::f64::consts::FRAC_PI_4;
-                                let gain = 0.5 * std::f64::consts::SQRT_2 * polyphony as f64
+                                let gain = (std::f64::consts::TAU * *phase).sin()
+                                    * polyphony as f64
                                     / (count as f64).sqrt();
+                                let hz = 440.0
+                                    * 2.0_f64.powf(-69.0 / 12.0)
+                                    * 2.0_f64.powf(detune * spread / 1200.0);
+                                *phase = (*phase + hz / 48000.0).fract();
                                 expected[0] += gain * angle.cos();
                                 expected[1] += gain * angle.sin();
                             }
@@ -522,6 +527,7 @@ mod tests {
                 }
             }
             synth.stop();
+            values[12] = parameters::to_normalized(12, 1.0); // 再発音時の位相を揃える。
             values[20] = 0.43;
             values[21] = 0.31;
             synth.set_parameters(values);
@@ -611,7 +617,7 @@ mod tests {
         let mut synth = unfiltered();
         let mut values = parameters::defaults();
         values[9] = 0.0;
-        values[0] = parameters::normalized(Waveform::Square);
+        values[0] = parameters::normalized(Waveform::Sine);
         values[1] = 0.0;
         values[3] = 0.0;
         values[4] = 1.0;
@@ -690,12 +696,22 @@ mod tests {
                 assert!(synth.note_on(note(id as i32, 0, 60 + id as i16), 0.0, 1.0));
             }
             assert_eq!(synth.state.next_oscillator_id, 0);
-            // 全枠の初回サンプルは矩形波の正側。音数による音量補正はしない。
-            assert!((synth.mix_sample()[0] - 0.5 * count as f64).abs() < 1e-12);
+            // 全枠の初回サンプルはSineの位相0。
+            assert_eq!(synth.mix_sample()[0], 0.0);
             assert!(synth.note_on(note(100, 0, 100), 0.0, 0.5));
             synth.note_off(note(0, 0, 60)); // 上書き済みのノートでは新しい音を消さない。
             assert!(synth.state.voices[0].state.gate);
-            assert!((synth.mix_sample()[0] - (0.5 * count as f64 - 0.25)).abs() < 1e-12);
+            let expected = (0..count)
+                .map(|i| {
+                    let frequency = 440.0 * 2.0_f64.powf((60.0 + i as f64 - 69.0) / 12.0);
+                    let velocity = if i == 0 { 0.5 } else { 1.0 };
+                    velocity
+                        * 0.5
+                        * std::f64::consts::SQRT_2
+                        * (std::f64::consts::TAU * frequency / 48000.0).sin()
+                })
+                .sum::<f64>();
+            assert!((synth.mix_sample()[0] - expected).abs() < count as f64 * 3e-7);
             let next = synth.state.next_oscillator_id;
             synth.note_off(note(100, 0, 100));
             assert_eq!(synth.state.next_oscillator_id, next);
@@ -763,18 +779,22 @@ mod tests {
         for id in 0..3 {
             synth.note_on(note(id, 0, 60), 0.0, 1.0);
         }
-        assert_eq!(synth.mix_sample()[0], 1.5);
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 3);
         let mut values = synth.state.parameters;
         values[8] = parameters::to_normalized(8, 2.0);
         synth.set_parameters(values);
         assert_eq!(synth.state.next_oscillator_id, 1); // 3 % 2
-        assert_eq!(synth.mix_sample()[0], 1.0);
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 2);
         values[8] = parameters::to_normalized(8, 4.0);
         synth.set_parameters(values);
-        assert_eq!(synth.mix_sample()[0], 1.0); // 除外したノートは復活しない。
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 2); // 除外したノートは復活しない。
         synth.note_on(note(4, 0, 60), 0.0, 1.0); // 1番を上書き。
         synth.note_on(note(5, 0, 60), 0.0, 1.0); // 2番を再使用。
-        assert_eq!(synth.mix_sample()[0], 1.5);
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 3);
         // サンプル処理を挟まず減少→増加→再割り当てしても古い振幅を引き継がない。
         values[8] = 0.0;
         synth.set_parameters(values);
@@ -783,9 +803,13 @@ mod tests {
         synth.set_parameters(values);
         synth.note_on(note(6, 0, 60), 0.0, 1.0);
         synth.note_on(note(7, 0, 60), 0.0, 1.0);
-        assert_eq!(synth.mix_sample()[0], 0.5);
+        let phase = 4.0 * 440.0 * 2.0_f64.powf(-9.0 / 12.0) / 48000.0;
+        let expected = 0.5 * std::f64::consts::SQRT_2 * (std::f64::consts::TAU * phase).sin();
+        assert!((synth.mix_sample()[0] - expected).abs() < 3e-7);
+        assert_eq!(synth.active_voice_count(), 2);
         synth.stop();
-        assert_eq!(synth.mix_sample()[0], 0.0);
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 0);
     }
 
     #[test]
@@ -799,15 +823,20 @@ mod tests {
         ] {
             synth.note_on(n, 0.0, 1.0);
         }
-        assert_eq!(synth.mix_sample()[0], 2.0);
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 4);
         synth.note_off(note(1, 0, 60));
-        assert_eq!(synth.mix_sample()[0], 1.5);
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 3);
         synth.note_off(note(-1, 2, 60)); // 別チャンネルは無関係。
-        assert_eq!(synth.mix_sample()[0], 1.5);
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 3);
         synth.note_off(note(-1, 1, 60)); // IDなし同音の全一致をrelease。
-        assert_eq!(synth.mix_sample()[0], 0.5);
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 1);
         synth.note_off(note(2, 0, 60));
-        assert_eq!(synth.mix_sample()[0], 0.0);
+        synth.mix_sample();
+        assert_eq!(synth.active_voice_count(), 0);
         assert_eq!(synth.state.next_oscillator_id, 0);
     }
 
@@ -846,9 +875,14 @@ mod tests {
                         energy += sample * sample;
                     }
                     let rms = (energy / f64::from(samples)).sqrt();
-                    // 理想波形のRMSに対し、有限個の離散サンプルによる誤差を許容する。
+                    // 残る倍音の振幅からRMSを求める。高次倍音の除去を音量で補償しない。
+                    let expected =
+                        crate::oscillator::reference::rms(waveform, 440.0 / f64::from(rate))
+                            * crate::volume::gain(waveform, 1, 0.5)
+                            * DEFAULT_ENVELOPE.sustain
+                            * f64::from(velocity);
                     assert!(
-                        (rms - 0.5 * DEFAULT_ENVELOPE.sustain * f64::from(velocity)).abs() < 1e-4,
+                        (rms - expected).abs() < 1e-6,
                         "{waveform:?}, rate={rate}, velocity={velocity}, rms={rms}"
                     );
                     synth.note_off(note(1, 0, 69));
@@ -863,14 +897,24 @@ mod tests {
         }
     }
 
+    fn assert_enveloped_sine(synth: &mut Synthesizer, phase: &mut f64, amplitude: f64) {
+        let frequency = synth.state.voices[0].state.oscillator_inputs[0].frequency_hz;
+        let expected =
+            amplitude * std::f64::consts::SQRT_2 * (std::f64::consts::TAU * *phase).sin();
+        // 正弦波テーブルの補間誤差の上限を適用する。
+        assert!((synth.mix_sample()[0] - expected).abs() < 3e-7);
+        *phase = (*phase + frequency / 1000.0).fract();
+    }
+
     #[test]
     fn retrigger_release_and_stop_preserve_amplitude_and_phase() {
         let mut synth = unfiltered();
+        let mut phase = 0.0;
         synth.set_sample_rate(1000.0); // 1サンプル=1ms。
-        synth.state.voices[0].set_oscillator(0, Waveform::Square, 1.0, 1.0);
+        synth.state.voices[0].set_oscillator(0, Waveform::Sine, 1.0, 1.0);
         synth.note_on(note(1, 0, 69), 0.0, 1.0);
         for i in 0..5 {
-            assert!((synth.mix_sample()[0].abs() - 0.05 * f64::from(i)).abs() < 1e-12);
+            assert_enveloped_sine(&mut synth, &mut phase, 0.05 * f64::from(i));
         }
         // attack中の0.25から、異なるベロシティの目標0.4まで10msで移行。
         synth.note_on(note(2, 0, 81), 0.0, 0.8);
@@ -878,14 +922,12 @@ mod tests {
         let peak = 0.5 * f64::from(0.8_f32);
         for i in 0..=10 {
             let expected = 0.25 + (peak - 0.25) * f64::from(i) / 10.0;
-            assert!((synth.mix_sample()[0].abs() - expected).abs() < 1e-12);
+            assert_enveloped_sine(&mut synth, &mut phase, expected);
         }
         synth.note_off(note(2, 0, 81));
         let start = peak * 0.997; // decayを1ms進めた位置。
         for i in 0..=100 {
-            assert!(
-                (synth.mix_sample()[0].abs() - start * (1.0 - f64::from(i) / 100.0)).abs() < 1e-12
-            );
+            assert_enveloped_sine(&mut synth, &mut phase, start * (1.0 - f64::from(i) / 100.0));
         }
         assert_eq!(synth.mix_sample()[0], 0.0);
         synth.note_on(note(3, 0, 69), 0.0, 1.0);
@@ -902,11 +944,12 @@ mod tests {
     #[test]
     fn missing_note_ids_match_channel_and_pitch_and_invalid_notes_are_ignored() {
         let mut synth = unfiltered();
+        let mut phase = 0.0;
         synth.set_sample_rate(1000.0);
-        synth.state.voices[0].set_oscillator(0, Waveform::Square, 1.0, 1.0);
+        synth.state.voices[0].set_oscillator(0, Waveform::Sine, 1.0, 1.0);
         synth.note_on(note(-1, 2, 69), 0.0, 1.0);
-        for _ in 0..5 {
-            synth.mix_sample();
+        for i in 0..5 {
+            assert_enveloped_sine(&mut synth, &mut phase, 0.05 * f64::from(i));
         }
         synth.note_off(note(-1, 3, 69));
         synth.note_off(note(-1, 2, 70));
@@ -914,9 +957,9 @@ mod tests {
         synth.note_on(note(10, 0, 128), 0.0, 1.0);
         synth.note_on(note(10, 0, 69), f32::MAX, 1.0);
         synth.note_on(note(10, 0, 69), 0.0, f32::NAN);
-        assert!((synth.mix_sample()[0].abs() - 0.25).abs() < 1e-12);
+        assert_enveloped_sine(&mut synth, &mut phase, 0.25);
         synth.note_off(note(-1, 2, 69));
-        assert!((synth.mix_sample()[0].abs() - 0.3).abs() < 1e-12);
+        assert_enveloped_sine(&mut synth, &mut phase, 0.3);
         for _ in 0..100 {
             synth.mix_sample();
         }

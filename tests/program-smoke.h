@@ -115,10 +115,10 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     data.numSamples = 33; data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
     assert(processor->process(data) == kResultOk);
     for (int i = 0; i < 33; ++i) {
-        double expected = i < 31 ? .5 : 0.0;
+        double expected = i < 31 ? bandlimited(2, i * 440.0 / 48000.0, 440.0 / 48000.0) : 0.0;
         if ((i >= 5 && i < 9) || (i >= 23 && i < 31))
             expected = .5 * std::sqrt(2.0) * std::sin(2 * std::acos(-1.0) * i * 440 / 48000.0);
-        assert(std::abs(left[i] - reference.next(expected)) < 3e-7 && left[i] == right[i]);
+        assert(std::abs(left[i] - reference.next(expected)) < 1e-6 && left[i] == right[i]);
     }
     // Programと個別変更の結果が現在のDSP設定と同値でも、保存値を一致させる。
     data.numSamples = 0; events.values.clear(); program.values.clear(); wave.values = {{0, .5}};
@@ -139,7 +139,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
         const auto db = i < 4 ? -12.0 * (i + 1) / 9 : -12.0 * (i - 4) / 4;
         const auto gain = std::pow(10.0, db / 20);
         const auto expected = .5 * std::sqrt(2.0) * std::sin(2 * std::acos(-1.0) * i * 440 / 48000.0) * gain;
-        assert(std::abs(left[i] - reference.next(expected)) < 3e-7 && left[i] == right[i]);
+        assert(std::abs(left[i] - reference.next(expected)) < 1e-6 && left[i] == right[i]);
     }
     changes.queues = {&wave, &program};
     reference.flush();
