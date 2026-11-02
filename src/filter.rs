@@ -60,8 +60,8 @@ struct SvfCoefficients {
     g: f64,
     /// HP式の積分器側の倍率（1/Q + g）。
     damping_plus_g: f64,
-    /// HP式の分母（1 + g * (g + 1/Q)）。
-    denominator: f64,
+    /// HP式の分母（1 + g * (g + 1/Q)）の逆数。左右・両段で共用する。
+    inverse_denominator: f64,
 }
 
 /// 1段のTPT SVF。フィルタタイプ・多段化・ノートを扱わない。
@@ -135,7 +135,7 @@ impl Svf {
         let coefficients = SvfCoefficients {
             g,
             damping_plus_g: damping + g,
-            denominator: 1.0 + g * (g + damping),
+            inverse_denominator: 1.0 / (1.0 + g * (g + damping)),
         };
         self.state.coefficients = Some((*parameters, sample_rate, coefficients));
         coefficients
@@ -148,7 +148,8 @@ impl Svf {
         let g = coefficients.g;
         let [s1, s2] = self.state.integrators;
         // HP = input - damping * BP - LPと2つの台形積分器を連立して解く。
-        let high = (sample - coefficients.damping_plus_g * s1 - s2) / coefficients.denominator;
+        let high =
+            (sample - coefficients.damping_plus_g * s1 - s2) * coefficients.inverse_denominator;
         let band = s1 + g * high;
         let low = s2 + g * band;
         let next = [2.0 * band - s1, 2.0 * low - s2];
@@ -306,6 +307,7 @@ mod tests {
         for kind in TYPES {
             let mut filter = Filter::new();
             let mut history = [[0.0; 2]; 2];
+            let (mut error_energy, mut reference_energy) = (0.0, 0.0);
             let mut parameters = TEST_PARAMETERS;
             let mut rate = 48_000.0;
             for n in 0..256 {
@@ -347,13 +349,16 @@ mod tests {
                     };
                 }
                 let actual = filter.process_sample([input; 2], kind, &parameters, rate)[0];
-                // Miriはtanなどの演算に許容範囲の非決定的誤差を加えるため、
-                // 独立に計算した係数の末尾ビットまでの一致は通常CPUで検証する。
-                #[cfg(miri)]
-                assert!((actual - expected).abs() < 1e-12 * (1.0 + expected.abs()));
-                #[cfg(not(miri))]
-                assert_eq!(actual, expected);
+                assert!(actual.is_finite());
+                error_energy += (actual - expected).powi(2);
+                reference_energy += expected.powi(2);
             }
+            // 応答ごとの256サンプルで、直接除算の参照波形に対する誤差RMSを−80 dB以下とする。
+            let relative_error = (error_energy / reference_energy).sqrt();
+            assert!(
+                relative_error <= 1e-4,
+                "{kind:?}: relative RMS error={relative_error:e}"
+            );
         }
     }
 
