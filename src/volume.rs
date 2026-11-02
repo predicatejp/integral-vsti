@@ -16,14 +16,6 @@ pub fn gain(waveform: Waveform, count: usize, volume: f64) -> f64 {
     peak_per_rms * volume / (count as f64).sqrt()
 }
 
-/// ピーク1の生波形を、残す倍音の元の振幅へ戻す。位相変調用rawの使用後に呼ぶ。
-#[inline]
-pub fn restore_peak_sample(values: &mut [f64], peaks: &[f64; 7]) {
-    for (value, peak) in values.iter_mut().zip(peaks) {
-        *value *= peak;
-    }
-}
-
 /// 同時刻のユニゾン波形を定位・加算し、計算済みの音量倍率を適用する。
 /// valuesは最大7要素。空の場合は無音。
 #[inline]

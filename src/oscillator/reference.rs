@@ -36,7 +36,7 @@ fn coefficients(wave: Waveform, increment: f64) -> Vec<f64> {
         .collect()
 }
 
-/// ピーク正規化を戻した、音量処理へ渡す波形の期待値。
+/// 残す倍音の振幅を維持した、生波形の期待値。
 pub fn audio_sample(wave: Waveform, phase: f64, increment: f64) -> f64 {
     if wave == Waveform::Sine {
         return (std::f64::consts::TAU * phase).sin();
@@ -53,9 +53,7 @@ pub fn raw_sample(wave: Waveform, phase: f64, increment: f64) -> f64 {
     if wave == Waveform::Sine {
         super::sine_sample(phase)
     } else {
-        wavetable::Selection::new(wave, increment)
-            .0
-            .generate_sample(wave, phase)
+        wavetable::Selection::new(wave, increment).generate_sample(wave, phase)
     }
 }
 

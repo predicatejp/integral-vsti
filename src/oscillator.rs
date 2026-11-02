@@ -123,7 +123,7 @@ pub struct OscillatorInput {
     pub detune_cents: f64,
     /// 目標周波数（Hz、非負の有限値）。入力を変更しても位相は初期化しない。
     pub frequency_hz: f64,
-    /// 波形を読む位置への位相変調（−2〜2周期）。保持位相には累積しない。
+    /// 波形を読む位置への位相変調（周期単位）。有限のi32範囲を受け取り、保持位相には累積しない。
     pub phase_modulation: f64,
     /// 音量AHDSRの発音期間。release中もtrue、終了・停止後はfalse。
     pub active: bool,
@@ -146,7 +146,7 @@ impl OscillatorInput {
 
     pub fn is_valid(&self) -> bool {
         (0.0..=f64::MAX).contains(&self.frequency_hz)
-            & (-2.0..=2.0).contains(&self.phase_modulation)
+            & (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&self.phase_modulation)
             & (1..=7).contains(&self.unison_voices)
             & (0.0..=100.0).contains(&self.detune_cents)
     }
@@ -168,10 +168,8 @@ pub struct OscillatorState {
     unison_input: Option<(u32, f64)>,
     /// 位相増分・帯域選択の計算に使った（基音Hz, サンプルレート, 波形）。
     frequency_input: Option<(f64, f64, Waveform)>,
-    /// 各ユニゾンの帯域と、ピーク1の生波形を読むための設定。
+    /// 各ユニゾンの帯域とクロスフェード係数。
     bands: [wavetable::Selection; 7],
-    /// 生波形のピーク正規化を音量処理側で戻す倍率。残す倍音の振幅を維持する。
-    peak_scales: [f64; 7],
     /// 各ユニゾンの基音に対する周波数倍率。入力の音程幅が変わったときだけ更新する。
     frequency_ratios: [f64; 7],
     /// 各ユニゾンの1サンプル当たりの位相増分。周波数・レート変更時も更新する。
@@ -180,7 +178,7 @@ pub struct OscillatorState {
 
 /// 同じサンプル時刻の、音量・定位適用前のユニゾン波形。
 pub struct OscillatorSample {
-    /// 各発振器のピーク振幅1の生波形。使用しない要素は0。
+    /// 理想波形のピーク振幅1を基準とする生波形。帯域制限のオーバーシュートを含み、未使用要素は0。
     pub values: [f64; 7],
     /// 発音中の要素数（0〜7）。変調源のOsc2/3は最大1。
     pub count: usize,
@@ -203,7 +201,6 @@ impl Oscillator {
                 unison_input: None,
                 frequency_input: None,
                 bands: [wavetable::Selection::EMPTY; 7],
-                peak_scales: [1.0; 7],
                 frequency_ratios: [1.0; 7],
                 phase_increments: [0.0; 7],
             },
@@ -283,7 +280,7 @@ impl Oscillator {
         let count = input.rendered_voices();
         let mut values = [0.0; 7];
         // 整数周期を先に除き、±1/±2回転では元の位相を厳密に保持する。
-        // SAFETY: generate_sampleで位相変調が有限の−2〜2であることを検証済み。
+        // SAFETY: generate_sampleで位相変調が有限のi32範囲であることを検証済み。
         let cycles = unsafe { input.phase_modulation.to_int_unchecked::<i32>() };
         let offset = input.phase_modulation - f64::from(cycles);
         if offset == 0.0 {
@@ -317,11 +314,6 @@ impl Oscillator {
         OscillatorSample { values, count }
     }
 
-    /// 各ユニゾンのピーク正規化を戻す、音量処理用の倍率。
-    pub fn peak_scales(&self) -> &[f64; 7] {
-        &self.state.peak_scales
-    }
-
     #[cfg(test)]
     fn read_sample(&self, wave: Waveform, phase: f64, k: usize) -> f64 {
         match wave {
@@ -351,10 +343,8 @@ impl Oscillator {
                 .enumerate()
             {
                 let hz = (input.frequency_hz * ratio).min(f64::MAX);
-                if matches!(input.waveform, Waveform::Sine | Waveform::Noise) {
-                    self.state.peak_scales[k] = 1.0;
-                } else {
-                    (self.state.bands[k], self.state.peak_scales[k]) = wavetable::Selection::new(
+                if !matches!(input.waveform, Waveform::Sine | Waveform::Noise) {
+                    self.state.bands[k] = wavetable::Selection::new(
                         input.waveform,
                         if hz < sample_rate {
                             hz / sample_rate
@@ -408,11 +398,9 @@ mod tests {
                     let mut oscillator = Oscillator::new();
                     for _ in 0..257 {
                         let phase = oscillator.state.phases[0];
-                        let raw = oscillator.generate_sample(&input, rate).values[0];
-                        let actual = raw * oscillator.peak_scales()[0];
+                        let actual = oscillator.generate_sample(&input, rate).values[0];
                         let expected =
                             reference::audio_sample(waveform, phase, frequency_hz / rate);
-                        assert!((-1.0..=1.0).contains(&raw));
                         assert!(
                             (actual - expected).abs() < 5e-6,
                             "{waveform:?}, {rate}, {frequency_hz}: {actual} != {expected}"
@@ -425,22 +413,20 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)] // 全帯域の密な位相走査は通常のCPUテストで行う。
-    fn bands_crossfade_before_nyquist_and_preserve_raw_bounds() {
+    fn bands_crossfade_before_nyquist_without_discontinuities() {
         for wave in BANDLIMITED {
             for band in 0..=28 {
                 let h = 2.0_f64.powf(f64::from(band) / 2.0).floor();
                 for fraction in [0.9, 0.95, 1.0] {
                     let boundary = 0.5 / h * fraction;
-                    let (left, left_peak) =
-                        wavetable::Selection::new(wave, boundary * (1.0 - 1e-10));
-                    let (right, right_peak) =
-                        wavetable::Selection::new(wave, boundary * (1.0 + 1e-10));
+                    let left = wavetable::Selection::new(wave, boundary * (1.0 - 1e-10));
+                    let right = wavetable::Selection::new(wave, boundary * (1.0 + 1e-10));
                     for n in 0..=257 {
                         let phase = f64::from(n) / 257.0;
                         let a = left.generate_sample(wave, phase);
                         let b = right.generate_sample(wave, phase);
-                        assert!(a.abs() <= 1.0 && b.abs() <= 1.0);
-                        assert!((a * left_peak - b * right_peak).abs() < 1e-8);
+                        assert!(a.is_finite() && b.is_finite());
+                        assert!((a - b).abs() < 1e-8);
                     }
                 }
             }
@@ -475,8 +461,7 @@ mod tests {
                             frequency_hz: increment * 48000.0,
                             ..test_input()
                         };
-                        let raw = oscillator.generate_sample(&input, 48000.0).values[0];
-                        let actual = raw * oscillator.peak_scales()[0];
+                        let actual = oscillator.generate_sample(&input, 48000.0).values[0];
                         let expected = reference::audio_sample(wave, phase, increment);
                         assert!((actual - expected).abs() < 5e-6);
                         phase = (phase + input.frequency_hz / 48000.0).fract();
@@ -514,7 +499,6 @@ mod tests {
                 };
                 let expected = single.generate_sample(&individual, rate);
                 assert_eq!(actual.values[k], expected.values[0]);
-                assert_eq!(combined.peak_scales()[k], single.peak_scales()[0]);
             }
         }
     }
@@ -532,10 +516,7 @@ mod tests {
                 ..test_input()
             };
             let samples: Vec<_> = (0..length)
-                .map(|_| {
-                    let raw = oscillator.generate_sample(&input, 48000.0).values[0];
-                    raw * oscillator.peak_scales()[0]
-                })
+                .map(|_| oscillator.generate_sample(&input, 48000.0).values[0])
                 .collect();
             let mut harmonic_energy = 0.0;
             let mut unwanted_energy = 0.0;
@@ -567,14 +548,10 @@ mod tests {
         rate: f64,
         gains: &PanningGains,
     ) -> [f64; 2] {
-        let mut sample = oscillator.generate_sample(input, rate);
+        let sample = oscillator.generate_sample(input, rate);
         if sample.count == 0 {
             return [0.0; 2];
         }
-        crate::volume::restore_peak_sample(
-            &mut sample.values[..sample.count],
-            oscillator.peak_scales(),
-        );
         crate::volume::process_sample(
             &sample.values[..sample.count],
             gains,
@@ -590,7 +567,21 @@ mod tests {
             Waveform::Square,
             Waveform::Sawtooth,
         ] {
-            for offset in [-2.0, -1.75, -1.0, -0.25, 0.0, 0.25, 1.0, 1.75, 2.0] {
+            for offset in [
+                f64::from(i32::MIN),
+                -2.5,
+                -2.0,
+                -1.75,
+                -1.0,
+                -0.25,
+                0.0,
+                0.25,
+                1.0,
+                1.75,
+                2.0,
+                2.5,
+                f64::from(i32::MAX),
+            ] {
                 let mut oscillator = Oscillator::new();
                 oscillator.state.phases = [0.0, 0.125, 0.25, 0.375, 0.5, 0.75, 0.875];
                 let before = oscillator.state.phases;
@@ -607,7 +598,7 @@ mod tests {
                     let expected =
                         oscillator.read_sample(wave, (phase + offset).rem_euclid(1.0), k);
                     assert_eq!(result.values[k], expected);
-                    assert!((-1.0..=1.0).contains(&result.values[k]));
+                    assert!(result.values[k].is_finite());
                     assert_eq!(
                         oscillator.state.phases[k],
                         phase + oscillator.state.phase_increments[k]
@@ -1108,10 +1099,7 @@ mod tests {
             );
             if input.active {
                 let sample = oscillator.read_sample(wave, before[0], 0);
-                assert!((-1.0..=1.0).contains(&sample));
-                if matches!(wave, Waveform::Sine) {
-                    assert_eq!(oscillator.peak_scales(), &[1.0; 7]);
-                }
+                assert!(sample.is_finite());
             }
         }
     }
@@ -1232,7 +1220,13 @@ mod tests {
                 0.0
             );
         }
-        for phase_modulation in [f64::NAN, f64::INFINITY, -2.1, 2.1] {
+        for phase_modulation in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::from(i32::MIN) - 1.0,
+            f64::from(i32::MAX) + 1.0,
+        ] {
             let invalid = OscillatorInput {
                 phase_modulation,
                 ..input

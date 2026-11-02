@@ -17,8 +17,6 @@ struct Table {
     length: f64,
     /// このテーブルに含める最高倍音の番号。
     harmonic: f64,
-    /// 補間区間の内部極値を含むピーク上限。
-    peak: f64,
 }
 
 impl Table {
@@ -52,21 +50,21 @@ pub(super) struct Selection {
     index: usize,
     /// 直前の帯域（倍音の少ないテーブル）への混合率。
     mix: f64,
-    /// raw出力をピーク1へ収める倍率。Nyquist直前では基音もフェードする。
-    normalization: f64,
+    /// Nyquist直前で基音を0へ下げる倍率。他の帯域は1。
+    gain: f64,
 }
 
 impl Selection {
     pub const EMPTY: Self = Self {
         index: 0,
         mix: 0.0,
-        normalization: 0.0,
+        gain: 0.0,
     };
 
-    /// 正規化周波数Hz/fsから選択し、音量処理で戻すピーク倍率も返す。
+    /// 正規化周波数Hz/fsから帯域とクロスフェード係数を選ぶ。
     /// incrementは剰余を取る前の非負の周波数比。1以上は1で代用できる。
     #[inline(never)] // 帯域選択は入力変更時だけ行い、毎サンプルの入力比較へ展開しない。
-    pub fn new(wave: Waveform, increment: f64) -> (Self, f64) {
+    pub fn new(wave: Waveform, increment: f64) -> Self {
         let tables = tables(wave);
         // 正規化周波数の指数で候補IDを引く。1007は2^-16のbiased exponent。
         // 各オクターブ内の追加の境界は最大1個なので、実周波数で1回だけ補正する。
@@ -76,20 +74,11 @@ impl Selection {
         let index =
             candidate.saturating_sub(usize::from(tables[candidate].harmonic * increment >= 0.5));
         let rich = &tables[index];
-        let poor = &tables[index.saturating_sub(1)];
         // 最高倍音がNyquistを超える前に、最後の10%の区間で除去し終える。
         let mix = ((increment * rich.harmonic * 2.0 - 0.9) * 10.0).clamp(0.0, 1.0);
         let gain = if index == 0 { 1.0 - mix } else { 1.0 };
         let mix = if index == 0 { 0.0 } else { mix };
-        let peak = rich.peak + (poor.peak - rich.peak) * mix;
-        (
-            Self {
-                index,
-                mix,
-                normalization: gain / peak,
-            },
-            peak,
-        )
+        Self { index, mix, gain }
     }
 
     /// phaseは発振器の保持位相または変調後の、有限の[0,1]。
@@ -106,7 +95,7 @@ impl Selection {
         if self.mix != 0.0 {
             value += (tables[self.index - 1].read_sample(folded) - value) * self.mix;
         }
-        value * (self.normalization.copysign(0.5 - phase))
+        value * (self.gain.copysign(0.5 - phase))
     }
 }
 
@@ -123,7 +112,7 @@ mod tests {
                     .partition_point(|t| t.harmonic * increment < 0.5)
                     .saturating_sub(1);
                 assert_eq!(
-                    Selection::new(wave, increment).0.index,
+                    Selection::new(wave, increment).index,
                     reference,
                     "increment={increment:?}"
                 );

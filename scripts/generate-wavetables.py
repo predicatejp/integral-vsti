@@ -9,24 +9,6 @@ ROOT = Path(__file__).resolve().parents[1] / "src/oscillator"
 BANDS = np.unique(np.floor(2 ** (np.arange(29) / 2)).astype(int))
 
 
-def peak_bound(coefficients):
-    """float32へ丸めた多項式の端点・内部極値からピーク上限を得る。"""
-    b, c1, c2, c3 = coefficients.astype(np.float64).T
-    peak = max(np.max(np.abs(b)), np.max(np.abs(b + c1 + c2 + c3)))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        discriminant = 4*c2*c2 - 12*c3*c1
-        roots = [(-2*c2 + sign*np.sqrt(np.maximum(discriminant, 0))) / (6*c3)
-                 for sign in [-1, 1]]
-        roots.append(np.where(c3 == 0, -c1 / (2*c2), np.nan))
-        for root in roots:
-            valid = (discriminant >= 0) & (root > 0) & (root < 1) & np.isfinite(root)
-            t = root[valid]
-            values = b[valid] + t*(c1[valid] + t*(c2[valid] + t*c3[valid]))
-            peak = max(peak, np.max(np.abs(values), initial=0))
-    # 実行時のf64積和の丸めに余裕を持たせる。同じ倍率を音量処理側で戻す。
-    return float(peak * (1 + 1e-12))
-
-
 def generate():
     data = bytearray()
     # 2^-16〜2^-2の各オクターブ先頭で選ぶ帯域。端の項目を範囲外にも使う。
@@ -58,7 +40,7 @@ def generate():
             offset = len(data)
             data.extend(coefficients.tobytes())
             rows.append(f"    Table {{ offset: {offset}, length: {length}.0, "
-                        f"harmonic: {harmonic}.0, peak: {peak_bound(coefficients)!r} }},")
+                        f"harmonic: {harmonic}.0 }},")
         records.append(f"#[rustfmt::skip]\npub(super) static {wave.upper()}: [Table; {len(BANDS)}] = [\n"
                        + "\n".join(rows) + "\n];")
     ROOT.joinpath("wavetable.bin").write_bytes(data)

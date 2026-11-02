@@ -302,16 +302,10 @@ impl Voice {
             self.state.oscillator_inputs[i].active = active;
             let input = &mut self.state.oscillator_inputs[i];
             input.phase_modulation = modulation;
-            let mut current = self.state.oscillators[i].generate_sample(input, sample_rate);
+            let current = self.state.oscillators[i].generate_sample(input, sample_rate);
             modulation = current.values[0] * depths[i];
             if self.state.oscillator_gains[i] != 0.0 {
-                // 無音の変調源はrawだけを使い、音声用のピーク復元・定位を省く。
-                if !matches!(input.waveform, Waveform::Sine | Waveform::Noise) {
-                    volume::restore_peak_sample(
-                        &mut current.values[..current.count],
-                        self.state.oscillators[i].peak_scales(),
-                    );
-                }
+                // 無音の変調源はrawだけを使い、音声用の定位・加算を省く。
                 let audio = volume::process_sample(
                     &current.values[..current.count],
                     if i == 0 { gains } else { &mono },
@@ -353,9 +347,7 @@ mod tests {
     use super::*;
 
     fn audio_values(oscillator: &mut Oscillator, input: &OscillatorInput, rate: f64) -> [f64; 7] {
-        let mut current = oscillator.generate_sample(input, rate);
-        volume::restore_peak_sample(&mut current.values, oscillator.peak_scales());
-        current.values
+        oscillator.generate_sample(input, rate).values
     }
 
     #[test]
@@ -446,6 +438,51 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn square_modulator_retains_amplitude_above_one() {
+        for rate in [44100.0, 48000.0, 96000.0] {
+            let mut voice = Voice::new();
+            let shape = EnvelopeParameters {
+                attack_ms: 0.0,
+                hold_ms: 0.0,
+                decay_ms: 0.0,
+                sustain: 1.0,
+                release_ms: 0.0,
+            };
+            voice.set_parameters(Waveform::Sine, shape, 1, 0.0, PhaseMode::Zero);
+            voice.set_filter(FilterType::None, 4800.0, 1.0);
+            voice.set_oscillator(1, Waveform::Square, 4.0, 0.0);
+            voice.set_phase_modulation([2.0, 0.0]);
+            voice.note_on(
+                Note {
+                    id: 1,
+                    channel: 0,
+                    pitch: 108,
+                },
+                0.0,
+                1.0,
+            );
+            let frequency = voice.state.oscillator_inputs[0].frequency_hz;
+            let (mut carrier, mut modulator, mut max_offset) = (0.0_f64, 0.0_f64, 0.0_f64);
+            for _ in 0..256 {
+                // この音程の矩形波は全レートで基音だけが残り、振幅は4/π。
+                let offset =
+                    2.0 * (4.0 / std::f64::consts::PI) * (std::f64::consts::TAU * modulator).sin();
+                let expected = 0.5
+                    * std::f64::consts::SQRT_2
+                    * (std::f64::consts::TAU * (carrier + offset)).sin();
+                let actual = voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+                assert!((actual[0] - expected).abs() < 2e-6);
+                assert_eq!(actual[0], actual[1]);
+                max_offset =
+                    max_offset.max(voice.state.oscillator_inputs[0].phase_modulation.abs());
+                carrier = (carrier + frequency / rate).fract();
+                modulator = (modulator + frequency * 4.0 / rate).fract();
+            }
+            assert!(max_offset > 2.5);
         }
     }
 
