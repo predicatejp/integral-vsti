@@ -415,7 +415,7 @@ Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune
 ノブは直径44pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
 Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
 ノブを左ボタンで押し、上へ動かすと増加、下へ動かすと減少します。1tickに必要な移動量はUniが32物理px、Polyが8物理px、その他が4物理pxです。1tick未満の移動量は次の操作へ持ち越します。
-目盛り位置は`src/editor.rs`の`knob_marks`でノブごとに整数tickとして定義します。基準点は長く濃い線で示します。
+目盛り位置は`src/editor.rs`の`knob_marks`でノブごとに整数tickとして定義します。目盛りは円弧ガイドから直接伸ばし、基準点と両端はガイドと同じ色・2px幅の長い線で示します。
 
 | ノブ | 目盛りの値 | 強調する基準点 |
 | --- | --- | --- |
@@ -426,7 +426,8 @@ Waveform・Filter・Phaseはドロップダウンで選択します。リスト�
 | Det / Width / Mix | 0〜100、25刻み | 0 |
 | F / Amt / Tune | 1200 cent（1 oct）刻み | 0 cent |
 | Res | Q = 0.5 / 1 / 2 / 4 / 6 / 8 / 10 | Q = 1 |
-| Vol / Gain | 有限範囲を12 dB刻み | 0 dB |
+| Vol | −∞ / −36 / −24 / −12 / 0 / +12 dB | 0 dB |
+| Gain | 0〜48 dB、12 dB刻み | 0 dB |
 | Pan | −100 / −50 / 0 / 50 / 100 % | 中央 |
 | FM | 0 / 50 / 100 / 150 / 200 % | 0 % |
 

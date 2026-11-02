@@ -54,7 +54,7 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
             240,
         ),
         11 => (&[0, 50, 150, 350, 550, 750, 950], 50), // Q: 0.5/1/2/4/6/8/10
-        13 | 22 | 25 | 28 => (&[1, 121, 241, 361, 481, 601], 481), // −48〜+12 dB、12 dB刻み
+        13 | 22 | 25 | 28 => (&[0, 121, 241, 361, 481, 601], 481), // −∞ / −36〜+12 dB、12 dB刻み
         19 => (&[0, 120, 240, 360, 480, 600, 720, 840, 960], 480), // Amount: −4〜+4 oct
         21 => (&[0, 50, 100, 150, 200], 100),          // Pan: 中央を強調
         24 | 27 => (&[0, 120, 240, 360, 480], 240),    // Tune: −2〜+2 oct
@@ -273,19 +273,21 @@ impl Editor {
         } else {
             0.0
         };
+        let guide_stroke = egui::Stroke::new(2.0, LINE);
         let (marks, reference) = knob_marks(index);
         for &mark in marks {
             let d = direction(mark as f32 / parameters::max_tick(index) as f32);
-            let major = mark == reference;
+            let major = mark == reference || mark == 0 || mark == parameters::max_tick(index);
             painter.line_segment(
                 [
-                    center + d * 28.0,
+                    center + d * 26.0,
                     center + d * if major { 32.0 } else { 30.0 },
                 ],
-                egui::Stroke::new(
-                    if major { 2.0 } else { 1.0 },
-                    if major { INK } else { LINE },
-                ),
+                if major {
+                    guide_stroke
+                } else {
+                    egui::Stroke::new(1.0, LINE)
+                },
             );
         }
         let arc = |from: f32, to: f32| {
@@ -293,10 +295,7 @@ impl Editor {
                 .map(|k| center + direction(from + (to - from) * k as f32 / 32.0) * 26.0)
                 .collect::<Vec<_>>()
         };
-        painter.add(egui::Shape::line(
-            arc(0.0, 1.0),
-            egui::Stroke::new(2.0, LINE),
-        ));
+        painter.add(egui::Shape::line(arc(0.0, 1.0), guide_stroke));
         painter.add(egui::Shape::line(
             arc(zero, position),
             egui::Stroke::new(3.0, ACCENT),
