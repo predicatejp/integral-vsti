@@ -563,16 +563,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
 #endif
-            const bool zeroReference = i == 1 || i == 2 || i == 3 || i == 5 || i == 6 || i == 7 ||
-                                       i == 8 || i == 14 || i == 15 || i == 16 || i == 18 ||
-                                       i == 20 || i == 29 || i == 30 || i == 32 || i == 33;
-            const int pixelsPerTick = (i == 6 ? 32 : i == 8 ? 8 : 4) * (zeroReference ? 50 : 1);
-            // 画面内の小さな移動に分け、基準値の脱出距離も蓄積する。
-            for (int remaining = pixelsPerTick - 1; remaining > 0;) {
-                const int step = std::min(remaining, 32);
-                parent.movePointer(x, y - step); pump();
-                remaining -= step;
-            }
+            const int pixelsPerTick = i == 6 ? 32 : i == 8 ? 8 : 4;
+            parent.movePointer(x, y - (pixelsPerTick - 1)); pump(); // 開始値は吸着しない。
             assert(handler.sequence.size() == 1 && controller->getParamNormalized(info.id) == 0.0);
             assert(parent.pointerAt(x, y));
             parent.movePointer(x, y - 1);
@@ -612,6 +604,28 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             parent.movePointer(20, 20); pump(); assert(parent.pointerAt(20, 20));
             assert(parent.cursorVisible());
             handler.sequence.clear();
+            if (i == 21) {
+                // 中央からの開始は4px。戻って到達した中央からは160pxで離れる。
+                assert(controller->setParamNormalized(info.id, .5) == kResultOk);
+                parent.movePointer(x, y); pump(); parent.knobButton(true);
+                waitFor([&] { return handler.sequence.size() == 1; }, "pan center begin");
+                parent.movePointer(x, y - 4);
+                waitFor([&] { return handler.sequence.size() == 2; }, "pan center start");
+                assert(std::abs(handler.value - .505) < 1e-9);
+                parent.movePointer(x, y + 4);
+                waitFor([&] { return handler.sequence.size() == 3; }, "pan center arrival");
+                assert(handler.value == .5);
+                for (int step : {32, 32, 32, 32, 31}) {
+                    parent.movePointer(x, y - step); pump();
+                }
+                assert(handler.sequence.size() == 3 && handler.value == .5);
+                parent.movePointer(x, y - 1);
+                waitFor([&] { return handler.sequence.size() == 4; }, "pan center detent exit");
+                assert(std::abs(handler.value - .505) < 1e-9);
+                parent.knobButton(false);
+                waitFor([&] { return handler.sequence.size() == 5; }, "pan center end");
+                handler.sequence.clear();
+            }
             assert(controller->setParamNormalized(info.id, .123456789) == kResultOk);
             pump(); assert(handler.sequence.empty());
         }
