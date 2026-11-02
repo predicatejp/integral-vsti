@@ -39,6 +39,31 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = {
     pixels
 };
 
+/// ノブごとの目盛り位置と、長く強調する基準点（ともに整数tick）。
+fn knob_marks(index: usize) -> (&'static [u32], u32) {
+    match index {
+        // 時間: 0 / 10 / 100 / 1000 / 5000 ms。0と隣接する1 msは省く。
+        1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 371], 0),
+        4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
+        6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
+        7 | 20 | 33 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
+        8 => (&[0, 3, 7, 15, 23, 31], 0),       // Polyphony: 1/4/8/16/24/32
+        // Cutoff: −2〜+8 oct、0 centを強調。
+        10 => (
+            &[0, 120, 240, 360, 480, 600, 720, 840, 960, 1080, 1200],
+            240,
+        ),
+        11 => (&[0, 50, 150, 350, 550, 750, 950], 50), // Q: 0.5/1/2/4/6/8/10
+        13 | 22 | 25 | 28 => (&[1, 121, 241, 361, 481, 601], 481), // −48〜+12 dB、12 dB刻み
+        19 => (&[0, 120, 240, 360, 480, 600, 720, 840, 960], 480), // Amount: −4〜+4 oct
+        21 => (&[0, 50, 100, 150, 200], 100),          // Pan: 中央を強調
+        24 | 27 => (&[0, 120, 240, 360, 480], 240),    // Tune: −2〜+2 oct
+        29 | 30 => (&[0, 50, 100, 150, 200], 0),       // 位相変調: 0〜2回転、半回転刻み
+        32 => (&[0, 120, 240, 360, 480], 0),           // Gain: 0〜48 dB、12 dB刻み
+        _ => (&[], 0),
+    }
+}
+
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
 const PANEL: egui::Color32 = egui::Color32::from_rgb(248, 249, 245);
 const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
@@ -242,17 +267,25 @@ impl Editor {
         let direction = |t: f32| egui::vec2(angle(t).cos(), angle(t).sin());
         let center = rect.center();
         let painter = ui.painter().clone();
-        // 一定の目盛りと値の円弧。中点を持つパラメーターはゼロから両方向へ伸ばす。
+        // 実単位に沿った目盛り。中点を持つパラメーターの円弧はゼロから伸ばす。
         let zero = if matches!(index, 19 | 21 | 24 | 27) {
             0.5
         } else {
             0.0
         };
-        for k in 0..=8 {
-            let d = direction(k as f32 / 8.0);
+        let (marks, reference) = knob_marks(index);
+        for &mark in marks {
+            let d = direction(mark as f32 / parameters::max_tick(index) as f32);
+            let major = mark == reference;
             painter.line_segment(
-                [center + d * 28.0, center + d * 30.0],
-                egui::Stroke::new(1.0, LINE),
+                [
+                    center + d * 28.0,
+                    center + d * if major { 32.0 } else { 30.0 },
+                ],
+                egui::Stroke::new(
+                    if major { 2.0 } else { 1.0 },
+                    if major { INK } else { LINE },
+                ),
             );
         }
         let arc = |from: f32, to: f32| {
