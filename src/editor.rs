@@ -40,7 +40,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = {
 };
 
 /// 基準値から離れる最初の1tickに必要な移動量の倍率。
-const KNOB_DETENT_MULTIPLIER: u32 = 8;
+const KNOB_DETENT_MULTIPLIER: u32 = 50;
 
 /// ノブごとの目盛り位置と、長く強調する基準点（ともに整数tick）。
 fn knob_marks(index: usize) -> (&'static [u32], u32) {
@@ -50,7 +50,7 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
         6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
         7 | 20 | 33 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
-        8 => (&[0, 3, 7, 15, 23, 31], 0),       // Polyphony: 1/4/8/16/24/32
+        8 => (&[0, 7, 15, 23, 31], 0),          // Polyphony: 1/8/16/24/32
         // Cutoff: −2〜+8 oct、0 centを強調。
         10 => (
             &[0, 120, 240, 360, 480, 600, 720, 840, 960, 1080, 1200],
@@ -931,7 +931,7 @@ mod tests {
             assert!(pixels > 0);
             let (_, reference) = knob_marks(index);
             for tick in 0..=max {
-                let distance = (pixels * if tick == reference { 8 } else { 1 }) as f32;
+                let distance = (pixels * if tick == reference { 50 } else { 1 }) as f32;
                 for (dy, next) in [(-distance, tick + 1), (distance, tick.saturating_sub(1))] {
                     if (tick == 0 && dy > 0.0) || (tick == max && dy < 0.0) {
                         continue;
@@ -948,7 +948,7 @@ mod tests {
                     index,
                     max,
                     0.0,
-                    (pixels * if max == reference { 8 } else { 1 }) as f32
+                    (pixels * if max == reference { 50 } else { 1 }) as f32
                 ),
                 (max - 1, 0.0)
             );
@@ -958,25 +958,25 @@ mod tests {
 
     #[test]
     fn detent_holds_pan_center_and_consumes_travel_in_both_directions() {
-        // Panの中央tick=100へ到達後、4×8=32pxを蓄積してから離れる。
+        // Panの中央tick=100へ到達後、4×50=200pxを蓄積してから離れる。
         assert_eq!(move_tick(21, 99, 0.0, -4.0), (100, 0.0));
-        assert_eq!(move_tick(21, 100, 0.0, -31.0), (100, 31.0));
-        assert_eq!(move_tick(21, 100, 31.0, -1.0), (101, 0.0));
+        assert_eq!(move_tick(21, 100, 0.0, -199.0), (100, 199.0));
+        assert_eq!(move_tick(21, 100, 199.0, -1.0), (101, 0.0));
         assert_eq!(move_tick(21, 101, 0.0, 4.0), (100, 0.0));
-        assert_eq!(move_tick(21, 100, 0.0, 31.0), (100, -31.0));
-        assert_eq!(move_tick(21, 100, -31.0, 1.0), (99, 0.0));
+        assert_eq!(move_tick(21, 100, 0.0, 199.0), (100, -199.0));
+        assert_eq!(move_tick(21, 100, -199.0, 1.0), (99, 0.0));
         // Panの±50%やVolの−12 dBは通常の目盛りなので4pxで離れる。
         assert_eq!(move_tick(21, 50, 0.0, -4.0), (51, 0.0));
         assert_eq!(move_tick(21, 150, 0.0, 4.0), (149, 0.0));
         assert_eq!(move_tick(13, 361, 0.0, -4.0), (362, 0.0));
-        // Volの0 dBは基準値なので32pxで離れる。
-        assert_eq!(move_tick(13, 481, 0.0, -31.0), (481, 31.0));
-        assert_eq!(move_tick(13, 481, 31.0, -1.0), (482, 0.0));
+        // Volの0 dBは基準値なので200pxで離れる。
+        assert_eq!(move_tick(13, 481, 0.0, -199.0), (481, 199.0));
+        assert_eq!(move_tick(13, 481, 199.0, -1.0), (482, 0.0));
         // 吸着中の方向反転では、蓄積した移動を戻してから反対側へ進む。
         assert_eq!(move_tick(21, 100, 7.0, 7.0), (100, 0.0));
         // 1イベントで跨いでも、途中の基準値の脱出距離を消費する。
-        assert_eq!(move_tick(21, 99, 0.0, -40.0), (102, 0.0));
-        assert_eq!(move_tick(21, 101, 0.0, 40.0), (98, 0.0));
+        assert_eq!(move_tick(21, 99, 0.0, -208.0), (102, 0.0));
+        assert_eq!(move_tick(21, 101, 0.0, 208.0), (98, 0.0));
         for dy in [-700.0_f32, 700.0] {
             let whole = move_tick(21, 100, 0.0, dy);
             let mut split = (100, 0.0);
