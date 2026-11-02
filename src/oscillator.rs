@@ -5,8 +5,13 @@
 
 use crate::random::Random;
 
+#[cfg(test)]
+#[path = "oscillator/reference.rs"]
+pub(crate) mod reference;
 #[path = "oscillator_tables.rs"]
 mod tables;
+#[path = "oscillator/wavetable.rs"]
+mod wavetable;
 
 /// 等間隔テーブルの隣接点を線形補間する。
 /// SAFETY: positionは有限の0〜1024。tableは2〜1025要素で、positionは最終位置以下。
@@ -87,23 +92,10 @@ pub enum Waveform {
     Triangle,
     /// 前半周期が正、後半周期が負の50%デューティ矩形波。
     Square,
-    /// 位相0の負のピークから直線的に上昇し、周期境界で折り返すノコギリ波。
+    /// 上昇するノコギリ波。帯域制限により周期境界の不連続点は0を通る。
     Sawtooth,
     /// 毎サンプル別の一様乱数を使うホワイトノイズ。
     Noise,
-}
-
-impl Waveform {
-    /// 周期波の位相またはNoiseの一様乱数[0, 1)からピーク振幅1のサンプルを生成する。
-    fn unit_sample(self, phase: f64) -> f64 {
-        match self {
-            Self::Sine => sine_sample(phase),
-            Self::Triangle => 4.0 * ((phase - 0.25).abs() - 0.5).abs() - 1.0,
-            // phase=0.5の+0も負側へ含めるため、符号を反転する。
-            Self::Square => -1.0_f64.copysign(phase - 0.5),
-            Self::Sawtooth | Self::Noise => 2.0 * phase - 1.0,
-        }
-    }
 }
 
 /// Note On境界で各ユニゾン位相へ適用する動作。
@@ -131,7 +123,7 @@ pub struct OscillatorInput {
     pub detune_cents: f64,
     /// 目標周波数（Hz、非負の有限値）。入力を変更しても位相は初期化しない。
     pub frequency_hz: f64,
-    /// 波形を読む位置への位相変調（−2〜2周期）。保持位相には累積しない。
+    /// 波形を読む位置への位相変調（周期単位）。有限のi32範囲を受け取り、保持位相には累積しない。
     pub phase_modulation: f64,
     /// 音量AHDSRの発音期間。release中もtrue、終了・停止後はfalse。
     pub active: bool,
@@ -154,7 +146,7 @@ impl OscillatorInput {
 
     pub fn is_valid(&self) -> bool {
         (0.0..=f64::MAX).contains(&self.frequency_hz)
-            & (-2.0..=2.0).contains(&self.phase_modulation)
+            & (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&self.phase_modulation)
             & (1..=7).contains(&self.unison_voices)
             & (0.0..=100.0).contains(&self.detune_cents)
     }
@@ -174,8 +166,10 @@ pub struct OscillatorState {
     note_generation: u64,
     /// 周波数倍率の計算に使った（ユニゾン数, Detune）。Noneは未計算。
     unison_input: Option<(u32, f64)>,
-    /// 位相増分の計算に使った（基音Hz, サンプルレート）。
-    frequency_input: Option<(f64, f64)>,
+    /// 位相増分・帯域選択の計算に使った（基音Hz, サンプルレート, 波形）。
+    frequency_input: Option<(f64, f64, Waveform)>,
+    /// 各ユニゾンの帯域とクロスフェード係数。
+    bands: [wavetable::Selection; 7],
     /// 各ユニゾンの基音に対する周波数倍率。入力の音程幅が変わったときだけ更新する。
     frequency_ratios: [f64; 7],
     /// 各ユニゾンの1サンプル当たりの位相増分。周波数・レート変更時も更新する。
@@ -184,7 +178,7 @@ pub struct OscillatorState {
 
 /// 同じサンプル時刻の、音量・定位適用前のユニゾン波形。
 pub struct OscillatorSample {
-    /// 各発振器のピーク振幅1の生波形。使用しない要素は0。
+    /// 理想波形のピーク振幅1を基準とする生波形。帯域制限のオーバーシュートを含み、未使用要素は0。
     pub values: [f64; 7],
     /// 発音中の要素数（0〜7）。変調源のOsc2/3は最大1。
     pub count: usize,
@@ -206,6 +200,7 @@ impl Oscillator {
                 note_generation: 0,
                 unison_input: None,
                 frequency_input: None,
+                bands: [wavetable::Selection::EMPTY; 7],
                 frequency_ratios: [1.0; 7],
                 phase_increments: [0.0; 7],
             },
@@ -256,34 +251,80 @@ impl Oscillator {
     /// 位相変調は読出し位置だけへ適用する。Noiseはユニゾンごとに乱数を一つ進める。
     #[inline]
     fn generate_waveform_sample(&mut self, input: &OscillatorInput) -> OscillatorSample {
+        match input.waveform {
+            Waveform::Noise => {
+                let count = input.rendered_voices();
+                let mut values = [0.0; 7];
+                for value in &mut values[..count] {
+                    *value = 2.0 * self.state.noise.next_f64() - 1.0;
+                }
+                OscillatorSample { values, count }
+            }
+            Waveform::Sine => self.generate_periodic_sample::<false>(input),
+            _ => self.generate_bandlimited_sample(input),
+        }
+    }
+
+    // 帯域別のループを分離してSine/Noiseを小さく保ち、ユニゾンごとの関数呼出しを省く。
+    #[inline(never)]
+    fn generate_bandlimited_sample(&self, input: &OscillatorInput) -> OscillatorSample {
+        self.generate_periodic_sample::<true>(input)
+    }
+
+    /// 波形別に展開する周期波の読出し。位相変調の処理は両経路で共通にする。
+    #[inline(always)]
+    fn generate_periodic_sample<const BANDED: bool>(
+        &self,
+        input: &OscillatorInput,
+    ) -> OscillatorSample {
         let count = input.rendered_voices();
         let mut values = [0.0; 7];
-        if input.waveform == Waveform::Noise {
-            for value in &mut values[..count] {
-                *value = Waveform::Noise.unit_sample(self.state.noise.next_f64());
+        // 整数周期を先に除き、±1/±2回転では元の位相を厳密に保持する。
+        // SAFETY: generate_sampleで位相変調が有限のi32範囲であることを検証済み。
+        let cycles = unsafe { input.phase_modulation.to_int_unchecked::<i32>() };
+        let offset = input.phase_modulation - f64::from(cycles);
+        if offset == 0.0 {
+            for (k, (value, &phase)) in values[..count]
+                .iter_mut()
+                .zip(&self.state.phases)
+                .enumerate()
+            {
+                *value = if BANDED {
+                    self.state.bands[k].generate_sample(input.waveform, phase)
+                } else {
+                    sine_sample(phase)
+                };
             }
         } else {
-            // 整数周期を先に除き、±1/±2回転では元の位相を厳密に保持する。
-            // SAFETY: generate_sampleで位相変調が有限の−2〜2であることを検証済み。
-            let cycles = unsafe { input.phase_modulation.to_int_unchecked::<i32>() };
-            let offset = input.phase_modulation - f64::from(cycles);
-            if offset == 0.0 {
-                for (value, &phase) in values[..count].iter_mut().zip(&self.state.phases) {
-                    *value = input.waveform.unit_sample(phase);
-                }
-                return OscillatorSample { values, count };
-            }
-            for (value, &phase) in values[..count].iter_mut().zip(&self.state.phases) {
+            for (k, (value, &phase)) in values[..count]
+                .iter_mut()
+                .zip(&self.state.phases)
+                .enumerate()
+            {
                 let position = phase + offset;
                 let wrapped = position + f64::from((position < 0.0) as u8)
                     - f64::from((position >= 1.0) as u8);
-                *value = input.waveform.unit_sample(wrapped);
+                *value = if BANDED {
+                    self.state.bands[k].generate_sample(input.waveform, wrapped)
+                } else {
+                    sine_sample(wrapped)
+                };
             }
         }
         OscillatorSample { values, count }
     }
 
+    #[cfg(test)]
+    fn read_sample(&self, wave: Waveform, phase: f64, k: usize) -> f64 {
+        match wave {
+            Waveform::Sine => sine_sample(phase),
+            Waveform::Noise => 2.0 * phase - 1.0,
+            _ => self.state.bands[k].generate_sample(wave, phase),
+        }
+    }
+
     /// 定常入力が変わったサンプルでだけ周波数倍率・位相増分を再計算する。
+    #[inline]
     fn refresh_frequency(&mut self, input: &OscillatorInput, sample_rate: f64) {
         let unison = (input.unison_voices, input.detune_cents);
         let changed = self.state.unison_input != Some(unison);
@@ -294,13 +335,24 @@ impl Oscillator {
             }
             self.state.unison_input = Some(unison);
         }
-        let frequency = (input.frequency_hz, sample_rate);
+        let frequency = (input.frequency_hz, sample_rate, input.waveform);
         if changed || self.state.frequency_input != Some(frequency) {
-            for (increment, ratio) in self.state.phase_increments[..count]
+            for (k, (increment, ratio)) in self.state.phase_increments[..count]
                 .iter_mut()
                 .zip(&self.state.frequency_ratios[..count])
+                .enumerate()
             {
                 let hz = (input.frequency_hz * ratio).min(f64::MAX);
+                if !matches!(input.waveform, Waveform::Sine | Waveform::Noise) {
+                    self.state.bands[k] = wavetable::Selection::new(
+                        input.waveform,
+                        if hz < sample_rate {
+                            hz / sample_rate
+                        } else {
+                            1.0
+                        },
+                    );
+                }
                 // 通常音程では剰余を省く。高周波では除算のオーバーフローを防ぐ。
                 *increment = if hz < sample_rate {
                     hz
@@ -330,6 +382,165 @@ impl Oscillator {
 mod tests {
     use super::*;
 
+    const BANDLIMITED: [Waveform; 3] = [Waveform::Triangle, Waveform::Square, Waveform::Sawtooth];
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // 多数のFourier係数との数値照合は通常のCPUテストで行う。
+    fn bandlimited_samples_match_retained_fourier_harmonics() {
+        for waveform in BANDLIMITED {
+            for rate in [44100.0, 48000.0, 96000.0] {
+                for frequency_hz in [440.0, 8000.0, 18000.0] {
+                    let input = OscillatorInput {
+                        waveform,
+                        frequency_hz,
+                        ..test_input()
+                    };
+                    let mut oscillator = Oscillator::new();
+                    for _ in 0..257 {
+                        let phase = oscillator.state.phases[0];
+                        let actual = oscillator.generate_sample(&input, rate).values[0];
+                        let expected =
+                            reference::audio_sample(waveform, phase, frequency_hz / rate);
+                        assert!(
+                            (actual - expected).abs() < 5e-6,
+                            "{waveform:?}, {rate}, {frequency_hz}: {actual} != {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // 全帯域の密な位相走査は通常のCPUテストで行う。
+    fn bands_crossfade_before_nyquist_without_discontinuities() {
+        for wave in BANDLIMITED {
+            for band in 0..=28 {
+                let h = 2.0_f64.powf(f64::from(band) / 2.0).floor();
+                for fraction in [0.9, 0.95, 1.0] {
+                    let boundary = 0.5 / h * fraction;
+                    let left = wavetable::Selection::new(wave, boundary * (1.0 - 1e-10));
+                    let right = wavetable::Selection::new(wave, boundary * (1.0 + 1e-10));
+                    for n in 0..=257 {
+                        let phase = f64::from(n) / 257.0;
+                        let a = left.generate_sample(wave, phase);
+                        let b = right.generate_sample(wave, phase);
+                        assert!(a.is_finite() && b.is_finite());
+                        assert!((a - b).abs() < 1e-8);
+                    }
+                }
+            }
+            let mut oscillator = Oscillator::new();
+            for frequency_hz in [24000.0, 48000.0, 96000.0, f64::MAX] {
+                let input = OscillatorInput {
+                    waveform: wave,
+                    frequency_hz,
+                    ..test_input()
+                };
+                for _ in 0..8 {
+                    assert_eq!(oscillator.generate_sample(&input, 48000.0).values[0], 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // スイープのFourier照合は通常のCPUテストで行う。
+    fn frequency_sweeps_cross_bands_without_holding_the_old_table() {
+        for wave in BANDLIMITED {
+            for harmonic in [2, 4, 8, 16, 32, 64, 128] {
+                for reverse in [false, true] {
+                    let mut oscillator = Oscillator::new();
+                    let mut phase = 0.137;
+                    oscillator.state.phases[0] = phase;
+                    for n in 0..129 {
+                        let position = f64::from(if reverse { 128 - n } else { n }) / 128.0;
+                        let increment = (0.85 + 0.20 * position) * 0.5 / f64::from(harmonic);
+                        let input = OscillatorInput {
+                            waveform: wave,
+                            frequency_hz: increment * 48000.0,
+                            ..test_input()
+                        };
+                        let actual = oscillator.generate_sample(&input, 48000.0).values[0];
+                        let expected = reference::audio_sample(wave, phase, increment);
+                        assert!((actual - expected).abs() < 5e-6);
+                        phase = (phase + input.frequency_hz / 48000.0).fract();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unison_selects_each_band_after_detune_and_refreshes_on_input_changes() {
+        let mut combined = Oscillator::new();
+        let mut singles: [Oscillator; 7] = std::array::from_fn(|_| Oscillator::new());
+        for n in 0..96 {
+            let input = OscillatorInput {
+                waveform: [
+                    Waveform::Sawtooth,
+                    Waveform::Triangle,
+                    Waveform::Square,
+                    Waveform::Sine,
+                ][n / 24],
+                frequency_hz: if n % 2 == 0 { 750.0 } else { 3000.0 },
+                unison_voices: 7,
+                detune_cents: 1.0 + n as f64,
+                ..test_input()
+            };
+            let rate = if n % 3 == 0 { 96000.0 } else { 48000.0 };
+            let actual = combined.generate_sample(&input, rate);
+            for (k, single) in singles.iter_mut().enumerate() {
+                let individual = OscillatorInput {
+                    frequency_hz: input.frequency_hz * input.frequency_ratio(k),
+                    unison_voices: 1,
+                    detune_cents: 0.0,
+                    ..input
+                };
+                let expected = single.generate_sample(&individual, rate);
+                assert_eq!(actual.values[k], expected.values[0]);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // 非同期位相でのDFT走査は通常のCPUテストで行う。
+    fn bandlimited_output_rejects_nonharmonic_energy() {
+        let length = 1021; // テーブルの区間数と互いに素にし、補間点の間も検査する。
+        let fundamental = 91;
+        for wave in BANDLIMITED {
+            let mut oscillator = Oscillator::new();
+            let input = OscillatorInput {
+                waveform: wave,
+                frequency_hz: 48000.0 * fundamental as f64 / length as f64,
+                ..test_input()
+            };
+            let samples: Vec<_> = (0..length)
+                .map(|_| oscillator.generate_sample(&input, 48000.0).values[0])
+                .collect();
+            let mut harmonic_energy = 0.0;
+            let mut unwanted_energy = 0.0;
+            for bin in 0..=length / 2 {
+                let (mut real, mut imaginary) = (0.0, 0.0);
+                for (n, &sample) in samples.iter().enumerate() {
+                    let angle = std::f64::consts::TAU * (bin * n) as f64 / length as f64;
+                    real += sample * angle.cos();
+                    imaginary += sample * angle.sin();
+                }
+                let energy = real * real + imaginary * imaginary;
+                if bin > 0
+                    && bin % fundamental == 0
+                    && (wave == Waveform::Sawtooth || bin / fundamental % 2 == 1)
+                {
+                    harmonic_energy += energy;
+                } else {
+                    unwanted_energy += energy;
+                }
+            }
+            assert!(unwanted_energy / harmonic_energy < 1e-12, "{wave:?}");
+        }
+    }
+
     // 音量・定位との接続を検証するため、独立した音量処理を通す。
     fn audio_sample(
         oscillator: &mut Oscillator,
@@ -356,7 +567,21 @@ mod tests {
             Waveform::Square,
             Waveform::Sawtooth,
         ] {
-            for offset in [-2.0, -1.75, -1.0, -0.25, 0.0, 0.25, 1.0, 1.75, 2.0] {
+            for offset in [
+                f64::from(i32::MIN),
+                -2.5,
+                -2.0,
+                -1.75,
+                -1.0,
+                -0.25,
+                0.0,
+                0.25,
+                1.0,
+                1.75,
+                2.0,
+                2.5,
+                f64::from(i32::MAX),
+            ] {
                 let mut oscillator = Oscillator::new();
                 oscillator.state.phases = [0.0, 0.125, 0.25, 0.375, 0.5, 0.75, 0.875];
                 let before = oscillator.state.phases;
@@ -370,9 +595,10 @@ mod tests {
                 let result = oscillator.generate_sample(&input, 48000.0);
                 assert_eq!(result.count, 7);
                 for (k, phase) in before.into_iter().enumerate() {
-                    let expected = wave.unit_sample((phase + offset).rem_euclid(1.0));
+                    let expected =
+                        oscillator.read_sample(wave, (phase + offset).rem_euclid(1.0), k);
                     assert_eq!(result.values[k], expected);
-                    assert!((-1.0..=1.0).contains(&result.values[k]));
+                    assert!(result.values[k].is_finite());
                     assert_eq!(
                         oscillator.state.phases[k],
                         phase + oscillator.state.phase_increments[k]
@@ -591,7 +817,7 @@ mod tests {
                             let position = pan + width * (1.0 - pan.abs()) * spread;
                             let angle = (position + 1.0) * std::f64::consts::FRAC_PI_4;
                             // Sineのピーク0.5*sqrt(2)、中央補正sqrt(2)、ユニゾン補正1/sqrt(N)。
-                            let sample = input.waveform.unit_sample(phase) / (count as f64).sqrt();
+                            let sample = sine_sample(phase) / (count as f64).sqrt();
                             expected[0] += sample * angle.cos();
                             expected[1] += sample * angle.sin();
                         }
@@ -850,121 +1076,32 @@ mod tests {
     }
 
     #[test]
-    fn waveforms_have_expected_shape_and_peak() {
-        let cases = [
-            (
-                Waveform::Sine,
-                std::f64::consts::FRAC_1_SQRT_2,
-                [
-                    0.0,
-                    std::f64::consts::FRAC_1_SQRT_2,
-                    1.0,
-                    std::f64::consts::FRAC_1_SQRT_2,
-                    0.0,
-                    -std::f64::consts::FRAC_1_SQRT_2,
-                    -1.0,
-                    -std::f64::consts::FRAC_1_SQRT_2,
-                ],
-            ),
-            (
-                Waveform::Triangle,
-                0.866_025_403_784_438_6,
-                [0.0, 0.5, 1.0, 0.5, 0.0, -0.5, -1.0, -0.5],
-            ),
-            (
-                Waveform::Square,
-                0.5,
-                [1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0],
-            ),
-            (
-                Waveform::Sawtooth,
-                0.866_025_403_784_438_6,
-                [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75],
-            ),
-        ];
-        for (waveform, peak, expected) in cases {
-            let mut state = sustained();
-            let input = OscillatorInput {
-                waveform,
-                frequency_hz: 1.0,
-
-                active: true,
-                ..test_input()
-            };
-            for _ in 0..2 {
-                for unit in expected {
-                    assert!(
-                        (audio_sample(&mut state, &input, 8.0, &[[1.0; 2]; 7])[0] - peak * unit)
-                            .abs()
-                            < 1e-14,
-                        "{waveform:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn triangle_and_square_match_piecewise_values_at_phase_boundaries() {
-        for edge in [0.0_f64, 0.25, 0.5, 0.75, 1.0] {
-            for phase in [edge.next_down(), edge, edge.next_up()] {
-                if !(0.0..1.0).contains(&phase) {
-                    continue;
-                }
-                // 折り返しの式から独立した、区間ごとの直線で照合する。
-                let triangle = if phase < 0.25 {
-                    4.0 * phase
-                } else if phase < 0.75 {
-                    2.0 - 4.0 * phase
-                } else {
-                    4.0 * phase - 4.0
-                };
-                assert!((Waveform::Triangle.unit_sample(phase) - triangle).abs() <= f64::EPSILON);
-                let square = if phase < 0.5 { 1.0 } else { -1.0 };
-                assert_eq!(Waveform::Square.unit_sample(phase), square);
-            }
-        }
-    }
-
-    #[test]
     fn waveform_changes_and_gate_preserve_phase() {
-        let mut state = sustained();
-        let mut input = OscillatorInput {
-            waveform: Waveform::Sine,
-            frequency_hz: 1.0,
-            phase_modulation: 0.0,
-            active: true,
-            ..test_input()
-        };
-        assert_eq!(
-            audio_sample(&mut state, &input, 4.0, &[[1.0; 2]; 7])[0],
-            0.0
-        );
-        input.waveform = Waveform::Triangle;
-        assert!(
-            (audio_sample(&mut state, &input, 4.0, &[[1.0; 2]; 7])[0] - 0.866_025_403_784_438_6)
-                .abs()
-                < 1e-14
-        );
-        input.waveform = Waveform::Square;
-        assert_eq!(
-            audio_sample(&mut state, &input, 4.0, &[[1.0; 2]; 7])[0],
-            -0.5
-        );
-        input.active = false;
-        input.waveform = Waveform::Sawtooth;
-        assert_eq!(
-            audio_sample(&mut state, &input, 4.0, &[[1.0; 2]; 7])[0],
-            0.0
-        );
-        input.active = true;
-        // 位相を保持して再び発音期間へ入る。
-        input.note_generation += 1;
-        assert!(
-            (audio_sample(&mut state, &input, 4.0, &[[1.0; 2]; 7])[0] - 0.433_012_701_892_219_3)
-                .abs()
-                < 1e-14
-        );
+        let mut oscillator = sustained();
+        let mut input = test_input();
+        for (n, wave) in [
+            Waveform::Sine,
+            Waveform::Triangle,
+            Waveform::Square,
+            Waveform::Sawtooth,
+            Waveform::Sine,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            input.waveform = wave;
+            input.active = n != 3;
+            let before = oscillator.state.phases;
+            oscillator.generate_sample(&input, 8.0);
+            assert_eq!(
+                oscillator.state.phases[0],
+                before[0] + if input.active { 0.125 } else { 0.0 }
+            );
+            if input.active {
+                let sample = oscillator.read_sample(wave, before[0], 0);
+                assert!(sample.is_finite());
+            }
+        }
     }
 
     #[test]
@@ -1028,7 +1165,7 @@ mod tests {
 
     #[test]
     #[cfg(not(miri))] // 長時間平均の数値検証は通常のRust実行で行う。
-    fn unison_waveforms_have_target_long_term_rms() {
+    fn unison_rms_stays_near_ideal_at_440_hz() {
         for waveform in [
             Waveform::Sine,
             Waveform::Triangle,
@@ -1083,7 +1220,13 @@ mod tests {
                 0.0
             );
         }
-        for phase_modulation in [f64::NAN, f64::INFINITY, -2.1, 2.1] {
+        for phase_modulation in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::from(i32::MIN) - 1.0,
+            f64::from(i32::MAX) + 1.0,
+        ] {
             let invalid = OscillatorInput {
                 phase_modulation,
                 ..input

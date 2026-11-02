@@ -16,7 +16,7 @@ pub fn gain(waveform: Waveform, count: usize, volume: f64) -> f64 {
     peak_per_rms * volume / (count as f64).sqrt()
 }
 
-/// 同時刻のユニゾン生波形を定位・加算し、計算済みの音量倍率を適用する。
+/// 同時刻のユニゾン波形を定位・加算し、計算済みの音量倍率を適用する。
 /// valuesは最大7要素。空の場合は無音。
 #[inline]
 pub fn process_sample(values: &[f64], panning: &PanningGains, gain: f64) -> [f64; 2] {
