@@ -563,7 +563,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
 #endif
-            const int pixelsPerTick = i == 6 ? 32 : i == 8 ? 8 : 4;
+            const int pixelsPerTick = (i == 6 ? 32 : i == 8 ? 8 : 4) + 8; // 最小値の目盛りから脱出。
             parent.movePointer(x, y - (pixelsPerTick - 1)); pump(); // 閾値未満は保持。
             assert(handler.sequence.size() == 1 && controller->getParamNormalized(info.id) == 0.0);
             assert(parent.pointerAt(x, y));
