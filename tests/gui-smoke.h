@@ -563,8 +563,16 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
 #endif
-            const int pixelsPerTick = (i == 6 ? 32 : i == 8 ? 8 : 4) + 8; // 最小値の目盛りから脱出。
-            parent.movePointer(x, y - (pixelsPerTick - 1)); pump(); // 閾値未満は保持。
+            const bool zeroReference = i == 1 || i == 2 || i == 3 || i == 5 || i == 6 || i == 7 ||
+                                       i == 8 || i == 14 || i == 15 || i == 16 || i == 18 ||
+                                       i == 20 || i == 29 || i == 30 || i == 32 || i == 33;
+            const int pixelsPerTick = (i == 6 ? 32 : i == 8 ? 8 : 4) * (zeroReference ? 8 : 1);
+            // 画面内の小さな移動に分け、基準値の脱出距離も蓄積する。
+            for (int remaining = pixelsPerTick - 1; remaining > 0;) {
+                const int step = std::min(remaining, 32);
+                parent.movePointer(x, y - step); pump();
+                remaining -= step;
+            }
             assert(handler.sequence.size() == 1 && controller->getParamNormalized(info.id) == 0.0);
             assert(parent.pointerAt(x, y));
             parent.movePointer(x, y - 1);
