@@ -72,13 +72,25 @@ impl<const N: usize> History<N> {
     #[inline]
     fn filter_sample(&self, coefficients: &[f64], step: usize) -> Stereo {
         let x = self.samples();
-        let mut out = x[N / 2].map(|v| v * coefficients[N / 2]);
-        for i in (step - 1..N / 2).step_by(step) {
-            for ch in 0..2 {
-                out[ch] += (x[i][ch] + x[N - 1 - i][ch]) * coefficients[i];
+        // 8本の独立した積和に分け、直前の加算結果を待つ依存を短くする。
+        let mut sums = [[0.0; 2]; 8];
+        for base in (step - 1..N / 2).step_by(8 * step) {
+            for (lane, sum) in sums.iter_mut().enumerate() {
+                let i = base + lane * step;
+                if i < N / 2 {
+                    for ch in 0..2 {
+                        sum[ch] += (x[i][ch] + x[N - 1 - i][ch]) * coefficients[i];
+                    }
+                }
             }
         }
-        out
+        std::array::from_fn(|ch| {
+            (sums[0][ch] + sums[1][ch])
+                + (sums[2][ch] + sums[3][ch])
+                + (sums[4][ch] + sums[5][ch])
+                + (sums[6][ch] + sums[7][ch])
+                + x[N / 2][ch] * coefficients[N / 2]
+        })
     }
     /// ゼロ挿入を省いた2相FIR。位相ごとの対称係数を利用する。
     #[inline]
@@ -89,12 +101,22 @@ impl<const N: usize> History<N> {
                 return x[N / 2].map(|v| v * (2.0 * coefficients[N - 1]));
             }
             let len = N - phase;
-            let mut out = [0.0; 2];
-            for j in 0..len / 2 {
-                for ch in 0..2 {
-                    out[ch] += (x[phase + j][ch] + x[N - 1 - j][ch]) * coefficients[phase + 2 * j];
+            // 2相分のレジスターを使う補間側は積和を4本へ分ける。
+            let mut sums = [[0.0; 2]; 4];
+            for base in (0..len / 2).step_by(4) {
+                for (lane, sum) in sums.iter_mut().enumerate() {
+                    let j = base + lane;
+                    if j < len / 2 {
+                        for ch in 0..2 {
+                            sum[ch] +=
+                                (x[phase + j][ch] + x[N - 1 - j][ch]) * coefficients[phase + 2 * j];
+                        }
+                    }
                 }
             }
+            let mut out = std::array::from_fn::<_, 2, _>(|ch| {
+                (sums[0][ch] + sums[1][ch]) + (sums[2][ch] + sums[3][ch])
+            });
             if len % 2 == 1 {
                 for ch in 0..2 {
                     out[ch] += x[phase + len / 2][ch] * coefficients[phase + 2 * (len / 2)];
@@ -128,12 +150,17 @@ impl Upsampler {
         self.state.wide.reset();
         self.state.half.reset();
     }
+    #[inline]
     pub fn process_samples(&mut self, input: Stereo, mode: Mode) -> [Stereo; 4] {
-        let mut out = [[0.0; 2]; 4];
         if mode == Mode::X1 {
-            out[0] = input;
-            return out;
+            return [input, [0.0; 2], [0.0; 2], [0.0; 2]];
         }
+        self.upsample_samples(input, mode)
+    }
+    // FIRを必要としないx1の呼び出しには大きな計算経路を展開しない。
+    #[inline(never)]
+    fn upsample_samples(&mut self, input: Stereo, mode: Mode) -> [Stereo; 4] {
+        let mut out = [[0.0; 2]; 4];
         self.state.wide.push_sample(input);
         let pair = self.state.wide.interpolate_samples(&WIDE, false);
         if mode == Mode::X2 {
@@ -180,26 +207,30 @@ impl Downsampler {
         self.state.delay1.reset();
         self.state.delay2.reset();
     }
+    #[inline]
     pub fn process_sample(&mut self, input: [Stereo; 4], mode: Mode) -> Stereo {
+        if mode == Mode::X1 {
+            return self.state.delay1.delay_sample(input[0]);
+        }
+        self.downsample_sample(input, mode)
+    }
+    #[inline(never)]
+    fn downsample_sample(&mut self, input: [Stereo; 4], mode: Mode) -> Stereo {
         let s = &mut self.state;
-        match mode {
-            Mode::X1 => s.delay1.delay_sample(input[0]),
-            Mode::X2 => {
-                s.wide.push_sample(input[0]);
-                let out = s.wide.filter_sample(&WIDE, 1);
-                s.wide.push_sample(input[1]);
-                s.delay2.delay_sample(out)
-            }
-            Mode::X4 => {
-                s.half.push_sample(input[0]);
-                s.wide.push_sample(s.half.filter_sample(&HALF, 2));
-                let out = s.wide.filter_sample(&WIDE, 1);
-                s.half.push_sample(input[1]);
-                s.half.push_sample(input[2]);
-                s.wide.push_sample(s.half.filter_sample(&HALF, 2));
-                s.half.push_sample(input[3]);
-                out
-            }
+        if mode == Mode::X2 {
+            s.wide.push_sample(input[0]);
+            let out = s.wide.filter_sample(&WIDE, 1);
+            s.wide.push_sample(input[1]);
+            s.delay2.delay_sample(out)
+        } else {
+            s.half.push_sample(input[0]);
+            s.wide.push_sample(s.half.filter_sample(&HALF, 2));
+            let out = s.wide.filter_sample(&WIDE, 1);
+            s.half.push_sample(input[1]);
+            s.half.push_sample(input[2]);
+            s.wide.push_sample(s.half.filter_sample(&HALF, 2));
+            s.half.push_sample(input[3]);
+            out
         }
     }
 }

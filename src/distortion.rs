@@ -54,6 +54,7 @@ impl Distortion {
         self.state.integral = [[0.0; 2]; 2];
     }
     /// Wetだけを出力する。DryとMixはホストレートで独立して処理する。
+    #[inline]
     pub fn process_sample(
         &mut self,
         input: [f64; 2],
@@ -63,28 +64,39 @@ impl Distortion {
         if parameters.clipper == ClipperType::None {
             return input;
         }
+        if order == AdaaOrder::None {
+            let driven = input.map(|x| x * parameters.gain);
+            return if parameters.clipper == ClipperType::Soft {
+                driven.map(f64::tanh)
+            } else {
+                driven.map(|x| x.clamp(-1.0, 1.0))
+            };
+        }
+        match (
+            parameters.clipper == ClipperType::Soft,
+            order == AdaaOrder::Second,
+        ) {
+            (true, false) => self.process_adaa_sample::<true, false>(input, parameters.gain),
+            (true, true) => self.process_adaa_sample::<true, true>(input, parameters.gain),
+            (false, false) => self.process_adaa_sample::<false, false>(input, parameters.gain),
+            (false, true) => self.process_adaa_sample::<false, true>(input, parameters.gain),
+        }
+    }
+
+    // ADAAの大きな計算経路を分離し、Noneの経路にレジスター退避を持ち込まない。
+    #[inline(never)]
+    fn process_adaa_sample<const SOFT: bool, const SECOND: bool>(
+        &mut self,
+        input: [f64; 2],
+        gain: f64,
+    ) -> [f64; 2] {
         std::array::from_fn(|ch| {
-            let x = input[ch] * parameters.gain;
-            if order == AdaaOrder::None {
-                return if parameters.clipper == ClipperType::Soft {
-                    x.tanh()
-                } else {
-                    x.clamp(-1.0, 1.0)
-                };
-            }
+            let x = input[ch] * gain;
             let previous = self.state.input[0][ch];
-            let values = if parameters.clipper == ClipperType::Soft {
-                soft::eval(x)
-            } else {
-                [0.0; 4]
-            };
-            let integral = if order == AdaaOrder::First {
-                values[1]
-            } else {
-                values[0]
-            };
-            let out = if order == AdaaOrder::First {
-                if parameters.clipper == ClipperType::Hard {
+            let values = if SOFT { soft::eval(x) } else { [0.0; 4] };
+            let integral = if !SECOND { values[1] } else { values[0] };
+            let out = if !SECOND {
+                if !SOFT {
                     hard_first(x, previous)
                 } else if (x - previous).abs() > 1e-6 * (1.0 + x.abs().max(previous.abs())) {
                     (integral - self.state.integral[0][ch]) / (x - previous)
@@ -108,7 +120,7 @@ impl Distortion {
                     v.swap(0, 1);
                 }
                 let [(a, ga), (b, gb), (c, gc)] = v;
-                if parameters.clipper == ClipperType::Hard {
+                if !SOFT {
                     hard_second(a, b, c)
                 } else {
                     soft::second(a, b, c, ga, gb, gc)

@@ -188,7 +188,9 @@ Noiseは`oscillator/Noise/`と`synth/p32/u7/noise`などで測定します。後
 
 ディストーション単体は`distortion/`で計測します。ステレオ入力、Gain=12 dB、None/Soft/Hard、ADAAなし／1次／2次のWet処理を比較します。
 
-SoftのADAA原始関数は`src/distortion/table.rs`（1025点×3列のf64、24,600 bytes）を全Voiceで共有します。
+SoftのADAA原始関数は`src/distortion/table.rs`（1025点×3列のf64）を元に、
+コンパイル時に区間ごとの積分多項式係数（1024区間×5列、40,960 bytes）へ変換し、全Voiceで共有します。
+実行時はこの係数を直接参照し、区間ごとの係数計算を省きます。
 再生成は次のコマンドで行います。
 
 ```sh

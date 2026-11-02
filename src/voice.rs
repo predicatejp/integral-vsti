@@ -237,6 +237,8 @@ impl Voice {
     }
 
     /// 1ホストサンプル分のDryと、補間・クリップ後のWet系列を返す。
+    // 補間・クリップの経路を分離し、通常のVoice加算ループへ展開しない。
+    #[inline(never)]
     pub fn generate_oversampled_samples(
         &mut self,
         sample_rate: f64,
