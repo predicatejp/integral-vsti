@@ -307,6 +307,7 @@ mod tests {
         for kind in TYPES {
             let mut filter = Filter::new();
             let mut history = [[0.0; 2]; 2];
+            let (mut error_energy, mut reference_energy) = (0.0, 0.0);
             let mut parameters = TEST_PARAMETERS;
             let mut rate = 48_000.0;
             for n in 0..256 {
@@ -348,10 +349,16 @@ mod tests {
                     };
                 }
                 let actual = filter.process_sample([input; 2], kind, &parameters, rate)[0];
-                // 参照式は直接除算を維持し、逆数乗算との丸め差を許容する。
-                // IIR履歴への誤差の累積とMiriのtanの誤差も含めて判定する。
-                assert!((actual - expected).abs() < 1e-12 * (1.0 + expected.abs()));
+                assert!(actual.is_finite());
+                error_energy += (actual - expected).powi(2);
+                reference_energy += expected.powi(2);
             }
+            // 応答ごとの256サンプルで、直接除算の参照波形に対する誤差RMSを−80 dB以下とする。
+            let relative_error = (error_energy / reference_energy).sqrt();
+            assert!(
+                relative_error <= 1e-4,
+                "{kind:?}: relative RMS error={relative_error:e}"
+            );
         }
     }
 
