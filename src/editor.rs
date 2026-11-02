@@ -32,12 +32,12 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
-const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = {
-    let mut pixels = [4; parameters::COUNT];
-    pixels[6] = 32; // Unison: 1〜7
-    pixels[8] = 8; // Polyphony: 1〜32
-    pixels
-};
+const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
+    4, 3, 3, 3, 4, 3, 32, 4, 8, 4, 2, 2, 4, 2, // Osc1 / Amp / Filter / Master
+    3, 3, 3, 4, 3, 2, 4, 4, 2, // Cutoff envelope / Amount / Width / Pan / Osc1 Vol
+    4, 3, 2, 4, 3, 2, 4, 4, // Osc2 / Osc3
+    4, 3, 4, 4, 4, // Distortion
+];
 
 /// ドラッグ中に到達した吸着値から離れる最初の1tickに必要な移動量（物理px）。
 const KNOB_DETENT_PIXELS: u32 = 160;
@@ -48,10 +48,9 @@ fn is_detent(index: usize, tick: u32) -> bool {
         return false;
     }
     match index {
-        10 | 24 | 27 => tick.is_multiple_of(120), // Cutoff / Tune: 1200 cent
+        10 | 19 | 24 | 27 => tick.is_multiple_of(120), // Cutoff / Amount / Tune: 1200 cent
         13 | 22 | 25 | 28 => (tick - 1).is_multiple_of(60), // Volume: 6 dB
-        19 => tick == 480,                        // Filter Amount: 0 cent
-        21 => tick == 100,                        // Pan: 中央
+        21 => tick == 100,                             // Pan: 中央
         _ => false,
     }
 }
@@ -59,8 +58,8 @@ fn is_detent(index: usize, tick: u32) -> bool {
 /// ノブごとの目盛り位置と、長く強調する基準点（ともに整数tick）。
 fn knob_marks(index: usize) -> (&'static [u32], u32) {
     match index {
-        // 時間: 0 / 10 / 100 / 1000 / 5000 ms。0と隣接する1 msは省く。
-        1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 371], 0),
+        // 時間: 0 / 10 / 100 / 1000 / 10000 ms。0と隣接する1 msは省く。
+        1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 401], 0),
         4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
         6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
         7 | 20 | 33 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
@@ -71,12 +70,16 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
             240,
         ),
         11 => (&[0, 50, 150, 350, 550, 750, 950], 50), // Q: 0.5/1/2/4/6/8/10
-        13 | 22 | 25 | 28 => (&[0, 121, 241, 361, 481, 601], 481), // −∞ / −36〜+12 dB、12 dB刻み
+        // −∞と−48〜+12 dBの6 dB刻み。全ての吸着位置に目盛りを置く。
+        13 | 22 | 25 | 28 => (
+            &[0, 1, 61, 121, 181, 241, 301, 361, 421, 481, 541, 601],
+            481,
+        ),
         19 => (&[0, 120, 240, 360, 480, 600, 720, 840, 960], 480), // Amount: −4〜+4 oct
-        21 => (&[0, 50, 100, 150, 200], 100),          // Pan: 中央を強調
-        24 | 27 => (&[0, 120, 240, 360, 480], 240),    // Tune: −2〜+2 oct
-        29 | 30 => (&[0, 50, 100, 150, 200], 0),       // 位相変調: 0〜2回転、半回転刻み
-        32 => (&[0, 120, 240, 360, 480], 0),           // Gain: 0〜48 dB、12 dB刻み
+        21 => (&[0, 50, 100, 150, 200], 100),                      // Pan: 中央を強調
+        24 | 27 => (&[0, 120, 240, 360, 480], 240),                // Tune: −2〜+2 oct
+        29 | 30 => (&[0, 50, 100, 150, 200], 0),                   // 位相変調: 0〜2回転、半回転刻み
+        32 => (&[0, 120, 240, 360, 480], 0),                       // Gain: 0〜48 dB、12 dB刻み
         _ => (&[], 0),
     }
 }
@@ -986,10 +989,16 @@ mod tests {
                     10 => &[120, 240, 360, 480, 600, 720, 840, 960, 1080],
                     24 | 27 => &[120, 240, 360],
                     13 | 22 | 25 | 28 => &[1, 61, 121, 181, 241, 301, 361, 421, 481, 541],
-                    19 => &[480],
+                    19 => &[120, 240, 360, 480, 600, 720, 840],
                     21 => &[100],
                     _ => &[],
                 };
+                if is_detent(index, tick) {
+                    assert!(
+                        knob_marks(index).0.contains(&tick),
+                        "missing mark: {index}: {tick}"
+                    );
+                }
                 assert_eq!(
                     is_detent(index, tick),
                     targets.contains(&tick),

@@ -606,7 +606,13 @@ mod tests {
                             &synth.state.mono_gains,
                         );
                         let expected = sample.map(|s| (0..count).map(|_| s).sum::<f64>() * gain);
-                        assert_eq!(synth.mix_sample(), expected, "parameter {index}");
+                        // 初期値と対数軸の往復換算値には浮動小数点の丸め差がある。
+                        for (actual, expected) in synth.mix_sample().into_iter().zip(expected) {
+                            assert!(
+                                (actual - expected).abs() <= 1e-12 * expected.abs().max(1.0),
+                                "parameter {index}: {actual} != {expected}"
+                            );
+                        }
                     }
                 }
             }

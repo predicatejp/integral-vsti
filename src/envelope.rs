@@ -6,15 +6,15 @@
 /// エンベロープの時間と正規化値をまとめたパラメーター。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EnvelopeParameters {
-    /// 開始値からピーク値へ移行する時間（0..=5000 ms）。
+    /// 開始値からピーク値へ移行する時間（0..=10000 ms）。
     pub attack_ms: f64,
-    /// 最大値1を維持する時間（0..=5000 ms）。
+    /// 最大値1を維持する時間（0..=10000 ms）。
     pub hold_ms: f64,
-    /// 最大値1からsustainへ下がる時間（0..=5000 ms）。
+    /// 最大値1からsustainへ下がる時間（0..=10000 ms）。
     pub decay_ms: f64,
     /// 減衰後に維持する値（0..=1）。最大値に対する倍率。
     pub sustain: f64,
-    /// 値が0へ下がる時間（0..=5000 ms）。
+    /// 値が0へ下がる時間（0..=10000 ms）。
     pub release_ms: f64,
 }
 
@@ -30,11 +30,11 @@ pub const DEFAULT_ENVELOPE: EnvelopeParameters = EnvelopeParameters {
 impl EnvelopeParameters {
     /// 範囲外、NaN、無限大を拒否する。
     pub fn is_valid(&self) -> bool {
-        (0.0..=5000.0).contains(&self.attack_ms)
-            & (0.0..=5000.0).contains(&self.hold_ms)
-            & (0.0..=5000.0).contains(&self.decay_ms)
+        (0.0..=10000.0).contains(&self.attack_ms)
+            & (0.0..=10000.0).contains(&self.hold_ms)
+            & (0.0..=10000.0).contains(&self.decay_ms)
             & (0.0..=1.0).contains(&self.sustain)
-            & (0.0..=5000.0).contains(&self.release_ms)
+            & (0.0..=10000.0).contains(&self.release_ms)
     }
 }
 
@@ -284,8 +284,8 @@ mod tests {
 
     #[test]
     fn parameter_endpoints_and_zero_hold() {
-        for duration in [1.0, 5000.0] {
-            for hold_ms in [0.0, 5000.0] {
+        for duration in [1.0, 10000.0] {
+            for hold_ms in [0.0, 10000.0] {
                 for sustain in [0.0, 1.0] {
                     let p = EnvelopeParameters {
                         attack_ms: duration,
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn invalid_parameters_and_times_return_zero() {
-        for invalid in [-1.0, 5000.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for invalid in [-1.0, 10000.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             for p in [
                 EnvelopeParameters {
                     attack_ms: invalid,
