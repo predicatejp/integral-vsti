@@ -31,6 +31,59 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix", "Rate", "Smooth",
 ];
 
+/// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
+const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
+    4, 3, 3, 3, 4, 3, 32, 4, 8, 4, 2, 2, 4, 2, // Osc1 / Amp / Filter / Master
+    3, 3, 3, 4, 3, 2, 4, 4, 2, // Cutoff envelope / Amount / Width / Pan / Osc1 Vol
+    4, 3, 2, 4, 3, 2, 4, 4, // Osc2 / Osc3
+    4, 3, 4, 4, 4, // Distortion
+];
+
+/// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
+const KNOB_DETENT_PIXELS: u32 = 80;
+
+/// 描画目盛りとは独立した吸着対象。最大・最小値は除外する。
+fn is_detent(index: usize, tick: u32) -> bool {
+    if tick == 0 || tick == parameters::max_tick(index) {
+        return false;
+    }
+    match index {
+        10 | 19 | 24 | 27 => tick.is_multiple_of(120), // Cutoff / Amount / Tune: 1200 cent
+        13 | 22 | 25 | 28 => tick.is_multiple_of(60),  // Volume: 6 dB
+        21 => tick == 100,                             // Pan: 中央
+        _ => false,
+    }
+}
+
+/// ノブごとの目盛り位置と、長く強調する基準点（ともに整数tick）。
+fn knob_marks(index: usize) -> (&'static [u32], u32) {
+    match index {
+        // 時間: 0 / 10 / 100 / 1000 / 10000 ms。0と隣接する1 msは省く。
+        1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 401], 0),
+        4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
+        6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
+        7 | 20 | 33 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
+        8 => (&[0, 7, 15, 23, 31], 0),          // Polyphony: 1/8/16/24/32
+        // Cutoff: −2〜+8 oct、0 centを強調。
+        10 => (
+            &[0, 120, 240, 360, 480, 600, 720, 840, 960, 1080, 1200],
+            240,
+        ),
+        11 => (&[0, 50, 150, 350, 550, 750, 950], 50), // Q: 0.5/1/2/4/6/8/10
+        // −∞と−54〜+12 dBの6 dB刻み。全ての吸着位置に目盛りを置く。
+        13 | 22 | 25 | 28 => (
+            &[0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660, 720],
+            600,
+        ),
+        19 => (&[0, 120, 240, 360, 480, 600, 720, 840, 960], 480), // Amount: −4〜+4 oct
+        21 => (&[0, 50, 100, 150, 200], 100),                      // Pan: 中央を強調
+        24 | 27 => (&[0, 120, 240, 360, 480], 240),                // Tune: −2〜+2 oct
+        29 | 30 => (&[0, 50, 100, 150, 200], 0),                   // 位相変調: 0〜2回転、半回転刻み
+        32 => (&[0, 120, 240, 360, 480], 0),                       // Gain: 0〜48 dB、12 dB刻み
+        _ => (&[], 0),
+    }
+}
+
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
 const PANEL: egui::Color32 = egui::Color32::from_rgb(248, 249, 245);
 const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
@@ -82,7 +135,7 @@ struct DragState {
     index: usize,
     /// 操作中の整数tick。ホストへの配送遅延で巻き戻さない。
     tick: u32,
-    /// 1tick未満の上下移動量（物理px）。
+    /// 通常時は未消費の符号付き移動量、吸着中は0〜80の内部位置（物理px）。
     remainder: f32,
     /// 入力開始時のクライアント座標。
     anchor: egui::Pos2,
@@ -90,17 +143,46 @@ struct DragState {
     changed: bool,
 }
 
-/// 上限での余分な移動を捨て、逆方向の操作を即座に受け付ける。
-fn move_tick(tick: u32, remainder: f32, dy: f32, max: u32) -> (u32, f32) {
-    let pixels = remainder - dy;
-    let steps = (pixels / 4.0).trunc() as i32;
-    let next = (i64::from(tick) + i64::from(steps)).clamp(0, i64::from(max)) as u32;
-    let rest = if (next == 0 && pixels < 0.0) || (next == max && pixels > 0.0) {
-        0.0
-    } else {
-        pixels - steps as f32 * 4.0
-    };
-    (next, rest)
+/// 吸着区間の両端から隣のtickへ抜ける。余った移動量は次のtickへ持ち越す。
+fn move_tick(index: usize, mut tick: u32, mut remainder: f32, dy: f32) -> (u32, f32) {
+    let max = parameters::max_tick(index);
+    let mut pixels = -dy;
+    while pixels != 0.0 {
+        let detent = is_detent(index, tick);
+        if !detent {
+            pixels += remainder;
+            remainder = 0.0;
+            if (tick == 0 && pixels < 0.0) || (tick == max && pixels > 0.0) {
+                return (tick, 0.0);
+            }
+        }
+        let increasing = pixels > 0.0;
+        let distance = if detent {
+            if increasing {
+                KNOB_DETENT_PIXELS as f32 - remainder
+            } else {
+                remainder
+            }
+        } else {
+            KNOB_PIXELS_PER_TICK[index] as f32
+        };
+        if pixels.abs() < distance {
+            return (tick, remainder + pixels);
+        }
+        if increasing {
+            tick += 1;
+            pixels -= distance;
+        } else {
+            tick -= 1;
+            pixels += distance;
+        }
+        remainder = if is_detent(index, tick) && !increasing {
+            KNOB_DETENT_PIXELS as f32
+        } else {
+            0.0
+        };
+    }
+    (tick, remainder)
 }
 
 pub(super) struct Editor {
@@ -233,17 +315,27 @@ impl Editor {
         let direction = |t: f32| egui::vec2(angle(t).cos(), angle(t).sin());
         let center = rect.center();
         let painter = ui.painter().clone();
-        // 一定の目盛りと値の円弧。中点を持つパラメーターはゼロから両方向へ伸ばす。
+        // 実単位に沿った目盛り。中点を持つパラメーターの円弧はゼロから伸ばす。
         let zero = if matches!(index, 19 | 21 | 24 | 27) {
             0.5
         } else {
             0.0
         };
-        for k in 0..=8 {
-            let d = direction(k as f32 / 8.0);
+        let guide_stroke = egui::Stroke::new(2.0, LINE);
+        let (marks, reference) = knob_marks(index);
+        for &mark in marks {
+            let d = direction(mark as f32 / parameters::max_tick(index) as f32);
+            let major = mark == reference || mark == 0 || mark == parameters::max_tick(index);
             painter.line_segment(
-                [center + d * 28.0, center + d * 30.0],
-                egui::Stroke::new(1.0, LINE),
+                [
+                    center + d * 26.0,
+                    center + d * if major { 32.0 } else { 30.0 },
+                ],
+                if major {
+                    guide_stroke
+                } else {
+                    egui::Stroke::new(1.0, LINE)
+                },
             );
         }
         let arc = |from: f32, to: f32| {
@@ -251,10 +343,7 @@ impl Editor {
                 .map(|k| center + direction(from + (to - from) * k as f32 / 32.0) * 26.0)
                 .collect::<Vec<_>>()
         };
-        painter.add(egui::Shape::line(
-            arc(0.0, 1.0),
-            egui::Stroke::new(2.0, LINE),
-        ));
+        painter.add(egui::Shape::line(arc(0.0, 1.0), guide_stroke));
         painter.add(egui::Shape::line(
             arc(zero, position),
             egui::Stroke::new(3.0, ACCENT),
@@ -321,12 +410,17 @@ impl Editor {
         if !self.edits.push(Edit::Begin(index)) {
             return;
         }
+        let tick = parameters::to_tick(index, selected);
         self.state.borrow_mut().drag = Some(DragState {
             #[cfg(target_os = "windows")]
             keyboard_focus: self.keyboard_focus(),
             index,
-            tick: parameters::to_tick(index, selected),
-            remainder: 0.0,
+            tick,
+            remainder: if is_detent(index, tick) {
+                KNOB_DETENT_PIXELS as f32 / 2.0
+            } else {
+                0.0
+            },
             anchor,
             changed: false,
         });
@@ -347,10 +441,10 @@ impl Editor {
                 return;
             };
             let (tick, rest) = move_tick(
+                drag.index,
                 drag.tick,
                 drag.remainder,
                 position.y - drag.anchor.y,
-                parameters::max_tick(drag.index),
             );
             drag.remainder = rest;
             if tick != drag.tick {
@@ -865,20 +959,103 @@ mod tests {
 
     #[test]
     fn every_knob_tick_is_reachable_in_both_directions() {
-        for index in 1..parameters::COUNT {
+        for (index, &pixels) in KNOB_PIXELS_PER_TICK.iter().enumerate().skip(1) {
             if !parameters::choices(index).is_empty() {
                 continue;
             }
             let max = parameters::max_tick(index);
-            for tick in 0..max {
-                let (same, remainder) = move_tick(tick, 0.0, -3.0, max);
-                assert_eq!(same, tick);
-                assert_eq!(move_tick(same, remainder, -1.0, max), (tick + 1, 0.0));
-                assert_eq!(move_tick(tick + 1, 0.0, 4.0, max), (tick, 0.0));
+            for tick in 0..=max {
+                let initial = if is_detent(index, tick) { 40.0 } else { 0.0 };
+                let distance = if is_detent(index, tick) {
+                    40.0
+                } else {
+                    pixels as f32
+                };
+                for (dy, next) in [(-distance, tick + 1), (distance, tick.saturating_sub(1))] {
+                    if (tick == 0 && dy > 0.0) || (tick == max && dy < 0.0) {
+                        continue;
+                    }
+                    let partial = dy - dy.signum();
+                    let held = move_tick(index, tick, initial, partial);
+                    assert_eq!(held, (tick, initial - partial));
+                    let entry = if is_detent(index, next) && dy > 0.0 {
+                        80.0
+                    } else {
+                        0.0
+                    };
+                    assert_eq!(move_tick(index, held.0, held.1, dy.signum()), (next, entry));
+                }
             }
-            assert_eq!(move_tick(max, 0.0, -100.0, max), (max, 0.0));
-            assert_eq!(move_tick(max, 0.0, 4.0, max), (max - 1, 0.0));
-            assert_eq!(move_tick(0, 0.0, 100.0, max), (0, 0.0));
+            assert_eq!(move_tick(index, max, 0.0, -100.0), (max, 0.0));
+            assert_eq!(move_tick(index, 0, 0.0, 100.0), (0, 0.0));
+        }
+    }
+
+    #[test]
+    fn detents_are_limited_to_pitch_volume_and_centers() {
+        for index in 0..parameters::COUNT {
+            for tick in 0..=parameters::max_tick(index) {
+                let targets: &[u32] = match index {
+                    10 => &[120, 240, 360, 480, 600, 720, 840, 960, 1080],
+                    24 | 27 => &[120, 240, 360],
+                    13 | 22 | 25 | 28 => &[60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660],
+                    19 => &[120, 240, 360, 480, 600, 720, 840],
+                    21 => &[100],
+                    _ => &[],
+                };
+                if is_detent(index, tick) {
+                    assert!(
+                        knob_marks(index).0.contains(&tick),
+                        "missing mark: {index}: {tick}"
+                    );
+                }
+                assert_eq!(
+                    is_detent(index, tick),
+                    targets.contains(&tick),
+                    "{index}: {tick}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detent_position_tracks_entry_direction_and_reversal() {
+        assert_eq!(move_tick(21, 99, 0.0, -4.0), (100, 0.0));
+        assert_eq!(move_tick(21, 100, 0.0, 0.0), (100, 0.0));
+        assert_eq!(move_tick(21, 100, 0.0, -79.0), (100, 79.0));
+        assert_eq!(move_tick(21, 100, 79.0, -1.0), (101, 0.0));
+        assert_eq!(move_tick(21, 101, 0.0, 4.0), (100, 80.0));
+        assert_eq!(move_tick(21, 100, 80.0, 0.0), (100, 80.0));
+        assert_eq!(move_tick(21, 100, 80.0, 79.0), (100, 1.0));
+        assert_eq!(move_tick(21, 100, 1.0, 1.0), (99, 0.0));
+        // 進入した側へすぐ戻す場合、80pxの移動を要求しない。
+        assert_eq!(move_tick(21, 100, 0.0, 1.0), (99, -1.0));
+        assert_eq!(move_tick(21, 100, 80.0, -1.0), (101, 1.0));
+        // 内部で20px進んでから20px戻すと、小さい側へ抜ける。
+        assert_eq!(move_tick(21, 100, 0.0, -20.0), (100, 20.0));
+        assert_eq!(move_tick(21, 100, 20.0, 19.0), (100, 1.0));
+        assert_eq!(move_tick(21, 100, 1.0, 1.0), (99, 0.0));
+        // 吸着点から開始する場合は中間の40pxから両方向へ抜ける。
+        for dy in [-39.0_f32, 39.0] {
+            let held = move_tick(21, 100, 40.0, dy);
+            assert_eq!(held, (100, 40.0 - dy));
+            assert_eq!(
+                move_tick(21, held.0, held.1, dy.signum()),
+                (if dy < 0.0 { 101 } else { 99 }, 0.0)
+            );
+        }
+        assert_eq!(move_tick(21, 99, 0.0, -88.0), (102, 0.0));
+        for index in [10, 13, 19, 21, 24] {
+            for dy in [-700.0_f32, 700.0] {
+                let tick = parameters::max_tick(index) / 2;
+                let initial = if is_detent(index, tick) { 40.0 } else { 0.0 };
+                let whole = move_tick(index, tick, initial, dy);
+                let mut split = (tick, initial);
+                for _ in 0..700 {
+                    split = move_tick(index, split.0, split.1, dy.signum());
+                }
+                assert_eq!(whole, split);
+            }
         }
     }
 }

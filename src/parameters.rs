@@ -214,7 +214,7 @@ pub fn choices(index: usize) -> &'static [&'static str] {
 /// ノブの整数tick上限。選択リストはchoicesの列挙番号を使う。
 pub fn max_tick(index: usize) -> u32 {
     if is_time(index) {
-        371
+        401
     } else {
         match index {
             6 => 6,
@@ -222,7 +222,7 @@ pub fn max_tick(index: usize) -> u32 {
             19 => 960,
             21 | 29 | 30 => 200,
             10 => 1200,
-            13 | 22 | 25 | 28 => 601,
+            13 | 22 | 25 | 28 => 720,
             24 | 27 | 32 => 480,
             11 => 950,
             _ => 100,
@@ -256,7 +256,7 @@ pub fn unit(index: usize) -> &'static str {
 
 /// VST3正規化値と時間を換算する連続軸のスケール。UIの整数tick上限とは区別する。
 pub fn time_scale() -> f64 {
-    1.0 + 100.0 * 5000.0_f64.log10()
+    401.0
 }
 pub fn index(id: u32) -> Option<usize> {
     IDS.iter().position(|&candidate| candidate == id)
@@ -271,19 +271,19 @@ pub fn holds_between_points(index: usize) -> bool {
         0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 35 | PROGRAM_INDEX
     )
 }
-/// GUIの整数tickを実単位へ換算する。時間0..=371、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=601（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
+/// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
 pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
     if is_volume(index) {
         if tick == 0 {
             f64::NEG_INFINITY
         } else {
-            -48.0 + f64::from(tick - 1) / 10.0
+            -60.0 + f64::from(tick) / 10.0
         }
     } else if is_time(index) {
         if tick == 0 {
             0.0
         } else {
-            10.0_f64.powf((f64::from(tick) - 1.0) / 100.0).min(5000.0)
+            10.0_f64.powf((f64::from(tick) - 1.0) / 100.0).min(10000.0)
         }
     } else {
         match index {
@@ -304,7 +304,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         return if normalized == 0.0 {
             f64::NEG_INFINITY
         } else {
-            ((normalized * 601.0 - 1.0) / 10.0 - 48.0).max(-48.0)
+            normalized * 72.0 - 60.0
         };
     }
     if is_waveform(index) {
@@ -327,13 +327,13 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         _ => {}
     }
     if normalized == 1.0 {
-        return 5000.0;
+        return 10000.0;
     }
     let tick = normalized * time_scale();
     if tick <= 1.0 {
         tick
     } else {
-        10.0_f64.powf((tick - 1.0) / 100.0).min(5000.0)
+        10.0_f64.powf((tick - 1.0) / 100.0).min(10000.0)
     }
 }
 pub fn to_normalized(index: usize, plain: f64) -> f64 {
@@ -341,7 +341,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         return if plain == f64::NEG_INFINITY {
             0.0
         } else {
-            ((plain + 48.0) * 10.0 + 1.0) / 601.0
+            (plain + 60.0) / 72.0
         };
     }
     if is_waveform(index) {
@@ -363,7 +363,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         19 => return (plain + 4800.0) / 9600.0,
         _ => {}
     }
-    if plain == 5000.0 {
+    if plain == 10000.0 {
         return 1.0;
     }
     (if plain <= 1.0 {
@@ -374,7 +374,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
 }
 pub fn valid_plain(index: usize, plain: f64) -> bool {
     if is_volume(index) {
-        return plain == f64::NEG_INFINITY || (-48.0..=12.0).contains(&plain);
+        return plain == f64::NEG_INFINITY || (-60.0..=12.0).contains(&plain);
     }
     match index {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
@@ -391,7 +391,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         24 | 27 => (-2400.0..=2400.0).contains(&plain),
         19 => (-4800.0..=4800.0).contains(&plain),
         32 => (0.0..=48.0).contains(&plain),
-        _ => (0.0..=5000.0).contains(&plain),
+        _ => (0.0..=10000.0).contains(&plain),
     }
 }
 pub fn canonical(index: usize, value: f64) -> f64 {
@@ -846,10 +846,10 @@ mod tests {
             (9, 6),
             (10, 1200),
             (11, 950),
-            (13, 601),
-            (22, 601),
-            (25, 601),
-            (28, 601),
+            (13, 720),
+            (22, 720),
+            (25, 720),
+            (28, 720),
             (24, 480),
             (27, 480),
             (19, 960),
@@ -879,6 +879,19 @@ mod tests {
     }
 
     #[test]
+    fn volume_minimum_is_silence_and_next_tick_is_minus_59_9_db() {
+        for index in [13, 22, 25, 28] {
+            assert_eq!(to_normalized(index, -60.0), 0.0);
+            assert_eq!(to_plain(index, 0.0), f64::NEG_INFINITY);
+            assert_eq!(tick_to_plain(index, 0), f64::NEG_INFINITY);
+            assert_eq!(tick_to_plain(index, 1), -59.9);
+            assert_eq!(tick_to_plain(index, 600), 0.0);
+            assert_eq!(tick_to_plain(index, 720), 12.0);
+            assert_eq!(10.0_f64.powf(to_plain(index, 0.0) / 20.0), 0.0);
+        }
+    }
+
+    #[test]
     fn state_stream_handles_short_transfers_and_rejects_truncation() {
         for waveform in WAVEFORMS {
             let mut stream = Stream {
@@ -891,6 +904,9 @@ mod tests {
             // SAFETY: スタック上のStreamを同じポインターから順に使う。借用を外へ保持しない。
             unsafe {
                 let mut values = defaults();
+                for index in [1, 2, 3, 5] {
+                    values[index] = to_normalized(index, 10000.0);
+                }
                 values[0] = normalized(waveform);
                 values[6] = to_normalized(6, 7.0);
                 values[7] = to_normalized(7, 37.125);
@@ -899,10 +915,10 @@ mod tests {
                 values[10] = to_normalized(10, -1200.125);
                 values[11] = to_normalized(11, 5.125);
                 values[12] = to_normalized(12, 2.0);
-                values[13] = to_normalized(13, -12.345);
+                values[13] = to_normalized(13, -59.95);
                 values[20] = to_normalized(20, 62.5);
                 values[21] = to_normalized(21, -35.25);
-                for (i, plain) in [25.0, 15.0, 250.0, 0.4567, 350.25, -1234.125]
+                for (i, plain) in [7500.25, 10000.0, 6000.0, 0.4567, 10000.0, -1234.125]
                     .into_iter()
                     .enumerate()
                 {
@@ -950,12 +966,12 @@ mod tests {
                     (12, 3.0),
                     (12, 1.5),
                     (12, f64::NAN),
-                    (13, -48.1),
+                    (13, -60.1),
                     (13, 12.1),
                     (13, f64::NAN),
                     (13, f64::INFINITY),
                     (14, -1.0),
-                    (15, 5000.1),
+                    (15, 10000.1),
                     (16, f64::NAN),
                     (17, -0.1),
                     (17, 1.1),
@@ -969,7 +985,7 @@ mod tests {
                     (21, -100.1),
                     (21, 100.1),
                     (21, f64::INFINITY),
-                    (22, -48.1),
+                    (22, -60.1),
                     (25, f64::INFINITY),
                     (28, f64::NAN),
                     (23, 5.0),
@@ -1068,14 +1084,14 @@ mod tests {
                 assert!((to_plain(i, tick / time_scale()) - ms).abs() < 1e-10);
                 assert!((to_normalized(i, ms) * time_scale() - tick).abs() < 1e-10);
             }
-            assert_eq!(to_plain(i, 1.0), 5000.0);
+            assert_eq!(to_plain(i, 1.0), 10000.0);
             // GUIで選べる全tickの往復変換・単調性・100tickごとの倍率を確認。
             let mut previous = -1.0;
             for tick in 0..=time_scale().floor() as u32 {
                 let normalized = f64::from(tick) / time_scale();
                 let ms = tick_to_plain(i, tick);
                 assert_eq!(to_tick(i, to_normalized(i, ms)), tick);
-                assert!(ms > previous && ms < 5000.0);
+                assert!(ms > previous && ms <= 10000.0);
                 assert!((to_normalized(i, ms) - normalized).abs() < 1e-12);
                 assert!(ms == 0.0 || (to_plain(i, to_normalized(i, ms)) / ms - 1.0).abs() < 1e-12);
                 if tick > 100 {
@@ -1088,9 +1104,9 @@ mod tests {
             for (tick, ms) in [(1, 1.0), (101, 10.0), (201, 100.0), (301, 1000.0)] {
                 assert!((tick_to_plain(i, tick) / ms - 1.0).abs() < 1e-12);
             }
-            assert_eq!(tick_to_plain(i, 371), 5000.0);
-            assert_eq!(max_tick(i), 371);
-            assert_eq!(to_tick(i, 1.0), 371);
+            assert_eq!(tick_to_plain(i, 401), 10000.0);
+            assert_eq!(max_tick(i), 401);
+            assert_eq!(to_tick(i, 1.0), 401);
             // ホストの連続オートメーションは0〜1ms区間も線形で扱う。
             assert!((to_plain(i, to_normalized(i, 0.5)) - 0.5).abs() < 1e-12);
         }

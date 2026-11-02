@@ -259,7 +259,7 @@ constexpr ParamID unisonId = 0x554e4953, detuneId = 0x4454554e, polyphonyId = 0x
 constexpr std::array<ParamID, 3> filterIds {0x46545950, 0x46435554, 0x46524553};
 constexpr std::array<ParamID, 5> envelopeIds {0x4154544b, 0x484f4c44, 0x44454359, 0x53555354, 0x52454c53};
 double timeNormalized(double ms) {
-    return (ms <= 1.0 ? ms : 1.0 + 100.0 * std::log10(ms)) / (1.0 + 100.0 * std::log10(5000.0));
+    return (ms <= 1.0 ? ms : 1.0 + 100.0 * std::log10(ms)) / (1.0 + 100.0 * std::log10(10000.0));
 }
 void configureEnvelope(IAudioProcessor* processor, bool immediate, double timeScale) {
     std::array<Points, 5> points;
@@ -487,7 +487,7 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
         assert(info.id == envelopeIds[i] && info.stepCount == 0 && info.flags == ParameterInfo::kCanAutomate);
         for (double value : {0.0, 1.0}) {
             const double plain = controller->normalizedParamToPlain(info.id, value);
-            assert(plain == value * (i == 3 ? 1.0 : 5000.0));
+            assert(plain == value * (i == 3 ? 1.0 : 10000.0));
             assert(controller->plainParamToNormalized(info.id, plain) == value);
             String128 text; double parsed = -1;
             assert(controller->getParamStringByValue(info.id, value, text) == kResultOk);
@@ -1106,7 +1106,6 @@ void checkPhase(IComponent* component, IAudioProcessor* processor, IEditControll
     else bus.channelBuffers64 = channels;
     Events events;
     data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
-    const double peak = .5 * std::sqrt(3.0);
     auto check = [&](std::initializer_list<double> expected) {
         // レートを16倍にした分、ノート周波数も16倍にして位相の期待値を保つ。
         for (auto& event : events.values) if (event.type == Event::kNoteOnEvent) event.noteOn.tuning = 4800.0f;
@@ -1126,10 +1125,12 @@ void checkPhase(IComponent* component, IAudioProcessor* processor, IEditControll
     phase.values = {{0, 1}}; events.values.clear(); check({-.75});
     reference.flush();
     phase.values.clear(); events.values = {note(true, 0, 4)};
+    // ランダム位相の振幅確認には、帯域制限のオーバーシュートがない正弦波を使う。
+    waveform.values = {{0, 0.0}};
     assert(processor->process(data) == kResultOk);
     data.inputEvents = nullptr;
     for (int i = 0; i < 69; ++i) assert(processor->process(data) == kResultOk);
-    assert(std::isfinite(buffer[0]) && std::abs(buffer[0]) <= peak);
+    assert(std::isfinite(buffer[0]) && std::abs(buffer[0]) <= .5 * std::sqrt(2.0));
     assert(processor->setProcessing(false) == kResultOk);
     assert(component->setActive(false) == kResultOk);
 }
@@ -1140,9 +1141,9 @@ void checkVolume(IComponent* component, IAudioProcessor* processor, IEditControl
     ParameterInfo info;
     assert(controller->getParameterInfo(13, info) == kResultOk && info.id == volumeId);
     assert(std::u16string(info.title) == u"Volume" && std::u16string(info.units) == u"dB");
-    assert(info.stepCount == 0 && info.defaultNormalizedValue == 481.0 / 601.0);
-    for (double db : {-48.0, -12.3, 0.0, 12.0}) {
-        const double normalized = ((db + 48) * 10 + 1) / 601;
+    assert(info.stepCount == 0 && info.defaultNormalizedValue == 600.0 / 720.0);
+    for (double db : {-60.0, -59.9, -54.0, -12.3, 0.0, 12.0}) {
+        const double normalized = (db + 60) / 72;
         String128 text; double parsed = -1;
         assert(controller->getParamStringByValue(volumeId, normalized, text) == kResultOk);
         assert(controller->getParamValueByString(volumeId, text, parsed) == kResultOk);
@@ -1180,10 +1181,12 @@ void checkVolume(IComponent* component, IAudioProcessor* processor, IEditControl
         }
     };
     check({0}); events.values.clear();
-    volume.values = {{0, 1.0/601}, {3, 241.0/601}}; check({-48, -40, -32, -24});
+    volume.values = {{0, 120.0/720}, {3, 360.0/720}}; check({-48, -40, -32, -24});
     volume.values.clear(); check({-24, -24});
-    volume.values = {{0, 1}, {1, 1}, {3, 481.0/601}}; check({12, 12, 6, 0});
-    volume.values = {{0, ((48 - 12.3) * 10 + 1) / 601}}; check({-12.3});
+    volume.values = {{0, 1}, {1, 1}, {3, 600.0/720}}; check({12, 12, 6, 0});
+    volume.values = {{0, (60 - 12.3) / 72}}; check({-12.3});
+    volume.values = {{0, 0}}; check({-std::numeric_limits<double>::infinity()});
+    volume.values.clear(); check({-std::numeric_limits<double>::infinity()});
     reference.flush();
     assert(processor->setProcessing(false) == kResultOk && component->setActive(false) == kResultOk);
     // 停止中のゼロサンプル変更も保存・復元へ反映する。
