@@ -31,6 +31,14 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix", "Rate", "Smooth",
 ];
 
+/// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
+const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = {
+    let mut pixels = [4; parameters::COUNT];
+    pixels[6] = 32; // Unison: 1〜7
+    pixels[8] = 8; // Polyphony: 1〜32
+    pixels
+};
+
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
 const PANEL: egui::Color32 = egui::Color32::from_rgb(248, 249, 245);
 const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
@@ -91,14 +99,15 @@ struct DragState {
 }
 
 /// 上限での余分な移動を捨て、逆方向の操作を即座に受け付ける。
-fn move_tick(tick: u32, remainder: f32, dy: f32, max: u32) -> (u32, f32) {
+fn move_tick(tick: u32, remainder: f32, dy: f32, max: u32, pixels_per_tick: u32) -> (u32, f32) {
+    let pixels_per_tick = pixels_per_tick as f32;
     let pixels = remainder - dy;
-    let steps = (pixels / 4.0).trunc() as i32;
+    let steps = (pixels / pixels_per_tick).trunc() as i32;
     let next = (i64::from(tick) + i64::from(steps)).clamp(0, i64::from(max)) as u32;
     let rest = if (next == 0 && pixels < 0.0) || (next == max && pixels > 0.0) {
         0.0
     } else {
-        pixels - steps as f32 * 4.0
+        pixels - steps as f32 * pixels_per_tick
     };
     (next, rest)
 }
@@ -351,6 +360,7 @@ impl Editor {
                 drag.remainder,
                 position.y - drag.anchor.y,
                 parameters::max_tick(drag.index),
+                KNOB_PIXELS_PER_TICK[drag.index],
             );
             drag.remainder = rest;
             if tick != drag.tick {
@@ -865,20 +875,25 @@ mod tests {
 
     #[test]
     fn every_knob_tick_is_reachable_in_both_directions() {
-        for index in 1..parameters::COUNT {
+        for (index, &pixels) in KNOB_PIXELS_PER_TICK.iter().enumerate().skip(1) {
             if !parameters::choices(index).is_empty() {
                 continue;
             }
             let max = parameters::max_tick(index);
+            assert!(pixels > 0);
+            let distance = pixels as f32;
             for tick in 0..max {
-                let (same, remainder) = move_tick(tick, 0.0, -3.0, max);
+                let (same, remainder) = move_tick(tick, 0.0, -(distance - 1.0), max, pixels);
                 assert_eq!(same, tick);
-                assert_eq!(move_tick(same, remainder, -1.0, max), (tick + 1, 0.0));
-                assert_eq!(move_tick(tick + 1, 0.0, 4.0, max), (tick, 0.0));
+                assert_eq!(
+                    move_tick(same, remainder, -1.0, max, pixels),
+                    (tick + 1, 0.0)
+                );
+                assert_eq!(move_tick(tick + 1, 0.0, distance, max, pixels), (tick, 0.0));
             }
-            assert_eq!(move_tick(max, 0.0, -100.0, max), (max, 0.0));
-            assert_eq!(move_tick(max, 0.0, 4.0, max), (max - 1, 0.0));
-            assert_eq!(move_tick(0, 0.0, 100.0, max), (0, 0.0));
+            assert_eq!(move_tick(max, 0.0, -100.0, max, pixels), (max, 0.0));
+            assert_eq!(move_tick(max, 0.0, distance, max, pixels), (max - 1, 0.0));
+            assert_eq!(move_tick(0, 0.0, 100.0, max, pixels), (0, 0.0));
         }
     }
 }
