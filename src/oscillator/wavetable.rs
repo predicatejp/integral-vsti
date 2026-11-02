@@ -65,12 +65,16 @@ impl Selection {
 
     /// 正規化周波数Hz/fsから選択し、音量処理で戻すピーク倍率も返す。
     /// incrementは剰余を取る前の非負の周波数比。1以上は1で代用できる。
-    #[inline(never)] // 帯域探索は入力変更時だけ行い、毎サンプルの入力比較へ展開しない。
+    #[inline(never)] // 帯域選択は入力変更時だけ行い、毎サンプルの入力比較へ展開しない。
     pub fn new(wave: Waveform, increment: f64) -> (Self, f64) {
         let tables = tables(wave);
-        let index = tables
-            .partition_point(|t| t.harmonic * increment < 0.5)
-            .saturating_sub(1);
+        // 正規化周波数の指数で候補IDを引く。1007は2^-16のbiased exponent。
+        // 各オクターブ内の追加の境界は最大1個なので、実周波数で1回だけ補正する。
+        let exponent = ((increment.to_bits() >> 52) & 0x7ff) as usize;
+        let bucket = exponent.saturating_sub(1007).min(data::BAND_IDS.len() - 1);
+        let candidate = usize::from(data::BAND_IDS[bucket]);
+        let index =
+            candidate.saturating_sub(usize::from(tables[candidate].harmonic * increment >= 0.5));
         let rich = &tables[index];
         let poor = &tables[index.saturating_sub(1)];
         // 最高倍音がNyquistを超える前に、最後の10%の区間で除去し終える。
@@ -109,6 +113,37 @@ impl Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // 全指数の密な走査は通常のCPUテストで行う。
+    fn band_id_lookup_matches_binary_search() {
+        for wave in [Waveform::Sawtooth, Waveform::Square, Waveform::Triangle] {
+            let check = |increment| {
+                let reference = tables(wave)
+                    .partition_point(|t| t.harmonic * increment < 0.5)
+                    .saturating_sub(1);
+                assert_eq!(
+                    Selection::new(wave, increment).0.index,
+                    reference,
+                    "increment={increment:?}"
+                );
+            };
+            for increment in [-0.0, 0.0, f64::from_bits(1), f64::MIN_POSITIVE, f64::MAX] {
+                check(increment);
+            }
+            for table in tables(wave) {
+                let boundary = 0.5 / table.harmonic;
+                for value in [boundary.next_down(), boundary, boundary.next_up()] {
+                    check(value);
+                }
+            }
+            for exponent in 0..2047_u64 {
+                for mantissa in [0, 1, 1 << 50, 1 << 51, (1 << 52) - 2, (1 << 52) - 1] {
+                    check(f64::from_bits((exponent << 52) | mantissa));
+                }
+            }
+        }
+    }
 
     #[test]
     fn generated_table_positions_fit_fast_integer_conversion() {

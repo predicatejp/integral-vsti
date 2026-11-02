@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // scripts/generate-wavetables.pyによる生成値。手動編集しない。
 use super::Table;
+pub(super) const BAND_IDS: [u8; 15] = [26, 25, 23, 21, 19, 17, 15, 13, 11, 9, 7, 5, 3, 1, 0];
 #[rustfmt::skip]
 pub(super) static SAW: [Table; 27] = [
     Table { offset: 0, length: 4096.0, harmonic: 1.0, peak: 0.6366197468235854 },

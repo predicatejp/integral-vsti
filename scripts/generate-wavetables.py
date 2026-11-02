@@ -29,7 +29,10 @@ def peak_bound(coefficients):
 
 def generate():
     data = bytearray()
-    records = []
+    # 2^-16〜2^-2の各オクターブ先頭で選ぶ帯域。端の項目を範囲外にも使う。
+    ids = [max(0, int(np.searchsorted(BANDS * 2.0**e, 0.5, side="left")) - 1)
+           for e in range(-16, -1)]
+    records = ["pub(super) const BAND_IDS: [u8; 15] = [" + ", ".join(map(str, ids)) + "];"]
     for wave in ["saw", "square", "triangle"]:
         rows = []
         for harmonic in BANDS:
