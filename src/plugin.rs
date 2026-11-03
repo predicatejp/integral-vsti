@@ -1031,13 +1031,18 @@ fn apply_parameters(
     offset: i32,
 ) {
     let loaded = changes[parameters::PROGRAM_INDEX].take_program_at(offset);
+    let mut values = synth.parameters();
     if loaded {
-        let values = parameters::sine_preset();
+        values = parameters::sine_preset();
         for (change, value) in changes.iter_mut().zip(values) {
             change.reset_value(offset, value);
         }
     }
-    let values = std::array::from_fn(|i| changes[i].value_at(offset));
+    for (value, change) in values.iter_mut().zip(changes.iter_mut()) {
+        if change.automated {
+            *value = change.value_at(offset);
+        }
+    }
     let changed = synth.set_parameters(values);
     if loaded {
         plugin.processor_parameters.store(values);

@@ -73,6 +73,10 @@ impl Synthesizer {
         self.state.sample_rate = sample_rate;
     }
 
+    pub fn parameters(&self) -> [f64; parameters::COUNT] {
+        self.state.parameters
+    }
+
     /// 設定は有効な枠の入力へ反映し、Polyphony増加時は追加した枠も同期する。
     pub fn set_parameters(&mut self, values: [f64; parameters::COUNT]) -> bool {
         if values == self.state.parameters {
