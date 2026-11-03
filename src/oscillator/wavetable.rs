@@ -46,8 +46,9 @@ fn tables(wave: Waveform) -> &'static [Table] {
 /// 周波数・波形変更時に選ぶ読出し設定。OscillatorStateがユニゾンごとに保持する。
 #[derive(Clone, Copy)]
 pub(super) struct Selection {
-    /// 高域側の倍音を多く含むテーブルの番号。
-    index: usize,
+    /// 周波数変更時に選ぶ倍音の多い帯域と、その隣の帯域。
+    hi: &'static Table,
+    lo: &'static Table,
     /// 直前の帯域（倍音の少ないテーブル）への混合率。
     mix: f64,
     /// Nyquist直前で基音を0へ下げる倍率。他の帯域は1。
@@ -56,7 +57,8 @@ pub(super) struct Selection {
 
 impl Selection {
     pub const EMPTY: Self = Self {
-        index: 0,
+        hi: &data::SAW[0],
+        lo: &data::SAW[0],
         mix: 0.0,
         gain: 0.0,
     };
@@ -78,7 +80,12 @@ impl Selection {
         let mix = ((increment * rich.harmonic * 2.0 - 0.9) * 10.0).clamp(0.0, 1.0);
         let gain = if index == 0 { 1.0 - mix } else { 1.0 };
         let mix = if index == 0 { 0.0 } else { mix };
-        Self { index, mix, gain }
+        Self {
+            hi: rich,
+            lo: &tables[index.saturating_sub(1)],
+            mix,
+            gain,
+        }
     }
 
     /// phaseは発振器の保持位相または変調後の、有限の[0,1]。
@@ -90,10 +97,9 @@ impl Selection {
         } else {
             0.25 - (half - 0.25).abs()
         };
-        let tables = tables(wave);
-        let mut value = tables[self.index].read_sample(folded);
+        let mut value = self.hi.read_sample(folded);
         if self.mix != 0.0 {
-            value += (tables[self.index - 1].read_sample(folded) - value) * self.mix;
+            value += (self.lo.read_sample(folded) - value) * self.mix;
         }
         value * (self.gain.copysign(0.5 - phase))
     }
@@ -111,9 +117,8 @@ mod tests {
                 let reference = tables(wave)
                     .partition_point(|t| t.harmonic * increment < 0.5)
                     .saturating_sub(1);
-                assert_eq!(
-                    Selection::new(wave, increment).index,
-                    reference,
+                assert!(
+                    std::ptr::eq(Selection::new(wave, increment).hi, &tables(wave)[reference]),
                     "increment={increment:?}"
                 );
             };
