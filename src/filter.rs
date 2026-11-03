@@ -53,6 +53,16 @@ pub struct SvfOutput {
     pub high: f64,
 }
 
+/// 左右の独立した積分器から同時に得た3種類の出力。
+struct StereoSvfOutput {
+    /// 左右の低域通過出力。
+    low: [f64; 2],
+    /// 左右の帯域通過出力。
+    band: [f64; 2],
+    /// 左右の高域通過出力。
+    high: [f64; 2],
+}
+
 /// 同じHz・Q・レートで共用できる係数。積分器の状態は含まない。
 #[derive(Clone, Copy)]
 struct SvfCoefficients {
@@ -161,6 +171,59 @@ impl Svf {
         self.state.integrators = next;
         SvfOutput { low, band, high }
     }
+    /// 左右独立の履歴へ同じ係数を適用し、3種類のステレオ出力を返す。
+    #[inline(always)]
+    fn process_stereo_prepared_sample(
+        &mut self,
+        right: &mut Self,
+        samples: [f64; 2],
+        coefficients: SvfCoefficients,
+    ) -> StereoSvfOutput {
+        // SAFETY: 対応先x86_64はSSE2を備える。読み書きは各2要素配列の範囲内。
+        unsafe {
+            use std::arch::x86_64::*;
+            let left = self.state.integrators;
+            let right_values = right.state.integrators;
+            let s1 = _mm_set_pd(right_values[0], left[0]);
+            let s2 = _mm_set_pd(right_values[1], left[1]);
+            let sample = _mm_loadu_pd(samples.as_ptr());
+            let g = _mm_set1_pd(coefficients.g);
+            let high = _mm_mul_pd(
+                _mm_sub_pd(
+                    _mm_sub_pd(
+                        sample,
+                        _mm_mul_pd(_mm_set1_pd(coefficients.damping_plus_g), s1),
+                    ),
+                    s2,
+                ),
+                _mm_set1_pd(coefficients.inverse_denominator),
+            );
+            let band = _mm_add_pd(s1, _mm_mul_pd(g, high));
+            let low = _mm_add_pd(s2, _mm_mul_pd(g, band));
+            let two = _mm_set1_pd(2.0);
+            let a = _mm_sub_pd(_mm_mul_pd(two, band), s1);
+            let b = _mm_sub_pd(_mm_mul_pd(two, low), s2);
+            let sign = _mm_set1_pd(-0.0);
+            let max = _mm_set1_pd(f64::MAX);
+            let finite = _mm_and_pd(
+                _mm_cmple_pd(_mm_andnot_pd(sign, a), max),
+                _mm_cmple_pd(_mm_andnot_pd(sign, b), max),
+            );
+            let a = _mm_and_pd(a, finite);
+            let b = _mm_and_pd(b, finite);
+            _mm_storeu_pd(self.state.integrators.as_mut_ptr(), _mm_unpacklo_pd(a, b));
+            _mm_storeu_pd(right.state.integrators.as_mut_ptr(), _mm_unpackhi_pd(a, b));
+            let mut output = StereoSvfOutput {
+                low: [0.0; 2],
+                band: [0.0; 2],
+                high: [0.0; 2],
+            };
+            _mm_storeu_pd(output.low.as_mut_ptr(), _mm_and_pd(low, finite));
+            _mm_storeu_pd(output.band.as_mut_ptr(), _mm_and_pd(band, finite));
+            _mm_storeu_pd(output.high.as_mut_ptr(), _mm_and_pd(high, finite));
+            output
+        }
+    }
 }
 
 fn valid_input(sample: f64, parameters: &FilterParameters, sample_rate: f64) -> bool {
@@ -234,52 +297,14 @@ impl Filter {
         // 左右・両段で係数を共用し、積分器の履歴だけ独立させる。
         let coefficients = self.state.stages[0][0].prepare_coefficients(parameters, sample_rate);
         let mut output = samples;
+        let (left, right) = self.state.stages.split_at_mut(1);
         for stage in 0..count {
-            // SAFETY: 対応先x86_64はSSE2を備える。読み書きは各2要素配列の範囲内。
-            unsafe {
-                use std::arch::x86_64::*;
-                let left = self.state.stages[0][stage].state.integrators;
-                let right = self.state.stages[1][stage].state.integrators;
-                let s1 = _mm_set_pd(right[0], left[0]);
-                let s2 = _mm_set_pd(right[1], left[1]);
-                let sample = _mm_loadu_pd(output.as_ptr());
-                let g = _mm_set1_pd(coefficients.g);
-                let high = _mm_mul_pd(
-                    _mm_sub_pd(
-                        _mm_sub_pd(
-                            sample,
-                            _mm_mul_pd(_mm_set1_pd(coefficients.damping_plus_g), s1),
-                        ),
-                        s2,
-                    ),
-                    _mm_set1_pd(coefficients.inverse_denominator),
-                );
-                let band = _mm_add_pd(s1, _mm_mul_pd(g, high));
-                let low = _mm_add_pd(s2, _mm_mul_pd(g, band));
-                let two = _mm_set1_pd(2.0);
-                let a = _mm_sub_pd(_mm_mul_pd(two, band), s1);
-                let b = _mm_sub_pd(_mm_mul_pd(two, low), s2);
-                let sign = _mm_set1_pd(-0.0);
-                let max = _mm_set1_pd(f64::MAX);
-                let finite = _mm_and_pd(
-                    _mm_cmple_pd(_mm_andnot_pd(sign, a), max),
-                    _mm_cmple_pd(_mm_andnot_pd(sign, b), max),
-                );
-                let a = _mm_and_pd(a, finite);
-                let b = _mm_and_pd(b, finite);
-                _mm_storeu_pd(
-                    self.state.stages[0][stage].state.integrators.as_mut_ptr(),
-                    _mm_unpacklo_pd(a, b),
-                );
-                _mm_storeu_pd(
-                    self.state.stages[1][stage].state.integrators.as_mut_ptr(),
-                    _mm_unpackhi_pd(a, b),
-                );
-                _mm_storeu_pd(
-                    output.as_mut_ptr(),
-                    _mm_and_pd([low, high, band][output_index], finite),
-                );
-            }
+            let result = left[0][stage].process_stereo_prepared_sample(
+                &mut right[0][stage],
+                output,
+                coefficients,
+            );
+            output = [result.low, result.high, result.band][output_index];
         }
         output
     }
