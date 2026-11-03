@@ -66,7 +66,19 @@ impl Distortion {
     // ADAAの大きな計算経路を分離し、Noneの経路にレジスター退避を持ち込まない。
     #[inline(never)]
     fn process_adaa_sample<const SOFT: bool>(&mut self, input: [f64; 2], gain: f64) -> [f64; 2] {
+        // 入力3点が左右で一致すれば、原始関数とADAA出力も同値になる。
+        let mono = input[0] == input[1]
+            && self.state.input[0][0] == self.state.input[0][1]
+            && self.state.input[1][0] == self.state.input[1][1];
+        let mut left = 0.0;
         std::array::from_fn(|ch| {
+            if ch == 1 && mono {
+                self.state.input[0][1] = self.state.input[0][0];
+                self.state.input[1][1] = self.state.input[1][0];
+                self.state.integral[0][1] = self.state.integral[0][0];
+                self.state.integral[1][1] = self.state.integral[1][0];
+                return left;
+            }
             let x = input[ch] * gain;
             let previous = self.state.input[0][ch];
             let values = if SOFT { soft::eval(x) } else { [0.0; 4] };
@@ -98,6 +110,7 @@ impl Distortion {
             self.state.input[0][ch] = x;
             self.state.integral[1][ch] = self.state.integral[0][ch];
             self.state.integral[0][ch] = integral;
+            left = out;
             out
         })
     }
@@ -144,6 +157,37 @@ fn hard_second(a: f64, b: f64, c: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn matching_channels_preserve_history_when_stereo_returns() {
+        let mut stereo = Distortion::new();
+        let mut channels = [Distortion::new(), Distortion::new()];
+        for n in 0..2000 {
+            let clipper = [ClipperType::Soft, ClipperType::Hard, ClipperType::None][n / 97 % 3];
+            if n % 97 == 0 {
+                stereo.reset();
+                for channel in &mut channels {
+                    channel.reset();
+                }
+            }
+            let left = (n as f64 * 0.37).sin();
+            let right = if n % 29 < 15 {
+                (n as f64 * 0.51).cos()
+            } else {
+                left
+            };
+            let input = [left, right];
+            let parameters = DistortionParameters {
+                clipper,
+                gain: [1.0, 3.0, 251.188643150958][n / 11 % 3],
+                mix: 1.0,
+            };
+            let actual = stereo.process_sample(input, &parameters);
+            for ch in 0..2 {
+                let expected = channels[ch].process_sample([input[ch]; 2], &parameters)[0];
+                assert_eq!(actual[ch], expected, "sample={n}, ch={ch}, {clipper:?}");
+            }
+        }
+    }
     #[test]
     fn linear_response_gain_history_and_reset() {
         let mut d = Distortion::new();
