@@ -14,8 +14,6 @@ mod filter;
 mod float_mode;
 #[path = "../src/oscillator.rs"]
 mod oscillator;
-#[path = "../src/oversampling.rs"]
-mod oversampling;
 #[path = "../src/parameters.rs"]
 mod parameters;
 #[path = "../src/random.rs"]
@@ -69,8 +67,6 @@ const BASE: [f64; parameters::COUNT] = [
     0.,
     0.,
     100.,
-    0.,
-    0.,
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),
@@ -226,31 +222,17 @@ fn cases() -> Vec<Case> {
             automation: None,
         },
         Case {
-            name: "soft-x1-off",
+            name: "soft-bass",
             phrase: Phrase::Bass,
             settings: BASS,
             extra: &[(31, 1.), (32, 9.), (33, 40.)],
             automation: None,
         },
         Case {
-            name: "soft-x2-first",
-            phrase: Phrase::Bass,
-            settings: BASS,
-            extra: &[(31, 1.), (32, 9.), (33, 40.), (34, 1.), (35, 1.)],
-            automation: None,
-        },
-        Case {
-            name: "soft-x4-second",
-            phrase: Phrase::Bass,
-            settings: BASS,
-            extra: &[(31, 1.), (32, 9.), (33, 40.), (34, 2.), (35, 2.)],
-            automation: None,
-        },
-        Case {
-            name: "hard-x2-second",
+            name: "hard-lead",
             phrase: Phrase::Mono,
             settings: LEAD,
-            extra: &[(31, 2.), (32, 6.), (33, 25.), (34, 1.), (35, 2.)],
+            extra: &[(31, 2.), (32, 6.), (33, 25.)],
             automation: None,
         },
         Case {
@@ -281,7 +263,7 @@ fn cases() -> Vec<Case> {
             },
             settings: if index == 29 { BELL } else { CHORD },
             extra: if distortion {
-                &[(31, 1.), (32, 9.), (33, 40.), (34, 1.), (35, 1.)]
+                &[(31, 1.), (32, 9.), (33, 40.)]
             } else {
                 &[]
             },
@@ -305,8 +287,8 @@ struct Event {
 struct Scenario {
     parameters: [f64; parameters::COUNT],
     events: Vec<Event>,
-    // ホスト相当の変更点から計算した現在値と次境界値。計測前に用意する。
-    automation: Vec<[f64; 2]>,
+    // ホスト相当の変更点から計算した現在値。計測前に用意する。
+    automation: Vec<f64>,
     parameter: Option<usize>,
 }
 fn scenario(case: &Case, rate: usize, block: usize, length: usize) -> Scenario {
@@ -390,9 +372,9 @@ fn scenario(case: &Case, rate: usize, block: usize, length: usize) -> Scenario {
                     before + (after - before) * i as f64 / count as f64
                 }
             };
-            // 各ブロック末尾に1点。次境界もそのブロックの既知点までで評価する。
+            // 各ブロック末尾の既知点まで補間する。
             for i in 1..=count {
-                automation.push([value(i), value((i + 1).min(count))]);
+                automation.push(value(i));
             }
         }
     }
@@ -433,12 +415,9 @@ impl Playback {
             let _float_mode = float_mode::FloatMode::flush_subnormals();
             for sample in chunk {
                 if let Some(index) = scenario.parameter {
-                    s.parameters[index] = scenario.automation[s.position][0];
+                    s.parameters[index] = scenario.automation[s.position];
                     s.synth.set_parameters(black_box(s.parameters));
-                    if index == 32 {
-                        s.synth
-                            .set_distortion_gain_end(scenario.automation[s.position][1]);
-                    }
+
                 }
                 while let Some(event) = scenario.events.get(s.event) {
                     if event.at != s.position {

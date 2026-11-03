@@ -14,8 +14,6 @@ mod filter;
 mod float_mode;
 #[path = "../src/oscillator.rs"]
 mod oscillator;
-#[path = "../src/oversampling.rs"]
-mod oversampling;
 #[path = "../src/parameters.rs"]
 mod parameters;
 #[path = "../src/random.rs"]
@@ -135,23 +133,21 @@ fn main() {
         distortion::ClipperType::Soft,
         distortion::ClipperType::Hard,
     ] {
-        for order in [distortion::AdaaOrder::None, distortion::AdaaOrder::First, distortion::AdaaOrder::Second] {
-            let mut distortion = distortion::Distortion::new();
-            let parameters = distortion::DistortionParameters {
-                clipper,
-                gain: 10.0_f64.powf(12.0 / 20.0),
-                mix: 1.0,
-            };
-            measure(
-                &format!("distortion/{clipper:?}/{order:?}"),
-                "sample",
-                selection,
-                |i| {
-                    let x = (i % 1024) as f64 / 512.0 - 1.0;
-                    distortion.process_sample(black_box([x, -x]), black_box(&parameters), order)
-                },
-            );
-        }
+        let mut distortion = distortion::Distortion::new();
+        let parameters = distortion::DistortionParameters {
+            clipper,
+            gain: 10.0_f64.powf(12.0 / 20.0),
+            mix: 1.0,
+        };
+        measure(
+            &format!("distortion/{clipper:?}"),
+            "sample",
+            selection,
+            |i| {
+                let x = (i % 1024) as f64 / 512.0 - 1.0;
+                distortion.process_sample(black_box([x, -x]), black_box(&parameters))
+            },
+        );
     }
     measure("baseline", "operation", selection, |i| black_box(i as f64));
     let envelope = EnvelopeParameters {
