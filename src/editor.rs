@@ -90,6 +90,7 @@ const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(53, 71, 62);
 const LINE: egui::Color32 = egui::Color32::from_rgb(143, 160, 147);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(20, 96, 76);
+const METER_ACTIVE: egui::Color32 = egui::Color32::from_rgb(0, 164, 102);
 
 /// 外周・グループ間・枠内の左右余白と、基本の縦間隔。
 const GAP: f32 = 8.0;
@@ -689,8 +690,8 @@ impl WindowHandler for Editor {
             painter.rect_filled(peak_rect, 1.0, LINE);
             let zero_x = meter_x + peak_rect.width() * 60.0 / 72.0;
             for (start_db, end_db, color) in [
-                (-60.0, 0.0, ACCENT),
-                (0.0, 12.0, egui::Color32::from_rgb(192, 55, 45)),
+                (-60.0, 0.0, METER_ACTIVE),
+                (0.0, 12.0, egui::Color32::from_rgb(232, 64, 48)),
             ] {
                 let width = peak_rect.width() * (peak_db.min(end_db) - start_db).max(0.0) / 72.0;
                 if width > 0.0 {
@@ -714,7 +715,11 @@ impl WindowHandler for Editor {
                 painter.rect_filled(
                     segment,
                     1.0,
-                    if voice < voice_count { ACCENT } else { LINE },
+                    if voice < voice_count {
+                        METER_ACTIVE
+                    } else {
+                        LINE
+                    },
                 );
             }
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
@@ -926,7 +931,7 @@ impl WindowHandler for Editor {
             state.meter_updated = now;
             let peak_db = (20.0 * incoming.max(0.001).log10())
                 .min(12.0)
-                .max(state.peak_db - 24.0 * elapsed)
+                .max(state.peak_db - 48.0 * elapsed)
                 .max(-60.0);
             let changed = peak_db != state.peak_db;
             state.peak_db = peak_db;

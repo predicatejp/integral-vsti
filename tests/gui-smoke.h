@@ -469,9 +469,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             audio.numOutputs = 1; audio.outputs = &bus;
             audio.inputParameterChanges = &changes; audio.inputEvents = &events;
 #ifdef _WIN32
-            const uint32 lit = RGB(20, 96, 76), unlit = RGB(143, 160, 147), over = RGB(192, 55, 45);
+            const uint32 lit = RGB(0, 164, 102), unlit = RGB(143, 160, 147), over = RGB(232, 64, 48);
 #else
-            const uint32 lit = 0x14604c, unlit = 0x8fa093, over = 0xc0372d;
+            const uint32 lit = 0x00a466, unlit = 0x8fa093, over = 0xe84030;
 #endif
             auto meter = [&](int count) {
                 for (int i = 0; i < 32; ++i) {
