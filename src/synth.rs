@@ -73,7 +73,7 @@ impl Synthesizer {
         self.state.sample_rate = sample_rate;
     }
 
-    /// 設定は全枠の入力に反映し、発振器の内部状態はイベント処理から変更しない。
+    /// 設定は有効な枠の入力へ反映し、Polyphony増加時は追加した枠も同期する。
     pub fn set_parameters(&mut self, values: [f64; parameters::COUNT]) -> bool {
         if values == self.state.parameters {
             return false;
@@ -90,9 +90,11 @@ impl Synthesizer {
         }
         let previous = self.state.parameters;
         self.state.parameters = values;
-        // 変更した設定グループだけ配送する。未発音の枠も次のNote Onに備えて更新する。
-        let oscillator_changed = values[..8] != previous[..8] || values[12] != previous[12];
-        let envelope_changed = values[14..20] != previous[14..20];
+        // 有効範囲が広がるときは、休止していた枠へ現在の全設定を配送する。
+        let expanded = values[8] > previous[8];
+        let oscillator_changed =
+            expanded || values[..8] != previous[..8] || values[12] != previous[12];
+        let envelope_changed = expanded || values[14..20] != previous[14..20];
         if values[8] != previous[8] {
             let count = parameters::to_plain(8, values[8]) as usize;
             for voice in &mut self.state.voices[count..self.state.polyphony.max(count)] {
@@ -109,14 +111,14 @@ impl Synthesizer {
             let unison_voices = parameters::to_plain(6, values[6]) as u32;
             let detune_cents = parameters::to_plain(7, values[7]);
             let phase_mode = parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize];
-            for voice in &mut self.state.voices {
+            for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_parameters(waveform, envelope, unison_voices, detune_cents, phase_mode);
             }
         }
         if envelope_changed {
             let cutoff_envelope = parameters::envelope(&values, 14);
             let cutoff_amount = parameters::to_plain(19, values[19]);
-            for voice in &mut self.state.voices {
+            for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
             }
         }
@@ -127,7 +129,8 @@ impl Synthesizer {
         for (osc, volume) in parameters::OSCILLATOR_VOLUMES.into_iter().enumerate() {
             let wave = [0, 23, 26][osc];
             let tune = [None, Some(24), Some(27)][osc];
-            if values[volume] != previous[volume]
+            if expanded
+                || values[volume] != previous[volume]
                 || values[wave] != previous[wave]
                 || tune.is_some_and(|i| values[i] != previous[i])
             {
@@ -137,13 +140,13 @@ impl Synthesizer {
                     2.0_f64.powf(parameters::to_plain(i, values[i]) / 1200.0)
                 });
                 let gain = 10.0_f64.powf(parameters::to_plain(volume, values[volume]) / 20.0);
-                for voice in &mut self.state.voices {
+                for voice in &mut self.state.voices[..self.state.polyphony] {
                     voice.set_oscillator(osc, waveform, ratio, gain);
                 }
             }
         }
-        if values[29..31] != previous[29..31] {
-            for voice in &mut self.state.voices {
+        if expanded || values[29..31] != previous[29..31] {
+            for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_phase_modulation([values[29] * 2.0, values[30] * 2.0]);
             }
         }
@@ -183,16 +186,16 @@ impl Synthesizer {
                 self.reset_distortion();
             }
         }
-        if values[9..11] != previous[9..11] {
+        if expanded || values[9..11] != previous[9..11] {
             let filter_type = parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize];
             let cutoff_cents = parameters::to_plain(10, values[10]);
             let resonance_q = parameters::to_plain(11, values[11]);
-            for voice in &mut self.state.voices {
+            for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_filter(filter_type, cutoff_cents, resonance_q);
             }
         } else if values[11] != previous[11] {
             let resonance_q = parameters::to_plain(11, values[11]);
-            for voice in &mut self.state.voices {
+            for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_resonance(resonance_q);
             }
         }
@@ -327,6 +330,75 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn increasing_polyphony_synchronizes_settings_changed_while_disabled() {
+        let mut delayed = Synthesizer::new();
+        let mut reference = Synthesizer::new();
+        let mut values = parameters::sine_preset();
+        values[8] = parameters::to_normalized(8, 4.0);
+        for synth in [&mut delayed, &mut reference] {
+            synth.set_sample_rate(48000.0);
+            synth.set_parameters(values);
+            for id in 0..4 {
+                assert!(synth.note_on(note(id, 0, 60 + id as i16), 0.0, 0.8));
+            }
+            for _ in 0..128 {
+                synth.generate_sample();
+            }
+            let mut limited = values;
+            limited[8] = 0.0;
+            synth.set_parameters(limited);
+        }
+        reference.set_parameters(values);
+        for (i, plain) in [
+            (0, 3.),
+            (1, 2.),
+            (2, 1.),
+            (3, 7.),
+            (4, 0.4),
+            (5, 3.),
+            (6, 3.),
+            (7, 17.),
+            (9, 6.),
+            (10, 1200.),
+            (11, 2.),
+            (12, 0.),
+            (14, 1.),
+            (15, 2.),
+            (16, 5.),
+            (17, 0.3),
+            (18, 4.),
+            (19, -2400.),
+            (22, -6.),
+            (23, 1.),
+            (24, 300.),
+            (25, -12.),
+            (26, 2.),
+            (27, -700.),
+            (28, -9.),
+            (29, 33.),
+            (30, 71.),
+            (31, 1.),
+            (32, 18.),
+            (33, 75.),
+        ] {
+            values[i] = parameters::to_normalized(i, plain);
+        }
+        reference.set_parameters(values);
+        let mut limited = values;
+        limited[8] = 0.0;
+        delayed.set_parameters(limited);
+        delayed.set_parameters(values);
+        for id in 0..4 {
+            let n = note(id + 20, 0, 48 + id as i16 * 3);
+            assert!(delayed.note_on(n, 0.0, 0.7));
+            assert!(reference.note_on(n, 0.0, 0.7));
+        }
+        for _ in 0..4096 {
+            assert_eq!(delayed.generate_sample(), reference.generate_sample());
+        }
     }
 
     #[test]
