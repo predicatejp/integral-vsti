@@ -231,6 +231,21 @@ impl Oscillator {
         input: &OscillatorInput,
         sample_rate: f64,
     ) -> OscillatorSample {
+        self.generate_optional_sample::<true>(input, sample_rate)
+    }
+
+    /// 音声・変調のどちらにも使わないサンプルの状態だけを更新する。
+    #[inline]
+    pub fn advance_sample(&mut self, input: &OscillatorInput, sample_rate: f64) {
+        self.generate_optional_sample::<false>(input, sample_rate);
+    }
+
+    #[inline]
+    fn generate_optional_sample<const OUTPUT: bool>(
+        &mut self,
+        input: &OscillatorInput,
+        sample_rate: f64,
+    ) -> OscillatorSample {
         if !(input.is_valid() & (sample_rate <= f64::MAX) & (sample_rate > 0.0)) {
             return OscillatorSample {
                 values: [0.0; 7],
@@ -261,14 +276,17 @@ impl Oscillator {
             };
         }
         self.refresh_frequency(input, sample_rate);
-        let sample = self.generate_waveform_sample(input);
+        let sample = self.generate_waveform_sample::<OUTPUT>(input);
         self.update_sample(input);
         sample
     }
 
     /// 位相変調は読出し位置だけへ適用する。Noiseはユニゾンごとに乱数を一つ進める。
     #[inline]
-    fn generate_waveform_sample(&mut self, input: &OscillatorInput) -> OscillatorSample {
+    fn generate_waveform_sample<const OUTPUT: bool>(
+        &mut self,
+        input: &OscillatorInput,
+    ) -> OscillatorSample {
         match input.waveform {
             Waveform::Noise => {
                 self.state.valid = false;
@@ -279,29 +297,35 @@ impl Oscillator {
                 }
                 OscillatorSample { values, count }
             }
-            Waveform::Sine => self.generate_periodic_sample::<false>(input),
-            _ => self.generate_bandlimited_sample(input),
+            Waveform::Sine => self.generate_periodic_sample::<false, OUTPUT>(input),
+            _ => self.generate_bandlimited_sample::<OUTPUT>(input),
         }
     }
 
     // 帯域別のループを分離してSine/Noiseを小さく保ち、ユニゾンごとの関数呼出しを省く。
     #[inline(never)]
-    fn generate_bandlimited_sample(&mut self, input: &OscillatorInput) -> OscillatorSample {
-        self.generate_periodic_sample::<true>(input)
+    fn generate_bandlimited_sample<const OUTPUT: bool>(
+        &mut self,
+        input: &OscillatorInput,
+    ) -> OscillatorSample {
+        self.generate_periodic_sample::<true, OUTPUT>(input)
     }
 
     /// 波形別に展開する周期波の読出し。位相変調の処理は両経路で共通にする。
     #[inline(always)]
-    fn generate_periodic_sample<const BANDED: bool>(
+    fn generate_periodic_sample<const BANDED: bool, const OUTPUT: bool>(
         &mut self,
         input: &OscillatorInput,
     ) -> OscillatorSample {
         let count = input.rendered_voices();
         let mut values = [0.0; 7];
         if input.phase_modulated {
-            return self.generate_antialiased_sample(input);
+            return self.generate_antialiased_sample::<OUTPUT>(input);
         }
         self.state.valid = false;
+        if !OUTPUT {
+            return OscillatorSample { values, count };
+        }
         // 整数周期を先に除き、±1/±2回転では元の位相を厳密に保持する。
         // SAFETY: generate_sampleで位相変調が有限のi32範囲であることを検証済み。
         let cycles = unsafe { input.phase_modulation.to_int_unchecked::<i32>() };
@@ -338,7 +362,10 @@ impl Oscillator {
     }
 
     #[inline(never)]
-    fn generate_antialiased_sample(&mut self, input: &OscillatorInput) -> OscillatorSample {
+    fn generate_antialiased_sample<const OUTPUT: bool>(
+        &mut self,
+        input: &OscillatorInput,
+    ) -> OscillatorSample {
         let count = input.rendered_voices();
         let mut values = [0.; 7];
         if self.state.history_count != count {
@@ -354,7 +381,9 @@ impl Oscillator {
             } else {
                 [q - inc, q - 2. * inc]
             };
-            *value = self.state.bank[k].generate_sample(q, b, c);
+            if OUTPUT {
+                *value = self.state.bank[k].generate_sample(q, b, c);
+            }
             // 次サンプルで保持位相が巻き戻る量を履歴にも適用する。
             // 変調量は折り返さず、周期を跨ぐ差商の距離を保持する。
             let wrap = f64::from((phase + inc >= 1.) as u8);
@@ -1084,6 +1113,44 @@ mod tests {
         };
         audio_sample(&mut oscillator, &input, 1.0, &[[1.0; 2]; 7]);
         oscillator
+    }
+
+    #[test]
+    fn advancing_without_output_preserves_phase_noise_and_adaa_history() {
+        let mut full = Oscillator::new();
+        let mut skipped = Oscillator { state: full.state };
+        let waves = [
+            Waveform::Sine,
+            Waveform::Triangle,
+            Waveform::Square,
+            Waveform::Sawtooth,
+            Waveform::Noise,
+        ];
+        for n in 0..5000 {
+            let mut input = test_input();
+            input.waveform = waves[n / 61 % waves.len()];
+            input.unison_voices = (n / 79 % 7 + 1) as u32;
+            input.detune_cents = if n % 11 == 0 { 0.0 } else { 25.0 };
+            input.phase_mode = [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random][n / 127 % 3];
+            input.note_generation = (n / 127) as u64;
+            input.active = n % 43 != 0;
+            input.phase_modulation = (n as f64 * 0.17).sin() * 2.0;
+            input.phase_modulated = n % 17 != 0;
+            input.frequency_hz = 40.0 + (n % 300) as f64 * 17.0;
+            let expected = full.generate_sample(&input, 48000.0);
+            if n % 19 == 0 {
+                let actual = skipped.generate_sample(&input, 48000.0);
+                assert_eq!(actual.count, expected.count);
+                assert_eq!(actual.values, expected.values);
+            } else {
+                skipped.advance_sample(&input, 48000.0);
+            }
+            assert_eq!(skipped.state.phases, full.state.phases);
+            assert_eq!(skipped.state.history, full.state.history);
+            assert_eq!(skipped.state.valid, full.state.valid);
+            assert_eq!(skipped.state.random, full.state.random);
+            assert_eq!(skipped.state.noise, full.state.noise);
+        }
     }
 
     #[test]
