@@ -1035,6 +1035,7 @@ void checkFm(IComponent* component, IAudioProcessor* processor, IEditController*
     for (int index = 29; index <= 30; ++index) {
         ParameterInfo info; assert(controller->getParameterInfo(index, info) == kResultOk);
         assert(info.id == (index == 29 ? fm2Id : fm3Id));
+        assert(std::u16string(info.title) == (index == 29 ? u"Osc2 Mod" : u"Osc3 Mod"));
         assert(info.stepCount == 0 && info.defaultNormalizedValue == 0 && info.flags == ParameterInfo::kCanAutomate);
         assert(controller->plainParamToNormalized(info.id, 200) == 1);
         String128 text; ParamValue value = -1;

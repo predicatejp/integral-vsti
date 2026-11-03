@@ -37,7 +37,7 @@ struct NativeParent {
         RegisterClassW(&cls);
         // 1024×768の画面でも、検証するクライアント領域全体を画面内に置く。
         window = CreateWindowExW(0, cls.lpszClassName, L"VST3 GUI test", WS_POPUP,
-                                 0, 0, 800, 600, nullptr, nullptr, cls.hInstance, nullptr);
+                                 0, 0, 960, 700, nullptr, nullptr, cls.hInstance, nullptr);
         assert(window); ShowWindow(window, SW_SHOW);
         // 埋め込み先とは別のホスト側コントロールをキー入力先にする。
         keyboard = CreateWindowExW(0, cls.lpszClassName, L"Host keyboard", WS_CHILD | WS_VISIBLE,
@@ -104,7 +104,7 @@ struct NativeParent {
     ::Window window;
     NativeParent() {
         display = XOpenDisplay(nullptr); assert(display);
-        window = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 800, 600, 0, 0, 0);
+        window = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 960, 700, 0, 0, 0);
         XMapWindow(display, window); XSync(display, False);
     }
     ~NativeParent() { XDestroyWindow(display, window); XCloseDisplay(display); }
@@ -321,7 +321,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 784 && rect.getHeight() == 560);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 941 && rect.getHeight() == 672);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -334,7 +334,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 784);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 941);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -429,12 +429,13 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {564, 398}, {376, 450}, {536, 450}
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
+    auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
-        parent.click(x, y); pump(); assert(handler.sequence.empty());
+        parent.click(uiPixel(x), uiPixel(y)); pump(); assert(handler.sequence.empty());
         parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
         // 下段のOsc3は上側へ、それ以外は下側へ開く。
-        parent.click(x, (index == 26 ? y - 154 : y + 34) + item * 30);
+        parent.click(uiPixel(x), uiPixel((index == 26 ? y - 154 : y + 34) + item * 30));
         waitFor([&] { return handler.sequence.size() >= 3; }, "dropdown choice");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
@@ -445,7 +446,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(784, 560); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(941, 672); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         if (cycle == 0) {
@@ -457,25 +458,39 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(processor->setProcessing(true) == kResultOk);
             Points poly; poly.id = polyphonyId; poly.values = {{0, 2.0 / 31.0}};
             assert(controller->setParamNormalized(polyphonyId, 2.0 / 31.0) == kResultOk);
-            Changes changes; changes.queues = {&poly};
+            Points master; master.id = volumeId; master.values = {{0, 1.0}};
+            assert(controller->setParamNormalized(volumeId, 1.0) == kResultOk);
+            Changes changes; changes.queues = {&poly, &master};
             Events events; events.values = {note(true, 0, 100), note(true, 0, 101), note(true, 0, 102)};
+            std::array<float, 64> left {}, right {};
+            Sample32* channels[] {left.data(), right.data()};
+            AudioBusBuffers bus {}; bus.numChannels = 2; bus.channelBuffers32 = channels;
+            assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
             ProcessData audio {}; audio.numSamples = 1; audio.symbolicSampleSize = kSample32;
+            audio.numOutputs = 1; audio.outputs = &bus;
             audio.inputParameterChanges = &changes; audio.inputEvents = &events;
 #ifdef _WIN32
-            const uint32 lit = RGB(20, 96, 76), unlit = RGB(143, 160, 147);
+            const uint32 lit = RGB(0, 164, 102), unlit = RGB(224, 230, 224), over = RGB(232, 64, 48);
 #else
-            const uint32 lit = 0x14604c, unlit = 0x8fa093;
+            const uint32 lit = 0x00a466, unlit = 0xe0e6e0, over = 0xe84030;
 #endif
             auto meter = [&](int count) {
                 for (int i = 0; i < 32; ++i) {
-                    if (parent.pixel(517 + i * 8, 26) != (i < count ? lit : unlit)) return false;
+                    if (parent.pixel(uiPixel(517 + i * 8), uiPixel(32)) != (i < count ? lit : unlit)) return false;
                 }
                 return true;
             };
             assert(processor->process(audio) == kResultOk);
             waitFor([&] { return meter(3); }, "three active voices");
+            audio.inputParameterChanges = nullptr; audio.inputEvents = nullptr;
+            audio.numSamples = 64;
+            for (int i = 0; i < 16; ++i) assert(processor->process(audio) == kResultOk);
+            waitFor([&] {
+                assert(processor->process(audio) == kResultOk);
+                return parent.pixel(uiPixel(600), uiPixel(20)) == lit && parent.pixel(uiPixel(766), uiPixel(20)) == over;
+            }, "peak at +12 dBFS: green below zero, red above");
             parent.screenshot("target/gui-voices.ppm");
-            audio.inputParameterChanges = nullptr;
+            audio.inputEvents = &events;
             events.values = {note(false, 0, 100), note(false, 0, 101), note(false, 0, 102)};
             assert(processor->process(audio) == kResultOk);
             pump(); assert(meter(3)); // release中も点灯する。
@@ -488,6 +503,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return meter(3); }, "voices before stop");
             assert(processor->setProcessing(false) == kResultOk);
             waitFor([&] { return meter(0); }, "voices after stop");
+            waitFor([&] { return parent.pixel(uiPixel(517), uiPixel(20)) == unlit; }, "peak decays to silence");
             assert(component->setActive(false) == kResultOk);
             assert(component->setState(&original) == kResultOk);
         }
@@ -530,7 +546,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
             pump(); assert(handler.sequence.empty());
-            const auto [x, y] = controls[i];
+            const auto [logicalX, logicalY] = controls[i];
+            const int x = uiPixel(logicalX), y = uiPixel(logicalY);
             parent.movePointer(x, y); pump();
 #ifdef _WIN32
             GuiReentry::arm(parent.child());
@@ -539,19 +556,19 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
             assert(handler.sequence == (std::vector<int>{0}));
             assert(!parent.cursorVisible());
-            // 全ノブで224×60 pxの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(x - 112, 0, 560);
-            const int overlayY = std::clamp(y - 91, 0, 500);
+            // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
+            const int overlayX = std::clamp(logicalX - 112, 0, 560);
+            const int overlayY = std::clamp(logicalY - 91, 0, 500);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
 #else
             const uint32 overlayColor = 0x172b26;
 #endif
             waitFor([&] {
-                return parent.pixel(overlayX + 4, overlayY + 4) == overlayColor &&
-                       parent.pixel(overlayX + 219, overlayY + 4) == overlayColor &&
-                       parent.pixel(overlayX + 4, overlayY + 55) == overlayColor &&
-                       parent.pixel(overlayX + 219, overlayY + 55) == overlayColor;
+                return parent.pixel(uiPixel(overlayX + 4), uiPixel(overlayY + 4)) == overlayColor &&
+                       parent.pixel(uiPixel(overlayX + 219), uiPixel(overlayY + 4)) == overlayColor &&
+                       parent.pixel(uiPixel(overlayX + 4), uiPixel(overlayY + 55)) == overlayColor &&
+                       parent.pixel(uiPixel(overlayX + 219), uiPixel(overlayY + 55)) == overlayColor;
             }, "fixed overlay bounds");
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
@@ -658,7 +675,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         double phaseMode = -1; std::memcpy(&phaseMode, phaseState.bytes.data() + 100, 8);
         assert(phaseMode == 2.0);
 #ifdef _WIN32
-        parent.movePointer(controls[13].first, controls[13].second); pump(); parent.knobButton(true);
+        parent.movePointer(uiPixel(controls[13].first), uiPixel(controls[13].second)); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence.size() == 1; }, "knob before escape");
         INPUT escape {}; escape.type = INPUT_KEYBOARD; escape.ki.wVk = VK_ESCAPE;
         assert(SendInput(1, &escape, sizeof(INPUT)) == 1);
@@ -669,7 +686,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         parent.knobButton(false); pump(); handler.sequence.clear();
 #endif
         // 実際のフォーカス喪失で、ボタン解放を待たずに終了する。
-        parent.movePointer(controls[6].first, controls[6].second); pump(); parent.knobButton(true);
+        parent.movePointer(uiPixel(controls[6].first), uiPixel(controls[6].second)); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence.size() == 1; }, "knob before focus loss");
         {
             NativeParent other;
@@ -682,7 +699,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(parent.cursorVisible());
         parent.knobButton(false); pump(); handler.sequence.clear();
         // 押したまま画面を閉じても開始済み編集は終了する。
-        parent.movePointer(controls[6].first, controls[6].second); pump(); parent.knobButton(true);
+        parent.movePointer(uiPixel(controls[6].first), uiPixel(controls[6].second)); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence.size() == 1; }, "knob before close");
         pump(); parent.screenshot();
         assert(view->removed() == kResultOk);
