@@ -253,13 +253,18 @@ impl Oscillator {
                 count: 0,
             };
         }
-        self.generate_validated_sample::<OUTPUT>(input, sample_rate)
+        // SAFETY: 上の検証で入力とレートの全条件を満たすことを確認した。
+        unsafe { self.generate_validated_sample::<OUTPUT>(input, sample_rate) }
     }
 
     /// Voice内で検証済みの定常入力とレートから、生成と状態更新を行う。
-    /// 入力の各範囲はis_validと同じ。OUTPUT=falseは状態だけを更新する。
+    /// OUTPUT=falseは状態だけを更新する。
+    ///
+    /// # Safety
+    /// input.is_valid()がtrue、sample_rateが有限の正数であること。
+    /// 後段の高速整数変換と固定長配列の処理はこの範囲を前提とする。
     #[inline]
-    pub(super) fn generate_validated_sample<const OUTPUT: bool>(
+    pub(super) unsafe fn generate_validated_sample<const OUTPUT: bool>(
         &mut self,
         input: &OscillatorInput,
         sample_rate: f64,
