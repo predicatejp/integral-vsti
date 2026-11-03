@@ -55,6 +55,8 @@ struct Plugin {
     controller_parameters: Arc<SharedParameters>,
     /// 音声ブロック末尾の発音数。GUIはこのatomicだけを読み、DSP状態に触れない。
     active_voices: Arc<AtomicU32>,
+    /// GUIが受け取るまでの左右最大サンプルピーク。非負f32のビット表現。
+    output_peak: Arc<AtomicU32>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
     /// オシレータ・現在のノート・サンプルレートを所有する可変DSP状態。
@@ -165,6 +167,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         processor_parameters: SharedParameters::new(),
         controller_parameters: Arc::new(SharedParameters::new()),
         active_voices: Arc::new(AtomicU32::new(0)),
+        output_peak: Arc::new(AtomicU32::new(0)),
         component_handler: RefCell::new(None),
         synth: UnsafeCell::new(Synthesizer::new()),
         max_samples: AtomicI32::new(0),
@@ -275,6 +278,7 @@ unsafe extern "system" fn terminate(this: This) -> TResult {
     // SAFETY: terminateはprocessの終了後に呼ばれる。
     unsafe { (*plugin.synth.get()).stop() };
     plugin.active_voices.store(0, Ordering::Relaxed);
+    plugin.output_peak.store(0, Ordering::Relaxed);
     let old_handler = plugin.component_handler.replace(None);
     drop(old_handler);
     OK
@@ -381,6 +385,7 @@ unsafe extern "system" fn set_active(this: This, state: u8) -> TResult {
         // SAFETY: setActive(false)はprocessの終了後に呼ばれる。
         unsafe { (*plugin.synth.get()).stop() };
         plugin.active_voices.store(0, Ordering::Relaxed);
+        plugin.output_peak.store(0, Ordering::Relaxed);
     }
     OK
 }
@@ -620,6 +625,7 @@ unsafe extern "system" fn create_view(this: This, name: *const u8) -> This {
             this,
             Arc::clone(&plugin.controller_parameters),
             Arc::clone(&plugin.active_voices),
+            Arc::clone(&plugin.output_peak),
         )
     }
 }
@@ -787,6 +793,7 @@ unsafe extern "system" fn set_processing(this: This, state: u8) -> TResult {
         // SAFETY: setProcessing(false)は全process呼び出しの終了後に呼ばれる。
         unsafe { (*plugin.synth.get()).stop() };
         plugin.active_voices.store(0, Ordering::Relaxed);
+        plugin.output_peak.store(0, Ordering::Relaxed);
     }
     OK
 }
@@ -872,6 +879,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     if !event_active {
         synth.stop();
     }
+    let mut peak = 0.0_f32;
     let mut cursor = 0;
     let mut nonzero = 0;
     if event_active && !data.input_events.is_null() {
@@ -902,6 +910,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
                     channels,
                     cursor..event.sample_offset,
                     &mut changes,
+                    &mut peak,
                 )
             };
             cursor = event.sample_offset;
@@ -935,11 +944,18 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
             channels,
             cursor..data.num_samples,
             &mut changes,
+            &mut peak,
         )
     };
     plugin
         .active_voices
         .store(synth.active_voice_count(), Ordering::Relaxed);
+    if data.num_samples > 0 {
+        // 非負f32はビット順と数値順が一致する。短いブロックのピークもGUIの読出しまで保持。
+        plugin
+            .output_peak
+            .fetch_max(peak.to_bits(), Ordering::Relaxed);
+    }
     if channels.is_some() {
         // SAFETY: channelsがSomeのときは有効な出力バスが存在する。
         unsafe { (*data.outputs).silence_flags = STEREO & !nonzero };
@@ -957,12 +973,14 @@ unsafe fn generate_samples(
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
+    peak: &mut f32,
 ) -> u64 {
     // バッファの有無と精度は区間ごとに選び、サンプルループ内では分岐しない。
     let nonzero = match channels {
         Some(channels) if data.symbolic_sample_size == SAMPLE32 => {
             generate_output_samples(plugin, synth, changes, range.clone(), |offset, sample| {
                 let sample = sample.map(|value| value as f32);
+                *peak = (*peak).max(sample[0].abs()).max(sample[1].abs());
                 for (channel, sample) in channels.into_iter().zip(sample) {
                     // SAFETY: 呼び出し元で検証済み。左右が同じ領域でも順に書き込む。
                     unsafe { channel.cast::<f32>().add(offset).write(sample) };
@@ -972,6 +990,7 @@ unsafe fn generate_samples(
         }
         Some(channels) => {
             generate_output_samples(plugin, synth, changes, range.clone(), |offset, sample| {
+                *peak = (*peak).max(sample[0].abs().max(sample[1].abs()) as f32);
                 for (channel, sample) in channels.into_iter().zip(sample) {
                     // SAFETY: 呼び出し元で検証済み。排他的sliceは作らない。
                     unsafe { channel.cast::<f64>().add(offset).write(sample) };
@@ -1032,6 +1051,84 @@ fn apply_parameters(
             if change.automated {
                 plugin.processor_parameters.set(i, values[i]);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod meter_tests {
+    use super::*;
+
+    #[test]
+    fn output_peak_matches_master_output_and_holds_until_consumed() {
+        // SAFETY: このテストは全ABI呼出しを直列化し、バッファと所有参照を保持する。
+        unsafe {
+            let mut component = ptr::null_mut();
+            assert_eq!(create(&COMPONENT_IID, &mut component), OK);
+            assert_eq!(initialize(component, component), OK);
+            let setup = ProcessSetup {
+                process_mode: 0,
+                symbolic_sample_size: SAMPLE64,
+                max_samples_per_block: 64,
+                sample_rate: 48000.0,
+            };
+            assert_eq!(setup_processing(component, &setup), OK);
+            assert_eq!(activate_bus(component, AUDIO, OUTPUT, 0, 1), OK);
+            assert_eq!(set_active(component, 1), OK);
+            assert_eq!(set_processing(component, 1), OK);
+            let plugin = instance(component);
+            let mut values = parameters::sine_preset();
+            values[13] = parameters::to_normalized(13, -12.0);
+            values[21] = parameters::to_normalized(21, 100.0);
+            plugin.processor_parameters.store(values);
+            let synth = &mut *plugin.synth.get();
+            synth.set_parameters(values);
+            synth.note_on(
+                Note {
+                    id: 1,
+                    channel: 0,
+                    pitch: 69,
+                },
+                0.0,
+                1.0,
+            );
+            let mut left = [0.0_f64; 64];
+            let mut right = [0.0_f64; 64];
+            let mut channels = [left.as_mut_ptr().cast(), right.as_mut_ptr().cast()];
+            let mut bus = AudioBusBuffers {
+                num_channels: 2,
+                silence_flags: 0,
+                channel_buffers: channels.as_mut_ptr(),
+            };
+            let mut data: ProcessData = std::mem::zeroed();
+            data.symbolic_sample_size = SAMPLE64;
+            data.num_samples = 64;
+            data.num_outputs = 1;
+            data.outputs = &mut bus;
+            assert_eq!(process(component, &mut data), OK);
+            assert!(left.iter().all(|&v| v.abs() < 1e-15));
+            let expected = right.iter().fold(0.0_f64, |p, v| p.max(v.abs())) as f32;
+            assert!(expected > 0.1 && expected < 0.3);
+            values[13] = parameters::to_normalized(13, f64::NEG_INFINITY);
+            plugin.processor_parameters.store(values);
+            assert_eq!(process(component, &mut data), OK);
+            data.num_samples = 0;
+            assert_eq!(process(component, &mut data), OK);
+            assert_eq!(
+                f32::from_bits(plugin.output_peak.swap(0, Ordering::Relaxed)),
+                expected
+            );
+            data.num_samples = 64;
+            assert_eq!(process(component, &mut data), OK);
+            assert_eq!(plugin.output_peak.load(Ordering::Relaxed), 0);
+            plugin.processor_parameters.store(parameters::sine_preset());
+            assert_eq!(process(component, &mut data), OK);
+            assert!(plugin.output_peak.load(Ordering::Relaxed) > 0);
+            assert_eq!(set_processing(component, 0), OK);
+            assert_eq!(plugin.output_peak.load(Ordering::Relaxed), 0);
+            assert_eq!(set_active(component, 0), OK);
+            assert_eq!(terminate(component), OK);
+            assert_eq!(release(component), 0);
         }
     }
 }

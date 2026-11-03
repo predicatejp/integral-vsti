@@ -60,8 +60,8 @@ pub fn sine_preset() -> [f64; COUNT] {
         0.0,
         0.0,
         f64::NEG_INFINITY, // Osc3: Sine, Tune=0, mute
-        0.0,               // Osc2 FM
-        0.0,               // Osc3 FM
+        0.0,               // Osc2 Mod
+        0.0,               // Osc3 Mod
         0.0,               // Clipper: None
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
@@ -173,8 +173,8 @@ pub const NAMES: [&str; COUNT] = [
     "Osc3 Waveform",
     "Osc3 Tune",
     "Osc3 Volume",
-    "Osc2 FM",
-    "Osc3 FM",
+    "Osc2 Mod",
+    "Osc3 Mod",
     "Clipper type",
     "Gain",
     "Mix",
@@ -416,8 +416,8 @@ pub fn defaults() -> [f64; COUNT] {
         0.0,
         0.0,
         f64::NEG_INFINITY, // Osc3
-        0.0,               // Osc2 FM
-        0.0,               // Osc3 FM
+        0.0,               // Osc2 Mod
+        0.0,               // Osc3 Mod
         0.0,               // Clipper: None
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%

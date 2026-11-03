@@ -28,7 +28,7 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix",
+    "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -90,6 +90,8 @@ const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(53, 71, 62);
 const LINE: egui::Color32 = egui::Color32::from_rgb(143, 160, 147);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(20, 96, 76);
+const METER_BACKGROUND: egui::Color32 = egui::Color32::from_rgb(224, 230, 224);
+const METER_ACTIVE: egui::Color32 = egui::Color32::from_rgb(0, 164, 102);
 
 /// 外周・グループ間・枠内の左右余白と、基本の縦間隔。
 const GAP: f32 = 8.0;
@@ -101,7 +103,10 @@ const TITLE_BAR_HEIGHT: f32 = 36.0;
 /// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
 const KNOB_CELL: egui::Vec2 = egui::vec2(64.0, 80.0);
 
-/// 全パラメーターで共通のオーバーレイ寸法（物理px）。
+/// 1論理ポイント当たりの物理px。描画とポインター座標の換算に共用する。
+const UI_SCALE: f32 = 1.2;
+
+/// 全パラメーターで共通のオーバーレイ寸法（論理ポイント）。
 const OVERLAY_SIZE: egui::Vec2 = egui::vec2(224.0, 60.0);
 
 fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
@@ -125,6 +130,10 @@ struct EditorState {
     drag: Option<DragState>,
     /// 最後の描画で配置したノブの当たり判定。
     knobs: [egui::Rect; parameters::COUNT],
+    /// 表示中のサンプルピーク（−60〜＋12 dBFS）。操作値ではない。
+    peak_db: f32,
+    /// ピーク表示の減衰を実時間で計算する直前の更新時刻。
+    meter_updated: Instant,
 }
 
 struct DragState {
@@ -198,7 +207,7 @@ pub(super) struct Editor {
     context: egui::Context,
     /// 次フレームへ渡すマウスイベント。
     input: RefCell<egui::RawInput>,
-    /// ボタンイベントへ付与する直近の物理ピクセル座標。
+    /// ボタンイベントへ付与する直近の論理ポイント座標。
     pointer: Cell<egui::Pos2>,
     /// eguiへ渡す単調増加時刻の起点。
     start: Instant,
@@ -208,6 +217,8 @@ pub(super) struct Editor {
     parameters: Arc<SharedParameters>,
     /// 音声ブロック末尾の発音数。描画側は読み取りだけ行う。
     active_voices: Arc<AtomicU32>,
+    /// GUIが受け取るまでの左右最大サンプルピーク。非負f32のビット表現。
+    output_peak: Arc<AtomicU32>,
     /// 最後に描画した発音数。変化した場合だけ再描画する。
     displayed_voices: Cell<u32>,
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
@@ -224,6 +235,7 @@ impl Editor {
         window: WindowContext,
         parameters: Arc<SharedParameters>,
         active_voices: Arc<AtomicU32>,
+        output_peak: Arc<AtomicU32>,
         edits: Arc<Edits>,
         #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::EditorView>,
     ) -> Result<Self, HandlerError> {
@@ -240,10 +252,13 @@ impl Editor {
             painter?
         };
         let timer = window.create_timer(Duration::from_millis(16))?;
+        output_peak.store(0, Ordering::Relaxed);
         let editor = Self {
             state: RefCell::new(EditorState {
                 drag: None,
                 knobs: [egui::Rect::NOTHING; parameters::COUNT],
+                peak_db: -60.0,
+                meter_updated: Instant::now(),
             }),
             window,
             gl,
@@ -255,6 +270,7 @@ impl Editor {
             _timer: timer,
             parameters,
             active_voices,
+            output_peak,
             displayed_voices: Cell::new(u32::MAX),
             displayed: Cell::new([f64::NAN; parameters::COUNT]),
             edits,
@@ -644,9 +660,14 @@ impl WindowHandler for Editor {
         let size = self.window.size().physical;
         let mut input = self.input.borrow_mut().take();
         input.time = Some(self.start.elapsed().as_secs_f64());
+        input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(UI_SCALE);
         input.screen_rect = Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
-            egui::vec2(size.width as f32, size.height as f32),
+            egui::vec2(size.width as f32, size.height as f32) / UI_SCALE,
         ));
         input.max_texture_side = Some(painter.max_texture_side());
         let selected = self.parameters.snapshot();
@@ -658,7 +679,7 @@ impl WindowHandler for Editor {
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
             let title = egui::Rect::from_min_size(
                 egui::vec2(GAP, GAP).to_pos2(),
-                egui::vec2(size.width as f32 - GAP * 2.0, TITLE_BAR_HEIGHT),
+                egui::vec2(size.width as f32 / UI_SCALE - GAP * 2.0, TITLE_BAR_HEIGHT),
             );
             let painter = ui.painter();
             painter.rect_filled(title, 8.0, PANEL);
@@ -670,15 +691,44 @@ impl WindowHandler for Editor {
                 INK,
             );
             let meter_x = title.right() - GAP - 254.0;
+            let peak_db = self.state.borrow().peak_db;
+            let peak_rect = egui::Rect::from_min_size(
+                egui::pos2(meter_x, title.center().y - 10.0),
+                egui::vec2(254.0, 8.0),
+            );
+            painter.rect_filled(peak_rect, 1.0, METER_BACKGROUND);
+            let zero_x = meter_x + peak_rect.width() * 60.0 / 72.0;
+            for (start_db, end_db, color) in [
+                (-60.0, 0.0, METER_ACTIVE),
+                (0.0, 12.0, egui::Color32::from_rgb(232, 64, 48)),
+            ] {
+                let width = peak_rect.width() * (peak_db.min(end_db) - start_db).max(0.0) / 72.0;
+                if width > 0.0 {
+                    let start_x = meter_x + peak_rect.width() * (start_db + 60.0) / 72.0;
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(start_x, peak_rect.top()),
+                            egui::vec2(width, 8.0),
+                        ),
+                        0.0,
+                        color,
+                    );
+                }
+            }
+            painter.vline(zero_x, peak_rect.y_range(), egui::Stroke::new(1.0, INK));
             for voice in 0..32 {
                 let segment = egui::Rect::from_min_size(
-                    egui::pos2(meter_x + voice as f32 * 8.0, title.center().y - 6.0),
-                    egui::vec2(6.0, 12.0),
+                    egui::pos2(meter_x + voice as f32 * 8.0, title.center().y + 2.0),
+                    egui::vec2(6.0, 8.0),
                 );
                 painter.rect_filled(
                     segment,
                     1.0,
-                    if voice < voice_count { ACCENT } else { LINE },
+                    if voice < voice_count {
+                        METER_ACTIVE
+                    } else {
+                        METER_BACKGROUND
+                    },
                 );
             }
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
@@ -817,7 +867,7 @@ impl WindowHandler for Editor {
                     self.move_drag();
                     return EventStatus::Captured;
                 }
-                let pos = egui::pos2(position.x as f32, position.y as f32);
+                let pos = egui::pos2(position.x as f32 / UI_SCALE, position.y as f32 / UI_SCALE);
                 self.pointer.set(pos);
                 egui::Event::PointerMoved(pos)
             }
@@ -882,7 +932,22 @@ impl WindowHandler for Editor {
         if self.state.borrow().drag.is_some() && self.current_drag_position().is_none() {
             self.end_drag();
         }
-        if self.displayed.get() != self.parameters.snapshot()
+        let peak_changed = {
+            let incoming = f32::from_bits(self.output_peak.swap(0, Ordering::Relaxed));
+            let mut state = self.state.borrow_mut();
+            let now = Instant::now();
+            let elapsed = now.duration_since(state.meter_updated).as_secs_f32();
+            state.meter_updated = now;
+            let peak_db = (20.0 * incoming.max(0.001).log10())
+                .min(12.0)
+                .max(state.peak_db - 48.0 * elapsed)
+                .max(-60.0);
+            let changed = peak_db != state.peak_db;
+            state.peak_db = peak_db;
+            changed
+        };
+        if peak_changed
+            || self.displayed.get() != self.parameters.snapshot()
             || self.displayed_voices.get() != self.active_voices.load(Ordering::Relaxed)
         {
             self.window.request_redraw();
