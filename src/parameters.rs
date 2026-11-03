@@ -30,44 +30,18 @@ pub const PROGRAM_NAME: &str = "Sine";
 
 /// 内蔵Sineの全設定。編集値から独立した固定の音色定義。
 pub fn sine_preset() -> [f64; COUNT] {
-    let plain: [f64; COUNT] = [
-        0.0, // Sine
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0, // 音量AHDSR: ノートで即時オン・オフ
-        1.0,
-        0.0,
-        1.0, // Unison=1, Detune=0, Polyphony=1
-        0.0,
-        4800.0,
-        1.0, // Filter=None, Cutoff=4800 cent, Q=1
-        0.0,
-        0.0, // Phase=Keep, Volume=0 dB
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0, // Cutoff AHDSR
-        0.0,
-        0.0,
-        0.0, // Amount=0, Width=0, Pan=中央
-        0.0, // Osc1 Volume
-        0.0,
-        0.0,
-        f64::NEG_INFINITY, // Osc2: Sine, Tune=0, mute
-        0.0,
-        0.0,
-        f64::NEG_INFINITY, // Osc3: Sine, Tune=0, mute
-        0.0,               // Osc2 Mod
-        0.0,               // Osc3 Mod
-        0.0,               // Clipper: None
-        0.0,               // Gain: 0 dB
-        100.0,             // Mix: 100%
-    ];
-    std::array::from_fn(|i| to_normalized(i, plain[i]))
+    initial_values(
+        EnvelopeParameters {
+            attack_ms: 0.0,
+            hold_ms: 0.0,
+            decay_ms: 0.0,
+            sustain: 1.0,
+            release_ms: 0.0,
+        },
+        FilterType::None,
+    )
 }
+
 pub const CLIPPER_TYPES: [ClipperType; 3] =
     [ClipperType::None, ClipperType::Soft, ClipperType::Hard];
 pub const CLIPPER_NAMES: [&str; 3] = ["None", "Soft", "Hard"];
@@ -193,7 +167,7 @@ pub fn choices(index: usize) -> &'static [&'static str] {
 /// ノブの整数tick上限。選択リストはchoicesの列挙番号を使う。
 pub fn max_tick(index: usize) -> u32 {
     if is_time(index) {
-        401
+        TIME_TICKS
     } else {
         match index {
             6 => 6,
@@ -211,12 +185,7 @@ pub fn max_tick(index: usize) -> u32 {
 
 /// ホストの正規化値をGUIの整数tickへ換算する。表示更新だけでは再通知しない。
 pub fn to_tick(index: usize, value: f64) -> u32 {
-    let scale = if is_time(index) {
-        time_scale()
-    } else {
-        f64::from(max_tick(index))
-    };
-    (value * scale).round() as u32
+    (value * f64::from(max_tick(index))).round() as u32
 }
 
 /// GUIとホストへ公開する実単位。
@@ -233,10 +202,8 @@ pub fn unit(index: usize) -> &'static str {
     }
 }
 
-/// VST3正規化値と時間を換算する連続軸のスケール。UIの整数tick上限とは区別する。
-pub fn time_scale() -> f64 {
-    401.0
-}
+/// 時間軸の上端。0ms専用端点と、1ms〜10sの400区間。
+const TIME_TICKS: u32 = 401;
 pub fn index(id: u32) -> Option<usize> {
     IDS.iter().position(|&candidate| candidate == id)
 }
@@ -308,7 +275,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     if normalized == 1.0 {
         return 10000.0;
     }
-    let tick = normalized * time_scale();
+    let tick = normalized * f64::from(TIME_TICKS);
     if tick <= 1.0 {
         tick
     } else {
@@ -349,7 +316,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         plain
     } else {
         1.0 + 100.0 * plain.log10()
-    }) / time_scale()
+    }) / f64::from(TIME_TICKS)
 }
 pub fn valid_plain(index: usize, plain: f64) -> bool {
     if is_volume(index) {
@@ -385,8 +352,12 @@ pub fn canonical(index: usize, value: f64) -> f64 {
     }
 }
 pub fn defaults() -> [f64; COUNT] {
-    let p = DEFAULT_ENVELOPE;
-    let plain = [
+    initial_values(DEFAULT_ENVELOPE, FilterType::LowPass1)
+}
+
+/// 初期音色とSineに共通する固定値。編集済みのパラメーターは参照しない。
+fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
+    let plain: [f64; COUNT] = [
         0.0,
         p.attack_ms,
         p.hold_ms,
@@ -396,7 +367,7 @@ pub fn defaults() -> [f64; COUNT] {
         1.0,
         0.0,
         1.0,
-        1.0,    // LowPass1
+        f64::from(filter as u32),
         4800.0, // ノートから+4 oct
         1.0,
         0.0, // Phase: Keep
@@ -1047,21 +1018,21 @@ mod tests {
                 (201.0, 100.0),
                 (301.0, 1000.0),
             ] {
-                assert!((to_plain(i, tick / time_scale()) - ms).abs() < 1e-10);
-                assert!((to_normalized(i, ms) * time_scale() - tick).abs() < 1e-10);
+                assert!((to_plain(i, tick / f64::from(TIME_TICKS)) - ms).abs() < 1e-10);
+                assert!((to_normalized(i, ms) * f64::from(TIME_TICKS) - tick).abs() < 1e-10);
             }
             assert_eq!(to_plain(i, 1.0), 10000.0);
             // GUIで選べる全tickの往復変換・単調性・100tickごとの倍率を確認。
             let mut previous = -1.0;
-            for tick in 0..=time_scale().floor() as u32 {
-                let normalized = f64::from(tick) / time_scale();
+            for tick in 0..=TIME_TICKS {
+                let normalized = f64::from(tick) / f64::from(TIME_TICKS);
                 let ms = tick_to_plain(i, tick);
                 assert_eq!(to_tick(i, to_normalized(i, ms)), tick);
                 assert!(ms > previous && ms <= 10000.0);
                 assert!((to_normalized(i, ms) - normalized).abs() < 1e-12);
                 assert!(ms == 0.0 || (to_plain(i, to_normalized(i, ms)) / ms - 1.0).abs() < 1e-12);
                 if tick > 100 {
-                    let earlier = to_plain(i, f64::from(tick - 100) / time_scale());
+                    let earlier = to_plain(i, f64::from(tick - 100) / f64::from(TIME_TICKS));
                     assert!((ms / earlier - 10.0).abs() < 1e-12);
                 }
                 previous = ms;

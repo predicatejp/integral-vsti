@@ -454,6 +454,7 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
         return INVALID_ARGUMENT;
     }
     let i = index as usize;
+    let choices = parameters::choices(i);
     // SAFETY: outはホストの書き込み領域。
     unsafe {
         out.write(ParameterInfo {
@@ -461,22 +462,17 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
             title: utf16(NAMES[i]),
             short_title: utf16(NAMES[i]),
             units: utf16(parameters::unit(i)),
-            step_count: if parameters::choices(i).is_empty() {
+            step_count: if choices.is_empty() {
                 match i {
-                    6 => 6,
-                    8 => 31,
+                    6 | 8 => parameters::max_tick(i) as i32,
                     _ => 0,
                 }
             } else {
-                (parameters::choices(i).len() - 1) as i32
+                (choices.len() - 1) as i32
             },
             default_normalized_value: parameters::defaults()[i],
             unit_id: 0,
-            flags: if !parameters::choices(i).is_empty() {
-                1 | (1 << 3)
-            } else {
-                1
-            },
+            flags: if !choices.is_empty() { 1 | (1 << 3) } else { 1 },
         });
     }
     OK
@@ -518,16 +514,18 @@ unsafe extern "system" fn parameter_value(
     if text.is_null() || out.is_null() {
         return INVALID_ARGUMENT;
     }
-    let mut buffer = Vec::new();
-    for offset in 0..128 {
+    let mut buffer = [0; 128];
+    let mut length = 0;
+    for (offset, slot) in buffer.iter_mut().enumerate() {
         // SAFETY: NUL終端のホスト文字列。NULで停止し、最大128文字に制限する。
         let ch = unsafe { *text.add(offset) };
         if ch == 0 {
             break;
         }
-        buffer.push(ch);
+        *slot = ch;
+        length += 1;
     }
-    let Ok(text) = String::from_utf16(&buffer) else {
+    let Ok(text) = String::from_utf16(&buffer[..length]) else {
         return INVALID_ARGUMENT;
     };
     if id == parameters::PROGRAM_ID && text == parameters::PROGRAM_NAME {

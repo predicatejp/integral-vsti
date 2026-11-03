@@ -366,6 +366,15 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
         assert(controller->setParamNormalized(waveformId, normalized) == kResultOk);
         assert(controller->getParamNormalized(waveformId) == normalized);
     }
+    // NUL終端がなくてもString128の上限で止まり、不正なUTF-16は拒否する。
+    String128 bounded;
+    std::fill(std::begin(bounded), std::end(bounded), u'x');
+    double parsed = -1;
+    assert(controller->getParamValueByString(waveformId, bounded, parsed) == kInvalidArgument);
+    assert(parsed == -1);
+    bounded[0] = 0xd800; bounded[1] = 0;
+    assert(controller->getParamValueByString(waveformId, bounded, parsed) == kInvalidArgument);
+    assert(parsed == -1);
     assert(controller->setParamNormalized(waveformId, std::numeric_limits<double>::quiet_NaN()) == kInvalidArgument);
     assert(controller->setParamNormalized(waveformId, -0.1) == kInvalidArgument);
     assert(controller->setParamNormalized(0, 0.0) == kInvalidArgument);

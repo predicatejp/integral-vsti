@@ -71,7 +71,7 @@ struct ViewState {
     #[cfg(target_os = "linux")]
     /// UIスレッドで編集を配送するタイマー。取り外し時に必ず解除する。
     ticker: RefCell<Option<Ticker>>,
-    /// Controllerと共有する22個の正規化値。
+    /// Controllerと共有する音色設定の正規化値。
     parameters: Arc<SharedParameters>,
     /// 音声側と共有する表示専用の発音数。
     active_voices: Arc<AtomicU32>,
