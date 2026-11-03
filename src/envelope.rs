@@ -98,6 +98,10 @@ fn ramp(time: f64, duration: f64) -> f64 {
 struct EnvelopeState {
     /// 次サンプル時点の正規化値。再ノートオンの開始値に使う。
     current_value: f64,
+    /// 現在の線形区間で1サンプル進めたときの増分。
+    increment: f64,
+    /// 次に厳密式で再計算する段境界までのサンプル数。
+    remaining: u64,
     /// 検証・値計算に使用した設定、レート、ピーク。変更時だけ再検証する。
     input: Option<(EnvelopeParameters, f64, f64)>,
     /// 直近のノートオン時の値。attack中は固定する。
@@ -126,6 +130,8 @@ impl Envelope {
         Self {
             state: EnvelopeState {
                 current_value: 0.0,
+                increment: 0.0,
+                remaining: 0,
                 input: None,
                 start_value: 0.0,
                 elapsed_samples: 0,
@@ -190,7 +196,12 @@ impl Envelope {
     pub fn update_sample(&mut self, parameters: &EnvelopeParameters, sample_rate: f64, peak: f64) {
         if self.state.active {
             self.state.elapsed_samples = self.state.elapsed_samples.saturating_add(1);
-            self.refresh_value(parameters, sample_rate, peak);
+            if self.state.remaining > 1 {
+                self.state.remaining -= 1;
+                self.state.current_value += self.state.increment;
+            } else {
+                self.refresh_value(parameters, sample_rate, peak);
+            }
         }
     }
 
@@ -216,6 +227,37 @@ impl Envelope {
         } else {
             0.0
         };
+        if !self.state.active {
+            return;
+        }
+        let time = self.state.elapsed_samples as f64 / sample_rate * 1000.0;
+        let decay_start = parameters.attack_ms + parameters.hold_ms;
+        let decay_end = decay_start + parameters.decay_ms;
+        let sample_at = |ms: f64| (ms * sample_rate / 1000.0).ceil() as u64;
+        let (slope, boundary) = if let Some(off) = self.state.note_off_sample {
+            let off_ms = off as f64 / sample_rate * 1000.0;
+            let start = value_validated(parameters, off_ms, None, self.state.start_value, peak);
+            (
+                -start / parameters.release_ms,
+                off.saturating_add(sample_at(parameters.release_ms)),
+            )
+        } else if time < parameters.attack_ms {
+            (
+                (peak - self.state.start_value) / parameters.attack_ms,
+                sample_at(parameters.attack_ms),
+            )
+        } else if time < decay_start {
+            (0.0, sample_at(decay_start))
+        } else if time < decay_end {
+            (
+                peak * (parameters.sustain - 1.0) / parameters.decay_ms,
+                sample_at(decay_end),
+            )
+        } else {
+            (0.0, u64::MAX)
+        };
+        self.state.increment = slope / sample_rate * 1000.0;
+        self.state.remaining = boundary.saturating_sub(self.state.elapsed_samples);
     }
 }
 
@@ -402,6 +444,30 @@ mod tests {
         };
         assert_eq!(value(&p, 0.0, None, 0.25, 1.0), 0.25);
         assert_eq!(value(&p, p.attack_ms, None, 0.25, 1.0), 1.0);
+    }
+
+    #[test]
+    fn linear_updates_follow_exact_formula_across_fractional_boundaries() {
+        for rate in [44_100.0, 96_000.0] {
+            for off in [0, 81, 6789] {
+                let p = EnvelopeParameters {
+                    attack_ms: 10.125,
+                    hold_ms: 2.0625,
+                    decay_ms: 19.125,
+                    sustain: 0.3,
+                    release_ms: 43.333,
+                };
+                let mut envelope = Envelope::new();
+                for sample in 0..12_000 {
+                    let time = f64::from(sample) / rate * 1000.0;
+                    let off_ms = (sample >= off).then_some(f64::from(off) / rate * 1000.0);
+                    let expected = value(&p, time, off_ms, 0.0, 0.8);
+                    let actual = envelope.generate_sample(&p, rate, sample < off, 1, 0, 0.8);
+                    assert!((actual - expected).abs() < 1e-11);
+                    envelope.update_sample(&p, rate, 0.8);
+                }
+            }
+        }
     }
 
     #[test]
