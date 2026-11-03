@@ -100,7 +100,7 @@ struct EnvelopeState {
     current_value: f64,
     /// 現在の線形区間で1サンプル進めたときの増分。
     increment: f64,
-    /// 次に厳密式で再計算する段境界までのサンプル数。
+    /// 次の段境界までのサンプル数。設定変更時の0は次回生成での再計算を表す。
     remaining: u64,
     /// 検証・値計算に使用した設定、レート、ピーク。変更時だけ再検証する。
     input: Option<(EnvelopeParameters, f64, f64)>,
@@ -143,29 +143,41 @@ impl Envelope {
         }
     }
 
-    /// ノート境界を反映し、現在サンプルの正規化値を生成する。
-    /// peakは0〜1。生成後は同じ設定でupdate_sampleを呼ぶ。
-    #[inline(always)] // 音量・Cutoffの毎サンプル呼び出しと周辺のレジスタ退避を省く。
-    pub fn generate_sample(
+    /// 設定・レート・ピークを変更時に反映する。不正値では生成を止め、時間履歴を保つ。
+    /// 値の再計算は次回生成へ遅らせ、同位置のNote Onは直前の音量から開始する。
+    pub fn set_input(
         &mut self,
         parameters: &EnvelopeParameters,
         sample_rate: f64,
+        peak: f64,
+    ) -> bool {
+        let input = (*parameters, sample_rate, peak);
+        if self.state.input == Some(input) {
+            return true;
+        }
+        self.state.remaining = 0;
+        if !(parameters.is_valid()
+            & (0.0..=1.0).contains(&peak)
+            & sample_rate.is_finite()
+            & (sample_rate > 0.0))
+        {
+            self.state.input = None;
+            return false;
+        }
+        self.state.input = Some(input);
+        true
+    }
+
+    /// ノート境界を反映し、設定済み入力から現在サンプルの正規化値を生成する。
+    #[inline(always)]
+    pub fn generate_sample(
+        &mut self,
         gate: bool,
         note_generation: u64,
         reset_generation: u64,
-        peak: f64,
     ) -> f64 {
-        let input = (*parameters, sample_rate, peak);
-        let changed = self.state.input != Some(input);
-        if changed {
-            if !(parameters.is_valid()
-                & (0.0..=1.0).contains(&peak)
-                & sample_rate.is_finite()
-                & (sample_rate > 0.0))
-            {
-                return 0.0;
-            }
-            self.state.input = Some(input);
+        if self.state.input.is_none() {
+            return 0.0;
         }
         let reset = reset_generation != self.state.reset_generation;
         if reset {
@@ -186,21 +198,21 @@ impl Envelope {
             self.state.note_off_sample = Some(self.state.elapsed_samples);
         }
         // 同じ入力ならupdate_sampleが用意した現在値をそのまま使う。
-        if changed || reset || triggered || released {
-            self.refresh_value(parameters, sample_rate, peak);
+        if self.state.remaining == 0 || reset || triggered || released {
+            self.refresh_value();
         }
         self.state.current_value
     }
 
-    /// 次サンプルへ進める。生成時と同じ有効な設定・サンプルレートを渡す。
-    pub fn update_sample(&mut self, parameters: &EnvelopeParameters, sample_rate: f64, peak: f64) {
-        if self.state.active {
+    /// 設定済み入力を使って次サンプルへ進める。
+    pub fn update_sample(&mut self) {
+        if self.state.active && self.state.input.is_some() {
             self.state.elapsed_samples = self.state.elapsed_samples.saturating_add(1);
             if self.state.remaining > 1 {
                 self.state.remaining -= 1;
                 self.state.current_value += self.state.increment;
             } else {
-                self.refresh_value(parameters, sample_rate, peak);
+                self.refresh_value();
             }
         }
     }
@@ -209,14 +221,17 @@ impl Envelope {
         self.state.active
     }
 
-    fn refresh_value(&mut self, parameters: &EnvelopeParameters, sample_rate: f64, peak: f64) {
+    fn refresh_value(&mut self) {
+        let Some((parameters, sample_rate, peak)) = self.state.input else {
+            return;
+        };
         self.state.active &= !self.state.note_off_sample.is_some_and(|off| {
             (self.state.elapsed_samples - off) as f64
                 >= (parameters.release_ms * sample_rate / 1000.0).ceil()
         });
         self.state.current_value = if self.state.active {
             value_validated(
-                parameters,
+                &parameters,
                 self.state.elapsed_samples as f64 / sample_rate * 1000.0,
                 self.state
                     .note_off_sample
@@ -228,6 +243,7 @@ impl Envelope {
             0.0
         };
         if !self.state.active {
+            self.state.remaining = u64::MAX;
             return;
         }
         let time = self.state.elapsed_samples as f64 / sample_rate * 1000.0;
@@ -236,7 +252,7 @@ impl Envelope {
         let sample_at = |ms: f64| (ms * sample_rate / 1000.0).ceil() as u64;
         let (slope, boundary) = if let Some(off) = self.state.note_off_sample {
             let off_ms = off as f64 / sample_rate * 1000.0;
-            let start = value_validated(parameters, off_ms, None, self.state.start_value, peak);
+            let start = value_validated(&parameters, off_ms, None, self.state.start_value, peak);
             (
                 -start / parameters.release_ms,
                 off.saturating_add(sample_at(parameters.release_ms)),
@@ -461,11 +477,12 @@ mod tests {
                     ..PARAMETERS
                 };
                 let mut envelope = Envelope::new();
+                envelope.set_input(&p, rate, 1.0);
                 for sample in 0..(rate as u32 / 5) {
                     let time = f64::from(sample) / rate * 1000.0;
-                    let actual = envelope.generate_sample(&p, rate, true, 1, 0, 1.0);
+                    let actual = envelope.generate_sample(true, 1, 0);
                     assert!((actual - value(&p, time, None, 0.0, 1.0)).abs() < 1e-11);
-                    envelope.update_sample(&p, rate, 1.0);
+                    envelope.update_sample();
                 }
             }
         }
@@ -483,13 +500,14 @@ mod tests {
                     release_ms: 43.333,
                 };
                 let mut envelope = Envelope::new();
+                envelope.set_input(&p, rate, 0.8);
                 for sample in 0..12_000 {
                     let time = f64::from(sample) / rate * 1000.0;
                     let off_ms = (sample >= off).then_some(f64::from(off) / rate * 1000.0);
                     let expected = value(&p, time, off_ms, 0.0, 0.8);
-                    let actual = envelope.generate_sample(&p, rate, sample < off, 1, 0, 0.8);
+                    let actual = envelope.generate_sample(sample < off, 1, 0);
                     assert!((actual - expected).abs() < 1e-11);
-                    envelope.update_sample(&p, rate, 0.8);
+                    envelope.update_sample();
                 }
             }
         }
@@ -505,37 +523,35 @@ mod tests {
             sustain: 0.5,
             release_ms: 10.0,
         };
-        assert_eq!(envelope.generate_sample(&p, 1000.0, true, 1, 0, 1.0), 0.0);
-        envelope.update_sample(&p, 1000.0, 1.0);
-        assert_eq!(envelope.generate_sample(&p, 1000.0, true, 1, 0, 1.0), 0.1);
+        assert!(envelope.set_input(&p, 1000.0, 1.0));
+        assert_eq!(envelope.generate_sample(true, 1, 0), 0.0);
+        envelope.update_sample();
+        assert_eq!(envelope.generate_sample(true, 1, 0), 0.1);
         p.attack_ms = 20.0;
-        assert_eq!(envelope.generate_sample(&p, 1000.0, true, 1, 0, 1.0), 0.05);
-        envelope.update_sample(&p, 1000.0, 1.0);
-        assert_eq!(envelope.generate_sample(&p, 1000.0, true, 1, 0, 0.5), 0.05);
-        assert_eq!(envelope.generate_sample(&p, 2000.0, true, 1, 0, 0.5), 0.025);
+        envelope.set_input(&p, 1000.0, 1.0);
+        assert_eq!(envelope.generate_sample(true, 1, 0), 0.05);
+        envelope.update_sample();
+        envelope.set_input(&p, 1000.0, 0.5);
+        assert_eq!(envelope.generate_sample(true, 1, 0), 0.05);
+        envelope.set_input(&p, 2000.0, 0.5);
+        assert_eq!(envelope.generate_sample(true, 1, 0), 0.025);
         let invalid = EnvelopeParameters {
             attack_ms: f64::NAN,
             ..p
         };
-        assert_eq!(
-            envelope.generate_sample(&invalid, 2000.0, false, 2, 1, 0.5),
-            0.0
-        );
-        assert_eq!(
-            envelope.generate_sample(&p, 2000.0, false, 1, 0, 0.5),
-            0.025
-        );
-        envelope.update_sample(&p, 2000.0, 0.5);
-        let released = envelope.generate_sample(&p, 2000.0, false, 1, 0, 0.5);
+        assert!(!envelope.set_input(&invalid, 2000.0, 0.5));
+        assert_eq!(envelope.generate_sample(false, 2, 1), 0.0);
+        envelope.set_input(&p, 2000.0, 0.5);
+        assert_eq!(envelope.generate_sample(false, 1, 0), 0.025);
+        envelope.update_sample();
+        let released = envelope.generate_sample(false, 1, 0);
         assert!((released - 0.02375).abs() < 1e-15);
-        assert_eq!(
-            envelope.generate_sample(&p, 2000.0, true, 2, 0, 0.75),
-            released
-        );
-        envelope.update_sample(&p, 2000.0, 0.75);
+        envelope.set_input(&p, 2000.0, 0.75);
+        assert_eq!(envelope.generate_sample(true, 2, 0), released);
+        envelope.update_sample();
         let expected = released * 0.975 + 0.75 * 0.025;
-        assert!((envelope.generate_sample(&p, 2000.0, true, 2, 0, 0.75) - expected).abs() < 1e-15);
-        assert_eq!(envelope.generate_sample(&p, 2000.0, false, 2, 1, 0.75), 0.0);
+        assert!((envelope.generate_sample(true, 2, 0) - expected).abs() < 1e-15);
+        assert_eq!(envelope.generate_sample(false, 2, 1), 0.0);
         assert!(!envelope.is_active());
     }
 }

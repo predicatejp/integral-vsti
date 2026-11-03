@@ -3,7 +3,7 @@
 
 use crate::distortion::{Distortion, DistortionParameters};
 use crate::envelope::{DEFAULT_ENVELOPE, Envelope, EnvelopeParameters};
-use crate::filter::{Filter, FilterParameters, FilterType};
+use crate::filter::{Filter, FilterParameters, FilterType, MIN_SAMPLE_RATE};
 use crate::oscillator::{Oscillator, OscillatorInput, PanningGains, PhaseMode, Waveform};
 use crate::{parameters, volume};
 
@@ -40,6 +40,8 @@ pub struct VoiceState {
     note_generation: u64,
     /// 即時停止の世代。両AHDSRへ渡す。
     reset_generation: u64,
+    /// 両Envelopeへ反映済みの有効なレート。生成時に変わった場合だけ再検証する。
+    sample_rate: f64,
     /// ベロシティを反映した共通AHDSRの目標実効振幅。
     amplitude: f64,
     /// 発振器の加算出力へ適用する音量AHDSRの設定。
@@ -77,6 +79,10 @@ pub struct Voice {
 impl Voice {
     pub fn new() -> Self {
         let values = parameters::defaults();
+        let mut envelope = Envelope::new();
+        envelope.set_input(&DEFAULT_ENVELOPE, MIN_SAMPLE_RATE, 0.0);
+        let mut cutoff_envelope = Envelope::new();
+        cutoff_envelope.set_input(&DEFAULT_ENVELOPE, MIN_SAMPLE_RATE, 1.0);
         Self {
             state: VoiceState {
                 oscillator_inputs: [OscillatorInput {
@@ -98,9 +104,10 @@ impl Voice {
                 gate: false,
                 note_generation: 0,
                 reset_generation: 0,
+                sample_rate: MIN_SAMPLE_RATE,
                 amplitude: 0.0,
                 envelope_parameters: DEFAULT_ENVELOPE,
-                envelope: Envelope::new(),
+                envelope,
                 note: None,
                 filter: Filter::new(),
                 distortion: Distortion::new(),
@@ -108,7 +115,7 @@ impl Voice {
                 cutoff_ratio: 2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0),
                 resonance_q: parameters::to_plain(11, values[11]),
                 cutoff_envelope_parameters: DEFAULT_ENVELOPE,
-                cutoff_envelope: Envelope::new(),
+                cutoff_envelope,
                 cutoff_amount_cents: 0.0,
                 cutoff_modulation: (0.0, 1.0),
             },
@@ -139,6 +146,11 @@ impl Voice {
             input.note_generation = self.state.note_generation;
         }
         self.state.amplitude = BASE_RMS_AMPLITUDE * f64::from(velocity);
+        self.state.envelope.set_input(
+            &self.state.envelope_parameters,
+            self.state.sample_rate,
+            self.state.amplitude,
+        );
         self.state.gate = true;
         self.state.note = Some(note);
         true
@@ -191,6 +203,9 @@ impl Voice {
 
     pub fn set_cutoff_envelope(&mut self, parameters: EnvelopeParameters, amount_cents: f64) {
         self.state.cutoff_envelope_parameters = parameters;
+        self.state
+            .cutoff_envelope
+            .set_input(&parameters, self.state.sample_rate, 1.0);
         self.state.cutoff_amount_cents = amount_cents;
     }
 
@@ -204,6 +219,9 @@ impl Voice {
     ) {
         self.state.oscillator_inputs[0].waveform = waveform;
         self.state.envelope_parameters = envelope;
+        self.state
+            .envelope
+            .set_input(&envelope, self.state.sample_rate, self.state.amplitude);
         self.state.oscillator_inputs[0].unison_voices = unison;
         self.state.oscillator_inputs[0].detune_cents = detune;
         self.refresh_volume(0);
@@ -258,24 +276,31 @@ impl Voice {
         gains: &PanningGains,
         mono_gains: &[f64; 2],
     ) -> [f64; 2] {
-        if !(sample_rate.is_finite() & (sample_rate > 0.0)) {
-            return [0.0; 2];
+        if sample_rate != self.state.sample_rate {
+            if !(sample_rate.is_finite() & (sample_rate > 0.0)) {
+                return [0.0; 2];
+            }
+            self.state.sample_rate = sample_rate;
+            self.state.envelope.set_input(
+                &self.state.envelope_parameters,
+                sample_rate,
+                self.state.amplitude,
+            );
+            self.state.cutoff_envelope.set_input(
+                &self.state.cutoff_envelope_parameters,
+                sample_rate,
+                1.0,
+            );
         }
         let amplitude = self.state.envelope.generate_sample(
-            &self.state.envelope_parameters,
-            sample_rate,
             self.state.gate,
             self.state.note_generation,
             self.state.reset_generation,
-            self.state.amplitude,
         );
         let level = self.state.cutoff_envelope.generate_sample(
-            &self.state.cutoff_envelope_parameters,
-            sample_rate,
             self.state.gate,
             self.state.note_generation,
             self.state.reset_generation,
-            1.0,
         );
         let cents = level * self.state.cutoff_amount_cents;
         // バイパス中もEnvelopeは進め、有効化したサンプルで現在値の倍率を求める。
@@ -334,16 +359,8 @@ impl Voice {
             },
             sample_rate,
         );
-        self.state.envelope.update_sample(
-            &self.state.envelope_parameters,
-            sample_rate,
-            self.state.amplitude,
-        );
-        self.state.cutoff_envelope.update_sample(
-            &self.state.cutoff_envelope_parameters,
-            sample_rate,
-            1.0,
-        );
+        self.state.envelope.update_sample();
+        self.state.cutoff_envelope.update_sample();
         output
     }
 }
