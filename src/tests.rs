@@ -110,7 +110,7 @@ fn interfaces_share_identity_and_own_the_instance() {
         assert_eq!((component_table.unknown.release)(component), 1);
         // ファクトリーとComponentの参照を解放してもProcessorの所有参照は有効。
         assert_eq!((factory_table.unknown.release)(factory), 0);
-        assert_eq!((processor_table.get_latency_samples)(processor), 69);
+        assert_eq!((processor_table.get_latency_samples)(processor), 1);
         assert_eq!((processor_table.unknown.release)(processor), 0);
     }
 }
@@ -373,7 +373,7 @@ fn check_host_events(activate_events: bool) {
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
         let release_start = 0.5 * (2.0 * step - step * step);
-        assert_eq!(*sample_ptr, 0.0);
+        assert!((*sample_ptr - 0.5 * step * std::f64::consts::SQRT_2 * sine(1.0)).abs() < 1e-14);
         (*events_ptr).event.event_type = 0;
         (*events_ptr).event.payload = EventPayload {
             note_on: NoteOnEvent {
@@ -387,21 +387,18 @@ fn check_host_events(activate_events: bool) {
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
         let restart = release_start * (1.0 - 1000.0 / setup.sample_rate / 100.0);
-        assert_eq!(*sample_ptr, 0.0);
-        // 固定遅延後の5サンプルを検証。排出中も現在ノートの位相は69サンプル進む。
-        let expected = [
-            0.0,
-            0.0,
-            0.5 * step * std::f64::consts::SQRT_2 * sine(1.0),
-            release_start * std::f64::consts::SQRT_2 * sine(3.0),
-            restart * std::f64::consts::SQRT_2 * sine(5.0),
-        ];
+        assert!((*sample_ptr - release_start * std::f64::consts::SQRT_2 * sine(3.0)).abs() < 1e-14);
         data.input_events = ptr::null_mut();
         data.input_parameter_changes = ptr::null_mut();
+        // 1サンプル前の再トリガー開始値を確認し、その後も位相を進める。
         for n in 0..69 {
             assert_eq!((pt.process)(processor, &mut data), OK);
-            let value = if n < 64 { 0.0 } else { expected[n - 64] };
-            assert!((*sample_ptr - value).abs() < 1e-14);
+            if n == 0 {
+                assert!(
+                    (*sample_ptr - restart * std::f64::consts::SQRT_2 * sine(5.0)).abs() < 1e-14
+                );
+            }
+            assert!(sample_ptr.read().is_finite());
         }
         data.input_events = events_ptr.cast();
         data.input_parameter_changes = ptr::from_mut(&mut bypass_changes).cast();
@@ -427,14 +424,16 @@ fn check_host_events(activate_events: bool) {
         assert_eq!((pt.set_processing)(processor, 1), OK);
         assert_eq!((pt.process)(processor, &mut data), OK);
         let peak = 0.5 * step * std::f64::consts::SQRT_2;
-        let expected_sine = [
-            0.0,
-            peak * sine(76.0),
-            2.0 * peak * sine(77.0),
-            3.0 * peak * sine(78.0),
-        ];
-        assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0; 4]);
-        assert_eq!((*data.outputs).silence_flags, STEREO);
+        let expected_sine = [0.0, 0.0, peak * sine(76.0), 2.0 * peak * sine(77.0)];
+        for (actual, expected) in sample_ptr
+            .cast::<[f64; 4]>()
+            .read()
+            .into_iter()
+            .zip(expected_sine)
+        {
+            assert!((actual - expected).abs() < 1e-14);
+        }
+        assert_eq!((*data.outputs).silence_flags, 0);
         // 借用キュー経由で矩形波へ変更し、Miriでも入れ子の生ポインターを検査する。
         let mut point = TestPoint {
             vtable: &POINT_TABLE,
@@ -449,24 +448,29 @@ fn check_host_events(activate_events: bool) {
         data.input_parameter_changes = ptr::from_mut(&mut changes).cast();
         data.input_events = ptr::null_mut();
         assert_eq!((pt.process)(processor, &mut data), OK);
-        assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0; 4]);
+        let square = |n: usize| {
+            crate::oscillator::reference::audio_sample(
+                crate::oscillator::Waveform::Square,
+                (n + 75) as f64 / 128.0,
+                1.0 / 128.0,
+            ) * n as f64
+                * 0.5
+                * step
+        };
+        let expected = [3.0 * peak * sine(78.0), square(4), square(5), square(6)];
+        for (actual, expected) in sample_ptr
+            .cast::<[f64; 4]>()
+            .read()
+            .into_iter()
+            .zip(expected)
+        {
+            assert!((actual - expected).abs() < 1e-7);
+        }
         data.num_samples = 1;
         data.input_parameter_changes = ptr::null_mut();
-        for n in 0..69 {
+        for n in 7..76 {
             assert_eq!((pt.process)(processor, &mut data), OK);
-            if n < 61 {
-                assert_eq!(*sample_ptr, 0.0);
-            } else if n < 65 {
-                assert!((*sample_ptr - expected_sine[n - 61]).abs() < 1e-14);
-            } else {
-                let square = crate::oscillator::reference::audio_sample(
-                    crate::oscillator::Waveform::Square,
-                    (n + 14) as f64 / 128.0,
-                    1.0 / 128.0,
-                );
-                let expected = (n - 61) as f64 * 0.5 * step * square;
-                assert!((sample_ptr.read() - expected).abs() < 1e-7);
-            }
+            assert!((sample_ptr.read() - square(n)).abs() < 1e-7);
         }
         assert_eq!((pt.set_processing)(processor, 0), OK);
         data.num_samples = 0;

@@ -5,7 +5,7 @@
 
 ## 標準性能回帰スイート
 
-`standard.rs`は通常の演奏を模した固定21ケースです。全パラメーターを明示し、製品の初期値変更から独立させています。
+`standard.rs`は通常の演奏を模した固定19ケースです。全パラメーターを明示し、製品の初期値変更から独立させています。
 変更前・変更後のGit worktreeを指定し、同一のハーネス・コンパイラー・オプションでそれぞれの`src/`のコピーをビルドします。
 基準値JSONを後日の測定と比較する方式は使わず、同じ実験の同じブロック内で変更前後を対応付けます。
 
@@ -43,7 +43,7 @@ CPUクロック・温度・他プロセスの負荷をできるだけ一定に�
 `--blocks`は10以上、`--burn-in-ms`は10ms以上、`--cooldown-seconds`は3秒以上を指定できます。
 `--block 1..2048`はホストの音声バッファ長、`--blocks`は統計上のブロック数です。
 `--rate 44100|48000|96000`、`--audio-seconds 4..60`で演奏条件を指定します。
-`--case auto-mix --case hard-x2-second`のように接頭辞を繰り返して対象を選べます。対象ケースとブロック数は測定前に決めます。
+`--case auto-mix --case hard-lead`のように接頭辞を繰り返して対象を選べます。対象ケースとブロック数は測定前に決めます。
 `--seed`で同じ順序を再現できます。省略時は新しいseedを生成します。実際の全順序も保存します。
 burn-inの10msは実時間の下限で、上限ではありません。最低1周と最終準備を終えるまで処理するため、重いケースほど長くなります。
 音声の4秒分はノートオン／オフ・リリース・4秒周期のオートメーションを測定範囲に含めるため維持します。
@@ -100,10 +100,8 @@ Cutoffはノート基準のcentで指定します。左右の音声出力と、�
 | `slow-pad` | Saw、Poly 8、Unison 5、Detune 12 cent、Width 80%、LP2、Cutoff +2400、音量A=300 ms・D=500 ms・R=800 ms、カットオフA=600 ms・D=500 ms・Amount +1200 | 4音コード、releaseの重なりあり |
 | `three-osc-keys` | Poly 8、LP1、Saw −6 dB＋Triangle −12 dB/−1200 cent＋Sine −18 dB、音量R=400 ms | 4音コード |
 | `phase-mod-bell` | Sine、Poly 4、Osc2 Tune +1200・変調量30%、Osc3 Tune +1900・変調量10%、音量A=2 ms・D=1000 ms・S=0・R=300 ms | アルペジオ |
-| `soft-x1-off` | ベース＋Soft、Gain +9 dB、Mix 40%、Rate x1、Smooth None | 低音リフ |
-| `soft-x2-first` | 同上、Rate x2、Smooth 1st | 低音リフ |
-| `soft-x4-second` | 同上、Rate x4、Smooth 2nd | 低音リフ |
-| `hard-x2-second` | リード＋Hard、Gain +6 dB、Mix 25%、Rate x2、Smooth 2nd | モノのメロディー |
+| `soft-bass` | ベース＋Soft、Gain +9 dB、Mix 40%、ADAA2 | 低音リフ |
+| `hard-lead` | リード＋Hard、Gain +6 dB、Mix 25%、ADAA2 | モノのメロディー |
 | `idle-pad` | パッドの設定、ノートなし | 無音時の処理 |
 
 120 BPM相当で、メロディーは500 msごとに400 ms発音、低音リフは250 msごとに190 ms発音、アルペジオは250 msごとに160 ms発音します。
@@ -118,8 +116,8 @@ Monoは1枠、プラック・ベルは4枠、コード・パッドは8枠の循�
 | --- | --- | --- |
 | `auto-cutoff` | Cutoff +1200〜+4800 cent | コード |
 | `auto-resonance` | Q=0.7〜2.5 | コード |
-| `auto-drive` | Gain +3〜+15 dB | コード＋Soft、Rate x2、Smooth 1st、Mix 40% |
-| `auto-mix` | Mix 10〜50% | コード＋Soft、Rate x2、Smooth 1st、Gain +9 dB |
+| `auto-drive` | Gain +3〜+15 dB | コード＋Soft、ADAA2、Mix 40% |
+| `auto-mix` | Mix 10〜50% | コード＋Soft、ADAA2、Gain +9 dB |
 | `auto-pan` | Pan −40〜+40% | コード |
 | `auto-volume` | Master −12〜0 dB | コード |
 | `auto-width` | Width 20〜80% | コード |
@@ -186,7 +184,7 @@ Width/Panの計測は`synth/p32/u7/width`（Width=100%固定）、`width-changin
 
 Noiseは`oscillator/Noise/`と`synth/p32/u7/noise`などで測定します。後者は32音・7ユニゾン・Detune=30 cent・LP2です。乱数の初期化は測定区間の前に行います。
 
-ディストーション単体は`distortion/`で計測します。ステレオ入力、Gain=12 dB、None/Soft/Hard、ADAAなし／1次／2次のWet処理を比較します。
+ディストーション単体は`distortion/`で計測します。ステレオ入力、Gain=12 dB、None/Soft/Hard、固定ADAA2のWet処理を比較します。
 
 SoftのADAA原始関数は`src/distortion/table.rs`（1025点×3列のf64）を元に、
 コンパイル時に区間ごとの積分多項式係数（1024区間×5列、40,960 bytes）へ変換し、全Voiceで共有します。

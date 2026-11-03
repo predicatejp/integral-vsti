@@ -23,17 +23,13 @@ pub struct DistortionParameters {
     pub mix: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AdaaOrder {
-    None,
-    First,
-    Second,
-}
+/// ADAA2の群遅延。Dryとホストへの申告を同じ1サンプルに揃える。
+pub const LATENCY: usize = 1;
 
 struct DistortionState {
     /// 過去2点のGain適用済み入力。Gain変更時も当時の値を維持する。
     input: [[f64; 2]; 2],
-    /// 過去2点の原始関数。1次はF1、2次はF2を保持する。
+    /// 過去2点の原始関数。F2を保持する。
     integral: [[f64; 2]; 2],
 }
 
@@ -59,51 +55,23 @@ impl Distortion {
         &mut self,
         input: [f64; 2],
         parameters: &DistortionParameters,
-        order: AdaaOrder,
     ) -> [f64; 2] {
-        if parameters.clipper == ClipperType::None {
-            return input;
-        }
-        if order == AdaaOrder::None {
-            let driven = input.map(|x| x * parameters.gain);
-            return if parameters.clipper == ClipperType::Soft {
-                driven.map(f64::tanh)
-            } else {
-                driven.map(|x| x.clamp(-1.0, 1.0))
-            };
-        }
-        match (
-            parameters.clipper == ClipperType::Soft,
-            order == AdaaOrder::Second,
-        ) {
-            (true, false) => self.process_adaa_sample::<true, false>(input, parameters.gain),
-            (true, true) => self.process_adaa_sample::<true, true>(input, parameters.gain),
-            (false, false) => self.process_adaa_sample::<false, false>(input, parameters.gain),
-            (false, true) => self.process_adaa_sample::<false, true>(input, parameters.gain),
+        match parameters.clipper {
+            ClipperType::Soft => self.process_adaa_sample::<true>(input, parameters.gain),
+            ClipperType::Hard => self.process_adaa_sample::<false>(input, parameters.gain),
+            ClipperType::None => input,
         }
     }
 
     // ADAAの大きな計算経路を分離し、Noneの経路にレジスター退避を持ち込まない。
     #[inline(never)]
-    fn process_adaa_sample<const SOFT: bool, const SECOND: bool>(
-        &mut self,
-        input: [f64; 2],
-        gain: f64,
-    ) -> [f64; 2] {
+    fn process_adaa_sample<const SOFT: bool>(&mut self, input: [f64; 2], gain: f64) -> [f64; 2] {
         std::array::from_fn(|ch| {
             let x = input[ch] * gain;
             let previous = self.state.input[0][ch];
             let values = if SOFT { soft::eval(x) } else { [0.0; 4] };
-            let integral = if !SECOND { values[1] } else { values[0] };
-            let out = if !SECOND {
-                if !SOFT {
-                    hard_first(x, previous)
-                } else if (x - previous).abs() > 1e-6 * (1.0 + x.abs().max(previous.abs())) {
-                    (integral - self.state.integral[0][ch]) / (x - previous)
-                } else {
-                    soft::eval((x + previous) * 0.5)[2]
-                }
-            } else {
+            let integral = values[0];
+            let out = {
                 // 第2差商は入力の置換に対称。外側の分母を最大幅にして桁落ちを抑える。
                 let mut v = [
                     (x, integral),
@@ -132,22 +100,6 @@ impl Distortion {
             self.state.integral[0][ch] = integral;
             out
         })
-    }
-}
-
-fn hard_first(x: f64, previous: f64) -> f64 {
-    let a = x.min(previous);
-    let b = x.max(previous);
-    if a >= 1. {
-        1.
-    } else if b <= -1. {
-        -1.
-    } else if a >= -1. && b <= 1. {
-        (a + b) * 0.5
-    } else {
-        let lo = a.max(-1.);
-        let hi = b.min(1.);
-        ((lo + hi) * (hi - lo) * 0.5 + (b - hi) - (lo - a)) / (b - a)
     }
 }
 
@@ -194,64 +146,53 @@ mod tests {
     use super::*;
     #[test]
     fn linear_response_gain_history_and_reset() {
-        for order in [AdaaOrder::None, AdaaOrder::First, AdaaOrder::Second] {
-            let mut d = Distortion::new();
-            let mut history = [0.0; 2];
-            for n in 0..500 {
-                let x = ((n * 37 % 101) as f64 - 50.0) / 10000.0;
-                let gain = if n % 7 == 0 { 20.0 } else { 1.0 };
-                let p = DistortionParameters {
-                    clipper: ClipperType::Hard,
-                    gain,
-                    mix: 1.0,
-                };
-                let current = x * gain;
-                let expected = match order {
-                    AdaaOrder::None => current,
-                    AdaaOrder::First => (current + history[0]) * 0.5,
-                    AdaaOrder::Second => (current + history[0] + history[1]) / 3.0,
-                };
-                let actual = d.process_sample([x, -0.3 * x], &p, order);
-                assert!((actual[0] - expected).abs() < 1e-15);
-                assert!((actual[1] + expected * 0.3).abs() < 1e-15);
-                history = [current, history[0]];
-            }
-            d.reset();
+        let mut d = Distortion::new();
+        let mut history = [0.0; 2];
+        for n in 0..500 {
+            let x = ((n * 37 % 101) as f64 - 50.0) / 10000.0;
+            let gain = if n % 7 == 0 { 20.0 } else { 1.0 };
             let p = DistortionParameters {
-                clipper: ClipperType::Soft,
-                gain: 1.0,
+                clipper: ClipperType::Hard,
+                gain,
                 mix: 1.0,
             };
-            assert_eq!(d.process_sample([0.0; 2], &p, order), [0.0; 2]);
+            let current = x * gain;
+            let expected = (current + history[0] + history[1]) / 3.0;
+            let actual = d.process_sample([x, -0.3 * x], &p);
+            assert!((actual[0] - expected).abs() < 1e-15);
+            assert!((actual[1] + expected * 0.3).abs() < 1e-15);
+            history = [current, history[0]];
         }
+        d.reset();
+        let p = DistortionParameters {
+            clipper: ClipperType::Soft,
+            gain: 1.0,
+            mix: 1.0,
+        };
+        assert_eq!(d.process_sample([0.0; 2], &p), [0.0; 2]);
     }
     #[test]
     fn direct_and_constant_inputs_match_the_clipper() {
-        for order in [AdaaOrder::None, AdaaOrder::First, AdaaOrder::Second] {
-            for clipper in [ClipperType::None, ClipperType::Soft, ClipperType::Hard] {
-                for x in [
-                    -1e6_f64, -16.0, -1.0, -0.001, 0.0, 0.002, 0.5, 1.0, 16.0, 1e6,
-                ] {
-                    let mut d = Distortion::new();
-                    let p = DistortionParameters {
-                        clipper,
-                        gain: 2.0,
-                        mix: 1.0,
-                    };
-                    let expected = match clipper {
-                        ClipperType::None => x,
-                        ClipperType::Soft => (x * 2.0).tanh(),
-                        ClipperType::Hard => (x * 2.0).clamp(-1.0, 1.0),
-                    };
-                    d.process_sample([x, -x], &p, order);
-                    d.process_sample([x, -x], &p, order);
-                    let out = d.process_sample([x, -x], &p, order);
-                    assert!(
-                        (out[0] - expected).abs() < 7e-8,
-                        "{order:?} {clipper:?} {x}: {out:?}"
-                    );
-                    assert!((out[1] + expected).abs() < 7e-8);
-                }
+        for clipper in [ClipperType::None, ClipperType::Soft, ClipperType::Hard] {
+            for x in [
+                -1e6_f64, -16.0, -1.0, -0.001, 0.0, 0.002, 0.5, 1.0, 16.0, 1e6,
+            ] {
+                let mut d = Distortion::new();
+                let p = DistortionParameters {
+                    clipper,
+                    gain: 2.0,
+                    mix: 1.0,
+                };
+                let expected = match clipper {
+                    ClipperType::None => x,
+                    ClipperType::Soft => (x * 2.0).tanh(),
+                    ClipperType::Hard => (x * 2.0).clamp(-1.0, 1.0),
+                };
+                d.process_sample([x, -x], &p);
+                d.process_sample([x, -x], &p);
+                let out = d.process_sample([x, -x], &p);
+                assert!((out[0] - expected).abs() < 7e-8, "{clipper:?} {x}: {out:?}");
+                assert!((out[1] + expected).abs() < 7e-8);
             }
         }
     }
@@ -303,7 +244,7 @@ mod tests {
                 };
                 let mut out = [0.0; 2];
                 for x in input {
-                    out = d.process_sample([x, -x], &p, AdaaOrder::Second);
+                    out = d.process_sample([x, -x], &p);
                 }
                 assert!(
                     (out[0] - expected).abs() < tolerance,

@@ -18,7 +18,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
 | ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・FM、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / Mixを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
-| レイテンシー・テール | 全方式で69サンプル。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
+| レイテンシー・テール | 1サンプル。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
 ProcessorとControllerは、同一インスタンスから取得できます。
 CC、ピッチベンド、ノートエクスプレッションは未実装です。
@@ -342,8 +342,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v16は292バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 FM/Osc3 FM/Clipper type/Gain/Mix/Rate/Smoothを各f64。little endian）です。
-読み込みは現行形式v16のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v17は276バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 FM/Osc3 FM/Clipper type/Gain/Mixを各f64。little endian）です。
+読み込みは現行形式v17のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -384,35 +384,26 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 | Clipper type | None（初期値）、Soft、Hard | `0x43545950` |
 | Gain | 0〜+48 dB、0.1 dB刻み、初期値0 dB | `0x43474149` |
 | Mix | 0〜100%、1%刻み、初期値100% | `0x434d4958` |
-| Rate | x1（初期値）、x2、x4 | `0x4f534d50` |
-| Smooth | None（初期値）、1st、2nd | `0x41444141` |
 
 NoneはGainとMixを含めてバイパスします。Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`で処理します。
 Gainの線形倍率は`10^(dB/20)`です。Mixは0%でフィルタ出力の原音、100%で処理音になり、その間を線形混合します。Gain・Mixのオートメーションは正規化値を線形補間し、Clipper typeは変更点で切り替えます。
 
-Distortion内のRate（x1／x2／x4）とSmooth（ADAAのNone／1st／2nd）を独立に選択でき、9通りを組み合わせられます。
-各Voiceのフィルタ出力を補間し、内部サンプルごとにGain・Clipper・ADAAを適用します。
-全Voiceを加算してMaster Volumeを掛け、共有の遅延整合とLPFを通してホストレートへ戻します。
-発振器・AHDSR・SVFはホストレートで動作します。
-Dryはフィルタ出力を加算してMaster Volumeと69サンプルの純遅延だけを適用し、出力時点のMixでWetと混合します。
-Clipper=NoneではDryだけを出力し、補間・間引き・ADAAを省きます。Rate／Smoothの選択値は保持します。
+ディストーションはホストレートの2階ADAAで処理します。各Voiceのフィルタ出力へGain・Clipperを適用し、全Voiceを加算してMaster Volumeを掛けます。
+Dryはフィルタ出力を加算してMaster Volumeと1サンプルの純遅延だけを適用し、出力時点のMixでWetと混合します。
+Clipper=NoneではDryだけを出力し、クリップ・ADAAを省きます。ホストへの申告遅延も常に1サンプルです。
 
-x2は129タップの対称FIR、x4はさらに17タップのハーフバンドFIRを直列に使用します。
-係数は固定で、44.1 kHzで20 kHzまでを通過域とする設計です。帯域の境界はホストのサンプルレートに比例します。
-1次ADAAのWetには2点平均を加え、ADAA自身の半サンプル遅延と合わせて1内部サンプルの遅延にします。
-2次ADAAは1内部サンプルの遅延を持ちます。さらに整数遅延を加え、全方式を69ホストサンプル（48 kHzで約1.44 ms）に揃えます。
-ADAAによる平均化はWetの高域特性に影響します。Dryは平均化・補間・間引きを通しません。
+ADAA2による平均化はWetの高域特性に影響します。Dryは平均化を通しません。
 Softの原始関数は1025点の共有テーブルから整合した多項式で求め、近接入力では差分の桁落ちを避ける式を使います。
 Hardは区分的な関数の積分を直接計算します。履歴はVoiceと左右チャンネルごとに保持します。
 
-処理中のRate／Smooth／Clipper typeの変更は、Wetの32サンプルのフェードアウト、138サンプルの履歴充填、32サンプルのフェードインで切り替えます。
+処理中のClipper typeの変更は、Wetの32サンプルのフェードアウト、2サンプルの履歴充填、32サンプルのフェードインで切り替えます。
 切替中もDryとノート・位相・AHDSRの時間は継続します。停止中の設定は次の処理開始時に即時適用します。
-Gainはホストから届いた変更点間を内部サンプル時刻でも補間し、最後の変更点以降は値を保持します。Mixはホストレートで補間します。
+Gain・Mixはホストから届いた変更点間をホストレートで補間し、最後の変更点以降は値を保持します。
 
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左にOsc1/2/3を縦に並べ、中央上段にAmp、中央にカットオフAHDSRを統合したFilter、その下にDistortion、右にMasterを配置します。AmpのAHDSRは横一列です。WaveformとFilterのドロップダウンはタイトルの右に置きます。Rate／Smoothの名称はPhaseと同じく選択欄の上に左揃えで表示します。Masterは144px幅とし、Phaseラベルと選択欄を左揃えで上下にまとめ、その下にPoly・Vol・Panを縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左にOsc1/2/3を縦に並べ、中央上段にAmp、中央にカットオフAHDSRを統合したFilter、その下にDistortion、右にMasterを配置します。AmpのAHDSRは横一列です。WaveformとFilterのドロップダウンはタイトルの右に置きます。DistortionのGain・Mixはグループ内に均等配置します。Masterは144px幅とし、Phaseラベルと選択欄を左揃えで上下にまとめ、その下にPoly・Vol・Panを縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
 ノブは行内を均等割りします。ノブ行は80px高、外周・グループ間・枠内の左右余白は8pxで統一します。各列の下端を揃え、見出しの下に残る高さは上余白・行間・下余白へ均等配分します。見出し行とドロップダウンは28px高です。
@@ -635,7 +626,7 @@ Linuxでの確認済み環境: Linux x86_64、Rust 1.95.0 / 1.99.1、GCC 12.2、
 参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
 FL Studioで発音とGUI操作の動作報告があります。
 GUIの自動検証にはLinuxのXvfbとMesaを使用します。
-通常演奏21ケースの標準性能回帰スイートは、検証用Python環境を準備し、`scripts/bench-standard.py --before <変更前worktree> --after <変更後worktree>`で実行します。無作為化ブロックによる対応比較・統計検定とDSP単体の測定手順は[benchmarks/README.md](benchmarks/README.md)、比較実験の結果は[Wiki](https://github.com/predicatejp/sample-vsti/wiki)にまとめています。
+通常演奏19ケースの標準性能回帰スイートは、検証用Python環境を準備し、`scripts/bench-standard.py --before <変更前worktree> --after <変更後worktree>`で実行します。無作為化ブロックによる対応比較・統計検定とDSP単体の測定手順は[benchmarks/README.md](benchmarks/README.md)、比較実験の結果は[Wiki](https://github.com/predicatejp/sample-vsti/wiki)にまとめています。
 
 ## PRのテスト用ZIP
 
@@ -746,7 +737,6 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
 - `src/distortion.rs`: フィルタ後のプリゲイン・クリップ・1次／2次ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
 - `src/synth.rs`: Voiceの循環割り当て・加算出力と、共通の定位係数・マスター音量の管理。
-- `src/oversampling.rs`: Voiceごとの補間、加算後の共有FIR間引きと固定遅延。
 - `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilter → Distortionの処理パイプライン。
 - `src/float_mode.rs`: 音声処理中の非正規化数処理モードの保存・切り替え・復元。
 - `src/random.rs`: 位相とNoiseで共用するxoshiro256+乱数生成器。

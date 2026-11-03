@@ -61,7 +61,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(units->getUnitByBus(kEvent, kInput, 0, 16, id) == kResultFalse);
     assert(units->setUnitProgramData(0, 0, nullptr) == kNotImplemented);
     ParameterInfo info {};
-    assert(controller->getParameterInfo(36, info) == kResultOk && info.id == programId);
+    assert(controller->getParameterInfo(34, info) == kResultOk && info.id == programId);
     assert(info.unitId == unit.id && info.stepCount == list.programCount - 1);
     assert(info.flags == (ParameterInfo::kIsList | ParameterInfo::kIsProgramChange));
     assert(controller->getParamStringByValue(programId, 1.0, name) == kResultOk && std::u16string(name) == u"Sine");
@@ -72,13 +72,13 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(controller->setParamNormalized(programId, std::nan("")) == kInvalidArgument);
     assert(controller->setParamNormalized(programId, -1) == kInvalidArgument);
 
-    const std::array<double, 36> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,0,0,100,0,0};
+    const std::array<double, 34> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,0,0,100};
     ProgramHandler handler; handler.controller = controller;
     assert(controller->setComponentHandler(&handler) == kResultOk);
     assert(controller->setParamNormalized(waveformId, 1.0) == kResultOk);
     assert(controller->setParamNormalized(programId, 0.0) == kResultOk);
     assert(handler.calls == 1 && handler.refs == 1);
-    for (int32 i = 0; i < 36; ++i) {
+    for (int32 i = 0; i < 34; ++i) {
         assert(controller->getParameterInfo(i, info) == kResultOk);
         const auto plain = controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id));
         assert(plain == sine[i] || std::abs(plain - sine[i]) < 1e-10);
@@ -91,7 +91,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     StateStream saved;
     assert(component->getState(&saved) == kResultOk);
     assert(controller->setComponentState(&saved) == kResultOk);
-    for (int32 i = 0; i < 36; ++i) {
+    for (int32 i = 0; i < 34; ++i) {
         assert(controller->getParameterInfo(i, info) == kResultOk);
         const auto plain = controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id));
         assert(plain == sine[i] || std::abs(plain - sine[i]) < 1e-10);

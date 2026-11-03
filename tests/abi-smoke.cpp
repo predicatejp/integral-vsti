@@ -352,7 +352,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(info.id == waveformId && info.stepCount == 4 && info.defaultNormalizedValue == 0.0);
     assert(info.unitId == 0 && info.flags == (ParameterInfo::kCanAutomate | ParameterInfo::kIsList));
     assert(std::u16string(info.title) == u"Osc1 Waveform");
-    assert(controller->getParameterInfo(37, info) == kInvalidArgument);
+    assert(controller->getParameterInfo(35, info) == kInvalidArgument);
     const std::array<std::u16string, 5> names {u"Sine", u"Triangle", u"Square", u"Sawtooth", u"Noise"};
     for (size_t i = 0; i < names.size(); ++i) {
         const double normalized = static_cast<double>(i) / 4.0;
@@ -371,7 +371,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(controller->setParamNormalized(0, 0.0) == kInvalidArgument);
     StateStream initial;
     assert(component->getState(&initial) == kResultOk);
-    assert(initial.bytes.size() == 292 && initial.bytes[4] == 16 && initial.bytes[8] == 0);
+    assert(initial.bytes.size() == 276 && initial.bytes[4] == 17 && initial.bytes[8] == 0);
     configureEnvelope(processor, true);
     // Controllerへの表示更新だけではProcessorの値は変わらない。
     assert(controller->getParamNormalized(waveformId) == 1.0);
@@ -461,7 +461,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     for (int error = 0; error < 5; ++error) {
         StateStream broken; broken.bytes = saved.bytes;
         if (error == 0) broken.bytes.resize(11);
-        if (error == 1) broken.bytes[4] = 17;
+        if (error == 1) broken.bytes[4] = 16;
         if (error == 2) broken.bytes[8] = 5;
         if (error == 3) broken.bytes[0] = 0;
         if (error == 4) broken.fail = true;
@@ -561,7 +561,7 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
     check({.3, .25, .2, .15}); // offset=-1の0.7からoffset=3の0.3へ線形補間。
     changes.queues.clear(); check({.15, .15});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 292 && saved.bytes[4] == 16);
+    assert(saved.bytes.size() == 276 && saved.bytes[4] == 17);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(std::abs(controller->getParamNormalized(envelopeIds[3]) - .3) < 1e-12);
     // 不正な時間値はControllerにもDSPにも適用しない。
@@ -637,7 +637,7 @@ void checkUnison(IComponent* component, IAudioProcessor* processor, IEditControl
         events.values.clear(); previousCount = n; previousDetune = target;
     }
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 292 && saved.bytes[4] == 16);
+    assert(saved.bytes.size() == 276 && saved.bytes[4] == 17);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(unisonId) == 1.0);
     assert(controller->getParamNormalized(detuneId) == 1.0);
@@ -739,7 +739,7 @@ void checkPolyphony(IComponent* component, IAudioProcessor* processor, IEditCont
     events.values = {note(true, 0, 200, 12, 0, .5f), note(false, 0, 100, 12)};
     check({15.75, 15.75});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 292 && saved.bytes[4] == 16);
+    assert(saved.bytes.size() == 276 && saved.bytes[4] == 17);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(polyphonyId) == 1.0);
     // 次の割り当て位置は2。減少で範囲外の音を止め、増加しても復活させない。
@@ -830,23 +830,45 @@ void checkFilter(IComponent* component, IAudioProcessor* processor, IEditControl
             }
             assert(std::abs(buffer[n] - reference.next(expected)) < 1e-5);
         }
-        assert(bus.silenceFlags == 3);
-        StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes.size() == 292);
+        assert(bus.silenceFlags == 0);
+        StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes.size() == 276);
         assert(controller->setComponentState(&saved) == kResultOk);
         assert(controller->getParamNormalized(filterIds[0]) == t / 6.0);
         assert(controller->getParamNormalized(filterIds[1]) == 1.0);
         assert(std::abs(controller->normalizedParamToPlain(filterIds[2], controller->getParamNormalized(filterIds[2])) - q1) < 1e-12);
         reference.flush(); reference.reset();
-        for (int v = 0; v < 2; ++v) phases[v] = std::fmod(phases[v] + 69*440*std::pow(2.0, (12+12*v-69)/12.0)/48000, 1.0);
+        for (int v = 0; v < 2; ++v) phases[v] = std::fmod(phases[v] + processor->getLatencySamples()*440*std::pow(2.0, (12+12*v-69)/12.0)/48000, 1.0);
         assert(processor->setProcessing(false) == kResultOk);
     }
     assert(component->setActive(false) == kResultOk);
 }
 
 // 原音はフィルタ後・Gain前。Voice加算とMaster適用・遅延整合後にMixで混合する。
+// 独立した数値積分で、クリップ関数の三角形重み付き平均を照合する。
+double distortionAdaa2(int type, double x, double y, double z) {
+    std::array<double, 3> v{x, y, z}; std::sort(v.begin(), v.end());
+    const auto [a, b, c] = v;
+    auto clip = [&](double t) { return type == 1 ? std::tanh(t) : std::clamp(t, -1.0, 1.0); };
+    if (a == c) return clip(a);
+    auto integrate = [&](double lo, double hi, bool rising) {
+        if (lo == hi) return 0.0;
+        double result = 0, left = lo;
+        for (double right : {std::clamp(-1.0, lo, hi), std::clamp(1.0, lo, hi), hi}) {
+            const double step = (right-left)/128;
+            auto f = [&](double t) { return clip(t) * (rising ? (t-lo)/(hi-lo) : (hi-t)/(hi-lo)); };
+            for (int i = 0; i < 128; ++i) {
+                const double l = left + i*step, r = l+step;
+                result += step*(f(l) + 4*f((l+r)*.5) + f(r))/6;
+            }
+            left = right;
+        }
+        return result;
+    };
+    return 2*(integrate(a,b,true) + integrate(b,c,false))/(c-a);
+}
+
 template <typename Sample>
 void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
-    LatencyReference<Sample> reference(processor);
     constexpr std::array<ParamID, 3> ids {0x43545950, 0x43474149, 0x434d4958};
     for (int i = 0; i < 3; ++i) {
         ParameterInfo info;
@@ -889,6 +911,8 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
         assert(processor->setProcessing(true) == kResultOk);
         data.numSamples = 13; data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
         FilterReference filters[2];
+        double previousDry = 0;
+        std::array<std::array<double, 2>, 2> history {};
         for (int block = 0; block < 2; ++block) {
             assert(processor->process(data) == kResultOk);
             for (int n = 0; n < data.numSamples; ++n) {
@@ -896,19 +920,23 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
                 const int type = initial;
                 const double gain = std::pow(10.0, (at < 8 ? 6.0 * (at + 1) : 48.0) / 20.0);
                 const double mix = 0.25;
-                double expected = 0;
+                double drySum = 0, wetSum = 0;
                 for (int v = 0; v < 2; ++v) {
                     const double hz = 440 * std::pow(2.0, (12 + 12 * v - 69) / 12.0 + 4);
                     const double source = at >= v*2 && at < 10 ? std::sqrt(.5) * std::sin(2*std::acos(-1.0)*(at-v*2)*hz/16/48000) : 0;
                     const double dry = filters[v].process(source, 1, hz, 1, 48000);
-                    const double wet = type == 1 ? std::tanh(dry * gain) : std::clamp(dry * gain, -1.0, 1.0);
-                    expected += type == 0 ? dry : dry * (1 - mix) + wet * mix;
+                    const double driven = dry * gain;
+                    const double wet = distortionAdaa2(type, driven, history[v][0], history[v][1]);
+                    history[v] = {driven, history[v][0]};
+                    drySum += dry; wetSum += wet;
                 }
-                assert(std::abs(buffer[n] - reference.next(expected * std::pow(10.0, -6.0 / 20.0))) < 1e-6);
+                const double expected = (type == 0 ? previousDry : previousDry*(1-mix) + wetSum*mix)
+                                        * std::pow(10.0, -6.0/20.0);
+                previousDry = drySum;
+                assert(std::abs(buffer[n] - expected) < 1e-6);
             }
             data.numSamples = 3; data.inputParameterChanges = nullptr; data.inputEvents = nullptr;
         }
-        reference.flush(); reference.reset();
         assert(processor->setProcessing(false) == kResultOk);
     }
     assert(component->setActive(false) == kResultOk);
@@ -1147,7 +1175,7 @@ void checkPhase(IComponent* component, IAudioProcessor* processor, IEditControll
     waveform.values = {{0, 0.0}};
     assert(processor->process(data) == kResultOk);
     data.inputEvents = nullptr;
-    for (int i = 0; i < 69; ++i) assert(processor->process(data) == kResultOk);
+    for (int i = 0; i < int(processor->getLatencySamples()); ++i) assert(processor->process(data) == kResultOk);
     assert(std::isfinite(buffer[0]) && std::abs(buffer[0]) <= .5 * std::sqrt(2.0));
     assert(processor->setProcessing(false) == kResultOk);
     assert(component->setActive(false) == kResultOk);
@@ -1269,14 +1297,14 @@ void checkPanning(IComponent* component, IAudioProcessor* processor, IEditContro
         const auto delayed = reference.next(l, r);
         assert(std::abs(left[i]-delayed[0])<1e-6 && std::abs(right[i]-delayed[1])<1e-6);
     }
-    assert(bus.silenceFlags == 3);
+    assert(bus.silenceFlags == 0);
     width.values.clear(); pan.values.clear(); events.values.clear();
     assert(processor->process(data) == kResultOk); // 最終値を次のブロックでも保持。
-    assert(bus.silenceFlags == 3);
+    assert(bus.silenceFlags == 1);
     for (int i = 0; i < 8; ++i) { const auto tone=tones(); const auto delayed=reference.next(0,std::sqrt(.5)*(tone[0]+tone[1])); assert(std::abs(left[i]-delayed[0])<1e-6 && std::abs(right[i]-delayed[1])<1e-6); }
     pan.values = {{0, 0}};
     assert(processor->process(data) == kResultOk);
-    assert(bus.silenceFlags == 3);
+    assert(bus.silenceFlags == 0);
     for (int i = 0; i < 8; ++i) { const auto tone=tones(); const auto delayed=reference.next(std::sqrt(.5)*(tone[0]+tone[1]),0); assert(std::abs(left[i]-delayed[0])<1e-6 && std::abs(right[i]-delayed[1])<1e-6); }
     reference.flush();
     assert(processor->setProcessing(false) == kResultOk && component->setActive(false) == kResultOk);
@@ -1350,7 +1378,7 @@ T* query(FUnknown* object, const TUID iid) {
 
 // Noiseの公開値、サンプル位置での切替、ステレオ出力、停止・保存を標準APIで確認する。
 #include "program-smoke.h"
-#include "oversampling-smoke.h"
+#include "distortion-smoke.h"
 
 template <typename Sample>
 void checkNoise(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
@@ -1375,7 +1403,7 @@ void checkNoise(IComponent* component, IAudioProcessor* processor, IEditControll
     ProcessData data; data.symbolicSampleSize = precision; data.numSamples = 257;
     data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events; data.inputParameterChanges = &changes;
     assert(processor->process(data) == kResultOk);
-    assert(left[69] == Sample(0) && left == right && bus.silenceFlags == 0);
+    assert(left[0] == Sample(0) && left == right && bus.silenceFlags == 0);
     for (int i = 1; i < 257; ++i) assert(std::isfinite(left[i]) && std::abs(left[i]) <= .5 * std::sqrt(3.0));
     StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes[8] == 4);
     assert(controller->setComponentState(&saved) == kResultOk);
@@ -1396,9 +1424,9 @@ void checkNoise(IComponent* component, IAudioProcessor* processor, IEditControll
 }
 
 void checkStateReload(IPluginFactory* factory, const TUID cid) {
-    // 全36設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
-    const std::array<double, 36> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125, 62.5, -35.25, -3.7, 2, -1234.5, -8.1, 3, 1599.75, -std::numeric_limits<double>::infinity(), 137.5, 200, 2, 12.3, 37.5, 2, 2};
-    std::array<double, 36> expected {};
+    // 全34設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
+    const std::array<double, 34> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125, 62.5, -35.25, -3.7, 2, -1234.5, -8.1, 3, 1599.75, -std::numeric_limits<double>::infinity(), 137.5, 200, 2, 12.3, 37.5};
+    std::array<double, 34> expected {};
     StateStream saved;
     for (bool restore : {false, true}) {
         void* object = nullptr;
@@ -1408,7 +1436,7 @@ void checkStateReload(IPluginFactory* factory, const TUID cid) {
         auto* controller = query<IEditController>(component, IEditController_iid);
         assert(component->initialize(factory) == kResultOk);
         if (!restore) {
-            std::array<Points, 36> points;
+            std::array<Points, 34> points;
             Changes changes;
             for (size_t i = 0; i < points.size(); ++i) {
                 ParameterInfo info {};
@@ -1567,14 +1595,14 @@ int main(int argc, char** argv) {
         assert(bus.channelCount == 2 && bus.name[0] == u'S');
         SpeakerArrangement output = SpeakerArr::kStereo;
         assert(processor->setBusArrangements(nullptr, 0, &output, 1) == kResultOk);
-        assert(controller->getParameterCount() == 37);
+        assert(controller->getParameterCount() == 35);
         checkViewContract(controller);
         assert(controller->setComponentHandler(nullptr) == kResultOk);
-        assert(processor->getLatencySamples() == 69 && processor->getTailSamples() == kInfiniteTail);
+        assert(processor->getLatencySamples() == 1 && processor->getTailSamples() == kInfiniteTail);
         checkSilence<float>(component, processor, kSample32);
         checkSilence<double>(component, processor, kSample64);
-        if (iteration == 39) checkOversampling<float>(component, processor, controller, kSample32);
-        if (iteration == 40) checkOversampling<double>(component, processor, controller, kSample64);
+        if (iteration == 39) checkDistortionBlocks<float>(component, processor, controller, kSample32);
+        if (iteration == 40) checkDistortionBlocks<double>(component, processor, controller, kSample64);
         if (iteration == 37) checkDistortion<float>(component, processor, controller, kSample32);
         if (iteration == 38) checkDistortion<double>(component, processor, controller, kSample64);
         if (iteration == 35) checkFm<float>(component, processor, controller, kSample32);
