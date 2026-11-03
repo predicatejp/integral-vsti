@@ -254,7 +254,13 @@ impl Envelope {
                 sample_at(decay_end),
             )
         } else {
-            (0.0, u64::MAX)
+            // 正の極小Decayが終了時刻の加算で消えても、境界サンプルのピークを保持し続けない。
+            let boundary = if self.state.current_value == peak * parameters.sustain {
+                u64::MAX
+            } else {
+                self.state.elapsed_samples.saturating_add(1)
+            };
+            (0.0, boundary)
         };
         self.state.increment = slope / sample_rate * 1000.0;
         self.state.remaining = boundary.saturating_sub(self.state.elapsed_samples);
@@ -444,6 +450,25 @@ mod tests {
         };
         assert_eq!(value(&p, 0.0, None, 0.25, 1.0), 0.25);
         assert_eq!(value(&p, p.attack_ms, None, 0.25, 1.0), 1.0);
+    }
+
+    #[test]
+    fn tiny_positive_decay_does_not_hold_the_peak_past_the_boundary() {
+        for rate in [1000.0, 44_100.0, 48_000.0, 96_000.0] {
+            for decay_ms in [f64::from_bits(1), 1e-14] {
+                let p = EnvelopeParameters {
+                    decay_ms,
+                    ..PARAMETERS
+                };
+                let mut envelope = Envelope::new();
+                for sample in 0..(rate as u32 / 5) {
+                    let time = f64::from(sample) / rate * 1000.0;
+                    let actual = envelope.generate_sample(&p, rate, true, 1, 0, 1.0);
+                    assert!((actual - value(&p, time, None, 0.0, 1.0)).abs() < 1e-11);
+                    envelope.update_sample(&p, rate, 1.0);
+                }
+            }
+        }
     }
 
     #[test]
