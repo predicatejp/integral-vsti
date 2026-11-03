@@ -76,6 +76,7 @@ fn input(waveform: Waveform, unison: u32, detune: f64) -> OscillatorInput {
         detune_cents: detune,
         frequency_hz: 440.0,
         phase_modulation: 0.0,
+        phase_modulated: false,
         active: true,
         note_generation: 1,
     }

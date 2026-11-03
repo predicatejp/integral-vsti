@@ -68,3 +68,31 @@ pub fn rms(wave: Waveform, increment: f64) -> f64 {
         / 2.0)
         .sqrt()
 }
+
+/// Analytic sine primitive differences with a stable sinc expression for repeated pairs.
+fn sine_adaa2(mut q: [f64; 3]) -> f64 {
+    q.sort_by(f64::total_cmp);
+    let span = q[2] - q[0];
+    let tau = std::f64::consts::TAU;
+    if span * tau < 1e-4 {
+        return (tau * (q[0] + q[1] + q[2]) / 3.0).sin();
+    }
+    let sec = |a: f64, b: f64| {
+        let t = tau * (b - a) * 0.5;
+        let sinc = if t == 0.0 { 1.0 } else { t.sin() / t };
+        -(tau * (a + b) * 0.5).cos() * sinc / tau
+    };
+    2.0 * (sec(q[1], q[2]) - sec(q[0], q[1])) / span
+}
+
+/// Current band's Fourier harmonics integrated analytically, independent of lookup tables.
+pub fn antialiased_sample(wave: Waveform, q: [f64; 3], increment: f64) -> f64 {
+    if wave == Waveform::Sine {
+        return sine_adaa2(q);
+    }
+    coefficients(wave, increment)
+        .iter()
+        .enumerate()
+        .map(|(i, a)| a * sine_adaa2(q.map(|p| p * (i + 1) as f64)))
+        .sum()
+}

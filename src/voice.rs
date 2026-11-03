@@ -89,6 +89,7 @@ impl Voice {
                     detune_cents: 0.0,
                     frequency_hz: 440.0,
                     phase_modulation: 0.0,
+                    phase_modulated: false,
                     active: false,
                     note_generation: 0,
                 }; 3],
@@ -302,6 +303,7 @@ impl Voice {
             self.state.oscillator_inputs[i].active = active;
             let input = &mut self.state.oscillator_inputs[i];
             input.phase_modulation = modulation;
+            input.phase_modulated = i < 2 && self.state.phase_depths[i] != 0.0;
             let current = self.state.oscillators[i].generate_sample(input, sample_rate);
             modulation = current.values[0] * depths[i];
             if self.state.oscillator_gains[i] != 0.0 {
@@ -351,6 +353,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // 全波形・深度のFourier照合は通常のCPUテストで行う。
     fn phase_modulation_chain_matches_same_sample_raw_waveforms() {
         for rate in [44100.0, 48000.0, 96000.0] {
             for wave in [
@@ -387,8 +390,9 @@ mod tests {
                         pitch: 69,
                     };
                     voice.note_on(note, 0.0, 1.0);
-                    let mut carrier = [0.0; 3];
-                    let mut modulators = [0.0; 2];
+                    let mut carrier = [0.0_f64; 3];
+                    let mut modulators = [0.0_f64; 2];
+                    let mut histories = [[0.0; 2]; 4];
                     for n in 0..256 {
                         if n == 127 {
                             // Phase=Zeroの再トリガーを全段へ適用する。
@@ -398,17 +402,51 @@ mod tests {
                         }
                         let m3 = crate::oscillator::reference::raw_sample(
                             wave,
-                            modulators[1],
+                            modulators[1].rem_euclid(1.0),
                             220.0 / rate,
                         );
-                        let m2 = crate::oscillator::reference::raw_sample(
+                        // Reference uses analytic Fourier antiderivatives, not production tables.
+                        let mut smoothed = |slot: usize, wave, q: f64, inc: f64, enabled: bool| {
+                            let [b, c] = if n == 0 || n == 127 {
+                                [q - inc, q - 2.0 * inc]
+                            } else {
+                                histories[slot]
+                            };
+                            histories[slot] = [q, b];
+                            if enabled {
+                                crate::oscillator::reference::antialiased_sample(
+                                    wave,
+                                    [q, b, c],
+                                    inc,
+                                )
+                            } else {
+                                crate::oscillator::reference::raw_sample(
+                                    wave,
+                                    q.rem_euclid(1.0),
+                                    inc,
+                                )
+                            }
+                        };
+                        let m2 = smoothed(
+                            3,
                             wave,
-                            (modulators[0] + depths[1] * m3).rem_euclid(1.0),
+                            modulators[0] + depths[1] * m3,
                             880.0 / rate,
+                            depths[1] != 0.0,
                         );
                         let expected = carrier
                             .iter()
-                            .map(|p| (std::f64::consts::TAU * (p + depths[0] * m2)).sin())
+                            .zip([-25.0_f64, 0.0, 25.0])
+                            .enumerate()
+                            .map(|(i, (p, cents))| {
+                                smoothed(
+                                    i,
+                                    Waveform::Sine,
+                                    p + depths[0] * m2,
+                                    440.0 * 2.0_f64.powf(cents / 1200.0) / rate,
+                                    depths[0] != 0.0,
+                                )
+                            })
                             .sum::<f64>()
                             * 0.5
                             * std::f64::consts::SQRT_2
@@ -422,10 +460,10 @@ mod tests {
                         );
                         assert_eq!(actual[0], actual[1]);
                         for (p, cents) in carrier.iter_mut().zip([-25.0_f64, 0.0, 25.0]) {
-                            *p = (*p + 440.0 * 2.0_f64.powf(cents / 1200.0) / rate).rem_euclid(1.0);
+                            *p += 440.0 * 2.0_f64.powf(cents / 1200.0) / rate;
                         }
-                        modulators[0] = (modulators[0] + 880.0 / rate).rem_euclid(1.0);
-                        modulators[1] = (modulators[1] + 220.0 / rate).rem_euclid(1.0);
+                        modulators[0] += 880.0 / rate;
+                        modulators[1] += 220.0 / rate;
                         assert_eq!(
                             voice.state.oscillator_inputs.map(|i| i.frequency_hz),
                             [440.0, 880.0, 220.0]
@@ -467,19 +505,26 @@ mod tests {
             );
             let frequency = voice.state.oscillator_inputs[0].frequency_hz;
             let (mut carrier, mut modulator, mut max_offset) = (0.0_f64, 0.0_f64, 0.0_f64);
+            let mut history = [-frequency / rate, -2.0 * frequency / rate];
             for _ in 0..256 {
                 // この音程の矩形波は全レートで基音だけが残り、振幅は4/π。
                 let offset =
                     2.0 * (4.0 / std::f64::consts::PI) * (std::f64::consts::TAU * modulator).sin();
+                let q = carrier + offset;
                 let expected = 0.5
                     * std::f64::consts::SQRT_2
-                    * (std::f64::consts::TAU * (carrier + offset)).sin();
+                    * crate::oscillator::reference::antialiased_sample(
+                        Waveform::Sine,
+                        [q, history[0], history[1]],
+                        frequency / rate,
+                    );
+                history = [q, history[0]];
                 let actual = voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
                 assert!((actual[0] - expected).abs() < 2e-6);
                 assert_eq!(actual[0], actual[1]);
                 max_offset =
                     max_offset.max(voice.state.oscillator_inputs[0].phase_modulation.abs());
-                carrier = (carrier + frequency / rate).fract();
+                carrier += frequency / rate;
                 modulator = (modulator + frequency * 4.0 / rate).fract();
             }
             assert!(max_offset > 2.5);

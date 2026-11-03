@@ -4,6 +4,8 @@
 //! 発振器回路の定常入力と内部状態を分離した単一のオシレータ。
 
 use crate::random::Random;
+#[path = "oscillator/adaa.rs"]
+mod adaa;
 
 #[cfg(test)]
 #[path = "oscillator/reference.rs"]
@@ -125,6 +127,8 @@ pub struct OscillatorInput {
     pub frequency_hz: f64,
     /// 波形を読む位置への位相変調（周期単位）。有限のi32範囲を受け取り、保持位相には累積しない。
     pub phase_modulation: f64,
+    /// 位相変調が有効な周期波には2階ADAAを適用する。瞬間的に変調量0でも有効。
+    pub phase_modulated: bool,
     /// 音量AHDSRの発音期間。release中もtrue、終了・停止後はfalse。
     pub active: bool,
     /// Note Onごとに増える世代番号。同音高の再トリガーでも位相モードを適用する。
@@ -158,6 +162,14 @@ pub struct OscillatorState {
     /// 次に生成するサンプルの位相（周期単位、0以上1未満。境界の丸めで1となる場合もある）。
     /// 初期値は0。Note On時はphase_modeに従い、release完了後と処理停止中は進めない。
     phases: [f64; 7],
+    /// 同じ位相原点で表した直前2点の変調後位相。
+    history: [[f64; 2]; 7],
+    /// 現在の周波数に対応する原始関数テーブル。
+    bank: [adaa::Bank; 7],
+    /// 履歴を連続使用できるか。ノート・波形・発音数変更時に破棄する。
+    valid: bool,
+    /// 履歴に有効なユニゾン数。未使用スロットの再利用を検出する。
+    history_count: usize,
     /// Note On時だけ進める位相用乱数。ノイズ用とは独立した状態を持つ。
     random: Random,
     /// ノイズ専用xoshiro256+の状態。各ユニゾンに連続する別の値を割り当てる。
@@ -195,6 +207,10 @@ impl Oscillator {
         Self {
             state: OscillatorState {
                 phases: [0.0; 7],
+                history: [[0.; 2]; 7],
+                bank: [adaa::Bank::new(Waveform::Sine, 0.); 7],
+                valid: false,
+                history_count: 0,
                 random: Random::new(),
                 noise: Random::new(),
                 note_generation: 0,
@@ -224,6 +240,7 @@ impl Oscillator {
         // ノート境界と位相モードを反映して生成した後、次サンプルへ進める。
         // キャッシュを含むState全体のサンプルごとのコピーは行わない。
         if input.note_generation != self.state.note_generation && input.active {
+            self.state.valid = false;
             match input.phase_mode {
                 PhaseMode::Keep => {}
                 PhaseMode::Zero => self.state.phases.fill(0.0),
@@ -237,6 +254,7 @@ impl Oscillator {
         self.state.note_generation = input.note_generation;
         // activeはVoiceの共通AHDSRから渡す。無音のattack中も位相を進める。
         if !input.active {
+            self.state.valid = false;
             return OscillatorSample {
                 values: [0.0; 7],
                 count: 0,
@@ -253,6 +271,7 @@ impl Oscillator {
     fn generate_waveform_sample(&mut self, input: &OscillatorInput) -> OscillatorSample {
         match input.waveform {
             Waveform::Noise => {
+                self.state.valid = false;
                 let count = input.rendered_voices();
                 let mut values = [0.0; 7];
                 for value in &mut values[..count] {
@@ -267,18 +286,22 @@ impl Oscillator {
 
     // 帯域別のループを分離してSine/Noiseを小さく保ち、ユニゾンごとの関数呼出しを省く。
     #[inline(never)]
-    fn generate_bandlimited_sample(&self, input: &OscillatorInput) -> OscillatorSample {
+    fn generate_bandlimited_sample(&mut self, input: &OscillatorInput) -> OscillatorSample {
         self.generate_periodic_sample::<true>(input)
     }
 
     /// 波形別に展開する周期波の読出し。位相変調の処理は両経路で共通にする。
     #[inline(always)]
     fn generate_periodic_sample<const BANDED: bool>(
-        &self,
+        &mut self,
         input: &OscillatorInput,
     ) -> OscillatorSample {
         let count = input.rendered_voices();
         let mut values = [0.0; 7];
+        if input.phase_modulated {
+            return self.generate_antialiased_sample(input);
+        }
+        self.state.valid = false;
         // 整数周期を先に除き、±1/±2回転では元の位相を厳密に保持する。
         // SAFETY: generate_sampleで位相変調が有限のi32範囲であることを検証済み。
         let cycles = unsafe { input.phase_modulation.to_int_unchecked::<i32>() };
@@ -314,6 +337,33 @@ impl Oscillator {
         OscillatorSample { values, count }
     }
 
+    #[inline(never)]
+    fn generate_antialiased_sample(&mut self, input: &OscillatorInput) -> OscillatorSample {
+        let count = input.rendered_voices();
+        let mut values = [0.; 7];
+        if self.state.history_count != count {
+            self.state.valid = false;
+            self.state.history_count = count;
+        }
+        for (k, value) in values[..count].iter_mut().enumerate() {
+            let phase = self.state.phases[k];
+            let q = phase + input.phase_modulation;
+            let inc = self.state.phase_increments[k];
+            let [b, c] = if self.state.valid {
+                self.state.history[k]
+            } else {
+                [q - inc, q - 2. * inc]
+            };
+            *value = self.state.bank[k].generate_sample(q, b, c);
+            // 次サンプルで保持位相が巻き戻る量を履歴にも適用する。
+            // 変調量は折り返さず、周期を跨ぐ差商の距離を保持する。
+            let wrap = f64::from((phase + inc >= 1.) as u8);
+            self.state.history[k] = [q - wrap, b - wrap];
+        }
+        self.state.valid = true;
+        OscillatorSample { values, count }
+    }
+
     #[cfg(test)]
     fn read_sample(&self, wave: Waveform, phase: f64, k: usize) -> f64 {
         match wave {
@@ -337,6 +387,13 @@ impl Oscillator {
         }
         let frequency = (input.frequency_hz, sample_rate, input.waveform);
         if changed || self.state.frequency_input != Some(frequency) {
+            if self
+                .state
+                .frequency_input
+                .is_some_and(|old| old.2 != input.waveform)
+            {
+                self.state.valid = false;
+            }
             for (k, (increment, ratio)) in self.state.phase_increments[..count]
                 .iter_mut()
                 .zip(&self.state.frequency_ratios[..count])
@@ -353,6 +410,7 @@ impl Oscillator {
                         },
                     );
                 }
+                self.state.bank[k] = adaa::Bank::new(input.waveform, (hz / sample_rate).min(1.0));
                 // 通常音程では剰余を省く。高周波では除算のオーバーフローを防ぐ。
                 *increment = if hz < sample_rate {
                     hz
@@ -947,6 +1005,62 @@ mod tests {
         assert_eq!(oscillator.state.random, random);
     }
 
+    #[test]
+    fn smoothing_tracks_unwrapped_phase_and_resets_new_unison_slots() {
+        let mut oscillator = Oscillator::new();
+        let mut input = OscillatorInput {
+            frequency_hz: 876.0,
+            phase_modulated: true,
+            ..test_input()
+        };
+        let bank = adaa::Bank::new(Waveform::Sine, 876.0 / 48000.0);
+        let increment = input.frequency_hz / 48000.0;
+        let mut history = [-increment, -2.0 * increment];
+        for n in 0..4096 {
+            input.phase_modulation = 2.0 * (n as f64 * 0.183).sin();
+            let q = n as f64 * increment + input.phase_modulation;
+            let expected = bank.generate_sample(q, history[0], history[1]);
+            let actual = oscillator.generate_sample(&input, 48000.0).values[0];
+            assert!(
+                (actual - expected).abs() < 1e-7,
+                "{n}: {actual} != {expected}"
+            );
+            history = [q, history[0]];
+        }
+        for count in [7, 2, 6, 1] {
+            input.unison_voices = count;
+            input.detune_cents = 25.0;
+            let old_phases = oscillator.state.phases;
+            let actual = oscillator.generate_sample(&input, 48000.0);
+            for (k, phase) in old_phases.iter().enumerate().take(actual.count) {
+                let q = phase + input.phase_modulation;
+                let inc = oscillator.state.phase_increments[k];
+                let bank = oscillator.state.bank[k];
+                let expected = bank.generate_sample(q, q - inc, q - 2.0 * inc);
+                assert!((actual.values[k] - expected).abs() < 1e-9);
+            }
+            // Detune automation preserves history for the existing slots.
+            input.detune_cents = 26.0;
+            oscillator.generate_sample(&input, 48000.0);
+            assert!(oscillator.state.valid);
+        }
+        input.unison_voices = 1;
+        input.detune_cents = 0.0;
+        input.phase_modulation = 0.0;
+        input.phase_modulated = false;
+        let phase = oscillator.state.phases[0];
+        assert_eq!(
+            oscillator.generate_sample(&input, 48000.0).values[0],
+            sine_sample(phase)
+        );
+        assert!(!oscillator.state.valid);
+        input.phase_modulated = true;
+        input.phase_modulation = 0.3;
+        let q = oscillator.state.phases[0] + input.phase_modulation;
+        let expected = bank.generate_sample(q, q - increment, q - 2.0 * increment);
+        assert!((oscillator.generate_sample(&input, 48000.0).values[0] - expected).abs() < 1e-9);
+    }
+
     fn test_input() -> OscillatorInput {
         OscillatorInput {
             waveform: Waveform::Sine,
@@ -955,6 +1069,7 @@ mod tests {
             detune_cents: 0.0,
             frequency_hz: 1.0,
             phase_modulation: 0.0,
+            phase_modulated: false,
             active: true,
             note_generation: 1,
         }
@@ -1205,6 +1320,7 @@ mod tests {
             waveform: Waveform::Sine,
             frequency_hz: 1.0,
             phase_modulation: 0.0,
+            phase_modulated: false,
             active: true,
             ..test_input()
         };
