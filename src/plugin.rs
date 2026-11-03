@@ -814,19 +814,19 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         if data.num_samples != 0 {
             return NOT_INITIALIZED;
         }
-        // SAFETY: 変更キューは呼び出し中有効。停止中のDSP状態には触れない。
-        let mut program = unsafe { ParameterPoints::new(data, parameters::PROGRAM_INDEX, 0.0) };
-        let loaded = program.take_program_at(0);
-        let mut values = if loaded {
-            parameters::sine_preset()
-        } else {
-            plugin.processor_parameters.snapshot()
-        };
+        let mut values = plugin.processor_parameters.snapshot();
+        // SAFETY: 変更キューはこの呼び出し中有効。停止中のDSP状態には触れない。
+        let mut changes = unsafe { ParameterPoints::all(data, &values) };
+        let loaded = changes[parameters::PROGRAM_INDEX].take_program_at(0);
+        if loaded {
+            values = parameters::sine_preset();
+            for (point, &value) in changes.iter_mut().zip(&values) {
+                point.reset_value(0, value);
+            }
+        }
         for (i, value) in values.iter_mut().enumerate() {
-            // SAFETY: キューの借用期間はこのprocess内だけ。
-            let mut changes = unsafe { ParameterPoints::new(data, i, *value) };
-            *value = changes.value_at(0);
-            if loaded || changes.automated {
+            *value = changes[i].value_at(0);
+            if loaded || changes[i].automated {
                 plugin.processor_parameters.set(i, *value);
             }
         }
@@ -869,10 +869,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
     // SAFETY: 音色設定とProgramのカーソルはこのprocess中だけホストのキューを借用する。
-    let mut changes: [ParameterPoints<'_>; parameters::COUNT + 1] =
-        std::array::from_fn(|i| unsafe {
-            ParameterPoints::new(data, i, values.get(i).copied().unwrap_or(0.0))
-        });
+    let mut changes = unsafe { ParameterPoints::all(data, &values) };
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
         synth.stop();

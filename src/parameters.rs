@@ -490,50 +490,61 @@ pub struct ParameterPoints<'a> {
 }
 
 impl<'a> ParameterPoints<'a> {
-    /// parameterは音色設定の番号またはPROGRAM_INDEX。
+    /// ホストのキューを1回列挙し、ParamIDごとのカーソルを構成する。
     /// SAFETY: dataの入れ子のインターフェースはホスト所有で、dataの借用期間中有効。
-    pub unsafe fn new(data: &'a ProcessData, parameter: usize, previous_value: f64) -> Self {
-        let id = if parameter == PROGRAM_INDEX {
-            PROGRAM_ID
-        } else {
-            IDS[parameter]
-        };
-        let mut result = Self {
+    pub unsafe fn all(data: &'a ProcessData, values: &[f64; COUNT]) -> [Self; COUNT + 1] {
+        let mut points = std::array::from_fn(|i| {
+            Self::empty(data.num_samples, i, values.get(i).copied().unwrap_or(0.0))
+        });
+        if !data.input_parameter_changes.is_null() {
+            // SAFETY: ホストのIParameterChangesと借用キューを読み、process中だけ保持する。
+            unsafe {
+                let changes = data.input_parameter_changes;
+                let table = &**changes.cast::<*const ParameterChangesVTable>();
+                for at in 0..(table.get_parameter_count)(changes) {
+                    let queue = (table.get_parameter_data)(changes, at);
+                    if queue.is_null() {
+                        continue;
+                    }
+                    let queue_table = &**queue.cast::<*const ParamValueQueueVTable>();
+                    let id = (queue_table.get_parameter_id)(queue);
+                    let parameter = if id == PROGRAM_ID {
+                        Some(PROGRAM_INDEX)
+                    } else {
+                        index(id)
+                    };
+                    let Some(parameter) = parameter else {
+                        continue;
+                    };
+                    let point = &mut points[parameter];
+                    if point.table.is_some() {
+                        continue; // ParamID重複時は最初のキューを採用する。
+                    }
+                    point.queue = queue;
+                    point.table = Some(queue_table);
+                    point.count = (queue_table.get_point_count)(queue);
+                    point.advance();
+                    point.automated = point.next.is_some();
+                }
+            }
+        }
+        points
+    }
+
+    fn empty(samples: i32, parameter: usize, previous_value: f64) -> Self {
+        Self {
             queue: ptr::null_mut(),
             table: None,
             count: 0,
             index: 0,
             previous_offset: 0,
-            samples: data.num_samples,
+            samples,
             next: None,
             previous: (-1, previous_value),
             parameter,
             interpolates: !holds_between_points(parameter),
             automated: false,
-        };
-        if !data.input_parameter_changes.is_null() {
-            // SAFETY: ホストのIParameterChangesと借用キューを読み、保持期間をprocess内に限定する。
-            unsafe {
-                let changes = data.input_parameter_changes;
-                let table = &**changes.cast::<*const ParameterChangesVTable>();
-                for index in 0..(table.get_parameter_count)(changes) {
-                    let queue = (table.get_parameter_data)(changes, index);
-                    if queue.is_null() {
-                        continue;
-                    }
-                    let queue_table = &**queue.cast::<*const ParamValueQueueVTable>();
-                    if (queue_table.get_parameter_id)(queue) == id {
-                        result.queue = queue;
-                        result.table = Some(queue_table);
-                        result.count = (queue_table.get_point_count)(queue);
-                        break; // 仕様ではParamIDごとに1キュー。重複時は最初のキューを採用する。
-                    }
-                }
-            }
         }
-        result.advance();
-        result.automated = result.next.is_some();
-        result
     }
 
     /// Programは同じ番号の再選択もロード要求として扱う。
@@ -573,7 +584,7 @@ impl<'a> ParameterPoints<'a> {
         while self.index < self.count {
             let mut offset = -1;
             let mut value = f64::NAN;
-            // SAFETY: newの契約によりキューは生存中。出力先は型の一致したローカル変数。
+            // SAFETY: allの契約によりキューは生存中。出力先は型の一致したローカル変数。
             let status =
                 unsafe { (table.get_point)(self.queue, self.index, &mut offset, &mut value) };
             self.index += 1;
@@ -682,11 +693,7 @@ mod tests {
 
     #[test]
     fn sample_positions_interpolate_only_known_continuous_intervals() {
-        // SAFETY: ProcessDataは整数とnull許容の生ポインターだけを持つ。
-        let mut data: ProcessData = unsafe { std::mem::zeroed() };
-        data.num_samples = 8;
-        // SAFETY: dataにはホストポインターがなく、このスコープ中有効。
-        let mut points = unsafe { ParameterPoints::new(&data, 32, 0.2) };
+        let mut points = ParameterPoints::empty(8, 32, 0.2);
         points.previous = (0, 0.2);
         points.next = Some((4, 1.0));
         for (at, expected) in [(0, 0.2), (1, 0.4), (2, 0.6), (3, 0.8)] {

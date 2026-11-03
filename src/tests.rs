@@ -659,3 +659,99 @@ fn editor_owns_controller_and_has_fixed_size() {
         assert_eq!((ft.unknown.release)(factory), 0);
     }
 }
+
+#[test]
+fn parameter_queues_are_enumerated_once_and_keep_the_first_duplicate() {
+    #[repr(C)]
+    struct Queues {
+        table: &'static ParameterChangesVTable,
+        entries: [This; 6],
+        visits: usize,
+    }
+    unsafe extern "system" fn count(_: This) -> i32 {
+        6
+    }
+    unsafe extern "system" fn get(this: This, at: i32) -> This {
+        // SAFETY: このテストの配列を逐次読み、列挙回数だけを記録する。
+        let queues = unsafe { &mut *this.cast::<Queues>() };
+        queues.visits += 1;
+        queues.entries[at as usize]
+    }
+    unsafe extern "system" fn no_points(_: This) -> i32 {
+        0
+    }
+    static MULTIPLE: ParameterChangesVTable = ParameterChangesVTable {
+        unknown: UnknownVTable {
+            query_interface: event_query,
+            add_ref: event_ref,
+            release: event_ref,
+        },
+        get_parameter_count: count,
+        get_parameter_data: get,
+        add_parameter_data: changes_add,
+    };
+    static EMPTY: ParamValueQueueVTable = ParamValueQueueVTable {
+        unknown: UnknownVTable {
+            query_interface: event_query,
+            add_ref: event_ref,
+            release: event_ref,
+        },
+        get_parameter_id: point_id,
+        get_point_count: no_points,
+        get_point: point_get,
+        add_point: point_add,
+    };
+    let mut first = TestPoint {
+        vtable: &POINT_TABLE,
+        id: parameters::IDS[11],
+        offset: 0,
+        value: 0.4,
+    };
+    let mut duplicate = TestPoint {
+        vtable: &POINT_TABLE,
+        id: parameters::IDS[11],
+        offset: 0,
+        value: 0.9,
+    };
+    let mut empty = TestPoint {
+        vtable: &EMPTY,
+        id: parameters::IDS[32],
+        offset: 0,
+        value: 0.9,
+    };
+    let mut later = TestPoint {
+        vtable: &POINT_TABLE,
+        id: parameters::IDS[32],
+        offset: 0,
+        value: 0.9,
+    };
+    let mut unknown = TestPoint {
+        vtable: &POINT_TABLE,
+        id: u32::MAX,
+        offset: 0,
+        value: 0.9,
+    };
+    let mut queues = Queues {
+        table: &MULTIPLE,
+        entries: [
+            ptr::from_mut(&mut first).cast(),
+            ptr::null_mut(),
+            ptr::from_mut(&mut empty).cast(),
+            ptr::from_mut(&mut duplicate).cast(),
+            ptr::from_mut(&mut later).cast(),
+            ptr::from_mut(&mut unknown).cast(),
+        ],
+        visits: 0,
+    };
+    // SAFETY: ProcessDataは整数とnull許容の生ポインターだけで、このスコープのキューを借用する。
+    let mut data: ProcessData = unsafe { std::mem::zeroed() };
+    data.num_samples = 1;
+    data.input_parameter_changes = ptr::from_mut(&mut queues).cast();
+    let mut values = parameters::defaults();
+    values[32] = 0.2;
+    let mut points = unsafe { parameters::ParameterPoints::all(&data, &values) };
+    assert_eq!(queues.visits, 6);
+    assert_eq!(points[11].value_at(0), 0.4);
+    assert_eq!(points[32].value_at(0), 0.2);
+    assert_eq!(points.iter().filter(|p| p.automated).count(), 1);
+}
