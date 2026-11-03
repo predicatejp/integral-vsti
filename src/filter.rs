@@ -43,6 +43,7 @@ impl FilterParameters {
 }
 
 /// 同一サンプル・同一の積分器状態から得た3種類の出力。
+#[allow(dead_code)] // 単体SVFの入口で使用する。音源のFilterはステレオ出力を使う。
 #[derive(Default)]
 pub struct SvfOutput {
     /// 低域通過出力。
