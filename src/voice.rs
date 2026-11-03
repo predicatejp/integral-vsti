@@ -290,6 +290,11 @@ impl Voice {
             let input = &mut self.state.oscillator_inputs[i];
             input.phase_modulation = modulation;
             input.phase_modulated = i < 2 && self.state.phase_depths[i] != 0.0;
+            if self.state.oscillator_gains[i] == 0.0 && depths[i] == 0.0 {
+                self.state.oscillators[i].advance_sample(input, sample_rate);
+                modulation = 0.0;
+                continue;
+            }
             let current = self.state.oscillators[i].generate_sample(input, sample_rate);
             modulation = current.values[0] * depths[i];
             if self.state.oscillator_gains[i] != 0.0 {
