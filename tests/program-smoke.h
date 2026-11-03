@@ -75,7 +75,12 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     const std::array<double, 34> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,0,0,100};
     ProgramHandler handler; handler.controller = controller;
     assert(controller->setComponentHandler(&handler) == kResultOk);
-    assert(controller->setParamNormalized(waveformId, 1.0) == kResultOk);
+    // 全設定をSineと異なる値にしてから再選択し、追加済み項目も復元されることを確認する。
+    for (int32 i = 0; i < static_cast<int32>(sine.size()); ++i) {
+        assert(controller->getParameterInfo(i, info) == kResultOk);
+        const double changed = controller->plainParamToNormalized(info.id, sine[i]) == 0.0 ? 1.0 : 0.0;
+        assert(controller->setParamNormalized(info.id, changed) == kResultOk);
+    }
     assert(controller->setParamNormalized(programId, 0.0) == kResultOk);
     assert(handler.calls == 1 && handler.refs == 1);
     for (int32 i = 0; i < 34; ++i) {

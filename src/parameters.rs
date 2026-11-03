@@ -30,7 +30,7 @@ pub const PROGRAM_NAME: &str = "Sine";
 
 /// 内蔵Sineの全設定。編集値から独立した固定の音色定義。
 pub fn sine_preset() -> [f64; COUNT] {
-    let plain = [
+    let plain: [f64; COUNT] = [
         0.0, // Sine
         0.0,
         0.0,

@@ -352,7 +352,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定31個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定34個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -365,6 +365,7 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | カットオフAHDSR / Amount | A/H/D/R=0 ms、S=1 / 0 cent |
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
 | Osc2/3 Waveform / Tune / Volume / FM | Sine / 0 cent / −∞ dB / 0% |
+| Clipper / Gain / Mix | None / 0 dB / 100% |
 
 ノートオン・オフで即時に発音・消音し、最大ベロシティ時の実効値は片チャンネル当たり0.5です。
 選択すると全設定を読み直し、同じ「Sine」の再選択でも編集した値を元に戻します。
