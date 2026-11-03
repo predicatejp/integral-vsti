@@ -234,10 +234,51 @@ impl Filter {
         // 左右・両段で係数を共用し、積分器の履歴だけ独立させる。
         let coefficients = self.state.stages[0][0].prepare_coefficients(parameters, sample_rate);
         let mut output = samples;
-        for (sample, channel) in output.iter_mut().zip(&mut self.state.stages) {
-            for stage in &mut channel[..count] {
-                let result = stage.process_prepared_sample(*sample, coefficients);
-                *sample = [result.low, result.high, result.band][output_index];
+        for stage in 0..count {
+            // SAFETY: 対応先x86_64はSSE2を備える。読み書きは各2要素配列の範囲内。
+            unsafe {
+                use std::arch::x86_64::*;
+                let left = self.state.stages[0][stage].state.integrators;
+                let right = self.state.stages[1][stage].state.integrators;
+                let s1 = _mm_set_pd(right[0], left[0]);
+                let s2 = _mm_set_pd(right[1], left[1]);
+                let sample = _mm_loadu_pd(output.as_ptr());
+                let g = _mm_set1_pd(coefficients.g);
+                let high = _mm_mul_pd(
+                    _mm_sub_pd(
+                        _mm_sub_pd(
+                            sample,
+                            _mm_mul_pd(_mm_set1_pd(coefficients.damping_plus_g), s1),
+                        ),
+                        s2,
+                    ),
+                    _mm_set1_pd(coefficients.inverse_denominator),
+                );
+                let band = _mm_add_pd(s1, _mm_mul_pd(g, high));
+                let low = _mm_add_pd(s2, _mm_mul_pd(g, band));
+                let two = _mm_set1_pd(2.0);
+                let a = _mm_sub_pd(_mm_mul_pd(two, band), s1);
+                let b = _mm_sub_pd(_mm_mul_pd(two, low), s2);
+                let sign = _mm_set1_pd(-0.0);
+                let max = _mm_set1_pd(f64::MAX);
+                let finite = _mm_and_pd(
+                    _mm_cmple_pd(_mm_andnot_pd(sign, a), max),
+                    _mm_cmple_pd(_mm_andnot_pd(sign, b), max),
+                );
+                let a = _mm_and_pd(a, finite);
+                let b = _mm_and_pd(b, finite);
+                _mm_storeu_pd(
+                    self.state.stages[0][stage].state.integrators.as_mut_ptr(),
+                    _mm_unpacklo_pd(a, b),
+                );
+                _mm_storeu_pd(
+                    self.state.stages[1][stage].state.integrators.as_mut_ptr(),
+                    _mm_unpackhi_pd(a, b),
+                );
+                _mm_storeu_pd(
+                    output.as_mut_ptr(),
+                    _mm_and_pd([low, high, band][output_index], finite),
+                );
             }
         }
         output
