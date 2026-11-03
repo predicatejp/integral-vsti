@@ -28,7 +28,7 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix", "Rate", "Smooth",
+    "Waveform", "Tune", "Vol", "FM", "FM", "Clipper", "Gain", "Mix", "Rate", "Smooth", "Smooth",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -37,6 +37,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     3, 3, 3, 4, 3, 2, 4, 4, 2, // Cutoff envelope / Amount / Width / Pan / Osc1 Vol
     4, 3, 2, 4, 3, 2, 4, 4, // Osc2 / Osc3
     4, 3, 4, 4, 4, // Distortion
+    4, // PM Smooth
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -504,7 +505,7 @@ impl Editor {
         selected: &[f64; parameters::COUNT],
     ) {
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
-        let phase_height = if choices == [12] {
+        let phase_height = if choices == [12] || choices == [36] {
             18.0 + GAP + CHOICE_HEIGHT
         } else {
             0.0
@@ -543,12 +544,12 @@ impl Editor {
             INK,
         );
         for &index in choices {
-            let choice = if index == 12 {
+            let choice = if matches!(index, 12 | 36) {
                 let label = rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT + row_gap);
                 painter.text(
                     label,
                     egui::Align2::LEFT_TOP,
-                    "Phase",
+                    KNOB_NAMES[index],
                     egui::FontId::proportional(18.0),
                     MUTED,
                 );
@@ -776,6 +777,12 @@ impl WindowHandler for Editor {
                     &[12],
                     &[&[8][..], &[13][..], &[21][..]][..],
                     [master_x, GAP, 144.0, panel_height],
+                ),
+                (
+                    "Phase Mod",
+                    &[36],
+                    &[],
+                    [master_x + 144.0 + GAP, GAP, 176.0, single_height],
                 ),
             ];
             for (title, choices, rows, [x, y, width, height]) in groups {

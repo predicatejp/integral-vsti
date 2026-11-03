@@ -33,6 +33,8 @@ pub struct VoiceState {
     oscillator_gains: [f64; 3],
     /// Osc2→Osc1、Osc3→Osc2の位相変調量（0〜2周期）。
     phase_depths: [f64; 2],
+    /// 位相変調を受ける発振器共通のADAA次数。
+    phase_smoothing: crate::oscillator::PhaseSmoothing,
     /// ノート基音に掛けるOsc2/3のTune倍率。Osc1は1。
     tune_ratios: [f64; 3],
     /// ノートを保持している間true。Note Offでは共通AHDSRのreleaseへ移る。
@@ -89,6 +91,7 @@ impl Voice {
                     detune_cents: 0.0,
                     frequency_hz: 440.0,
                     phase_modulation: 0.0,
+                    smoothing: crate::oscillator::PhaseSmoothing::None,
                     active: false,
                     note_generation: 0,
                 }; 3],
@@ -96,6 +99,7 @@ impl Voice {
                 oscillator_volumes: [1.0, 0.0, 0.0],
                 oscillator_gains: [std::f64::consts::SQRT_2, 0.0, 0.0],
                 phase_depths: [0.0; 2],
+                phase_smoothing: crate::oscillator::PhaseSmoothing::None,
                 tune_ratios: [1.0; 3],
                 gate: false,
                 note_generation: 0,
@@ -232,6 +236,10 @@ impl Voice {
     }
 
     /// 親が検証したOsc2・Osc3のFM設定を配送する。
+    pub fn set_phase_smoothing(&mut self, order: crate::oscillator::PhaseSmoothing) {
+        self.state.phase_smoothing = order;
+    }
+
     pub fn set_phase_modulation(&mut self, depths: [f64; 2]) {
         self.state.phase_depths = depths;
     }
@@ -302,6 +310,11 @@ impl Voice {
             self.state.oscillator_inputs[i].active = active;
             let input = &mut self.state.oscillator_inputs[i];
             input.phase_modulation = modulation;
+            input.smoothing = if i < 2 && self.state.phase_depths[i] != 0.0 {
+                self.state.phase_smoothing
+            } else {
+                crate::oscillator::PhaseSmoothing::None
+            };
             let current = self.state.oscillators[i].generate_sample(input, sample_rate);
             modulation = current.values[0] * depths[i];
             if self.state.oscillator_gains[i] != 0.0 {

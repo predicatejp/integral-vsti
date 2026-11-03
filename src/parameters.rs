@@ -11,7 +11,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 36;
+pub const COUNT: usize = 37;
 /// Osc1・Osc2・Osc3のVolume設定位置。
 pub const OSCILLATOR_VOLUMES: [usize; 3] = [22, 25, 28];
 
@@ -67,6 +67,7 @@ pub fn sine_preset() -> [f64; COUNT] {
         100.0,             // Mix: 100%
         0.0,               // Rate: x1
         0.0,               // Smooth: ADAAなし
+        0.0,               // PM Smooth: ADAAなし
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -159,6 +160,7 @@ pub const IDS: [u32; COUNT] = [
     0x434d4958, // CMIX
     0x4f534d50, // OSMP
     0x41444141, // ADAA
+    0x504d534d, // PMSM
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -197,6 +199,7 @@ pub const NAMES: [&str; COUNT] = [
     "Mix",
     "Rate",
     "Smooth",
+    "PM Smooth",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -206,7 +209,7 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         12 => &PHASE_NAMES,
         31 => &CLIPPER_NAMES,
         34 => &OVERSAMPLING_NAMES,
-        35 => &ADAA_NAMES,
+        35 | 36 => &ADAA_NAMES,
         _ => &[],
     }
 }
@@ -268,7 +271,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 35 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 35 | 36 | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
@@ -321,7 +324,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         9 => return (normalized * 7.0).floor().min(6.0),
         10 => return normalized * 12000.0 - 2400.0,
         11 => return 0.5 + normalized * 9.5,
-        12 | 31 | 34 | 35 => return (normalized * 3.0).floor().min(2.0),
+        12 | 31 | 34 | 35 | 36 => return (normalized * 3.0).floor().min(2.0),
         24 | 27 => return normalized * 4800.0 - 2400.0,
         19 => return normalized * 9600.0 - 4800.0,
         _ => {}
@@ -358,7 +361,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         9 => return plain.clamp(0.0, 6.0).round() / 6.0,
         10 => return (plain + 2400.0) / 12000.0,
         11 => return (plain - 0.5) / 9.5,
-        12 | 31 | 34 | 35 => return plain.clamp(0.0, 2.0).round() / 2.0,
+        12 | 31 | 34 | 35 | 36 => return plain.clamp(0.0, 2.0).round() / 2.0,
         24 | 27 => return (plain + 2400.0) / 4800.0,
         19 => return (plain + 4800.0) / 9600.0,
         _ => {}
@@ -387,7 +390,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         9 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
         10 => (-2400.0..=9600.0).contains(&plain),
         11 => (0.5..=10.0).contains(&plain),
-        12 | 31 | 34 | 35 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
+        12 | 31 | 34 | 35 | 36 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
         24 | 27 => (-2400.0..=2400.0).contains(&plain),
         19 => (-4800.0..=4800.0).contains(&plain),
         32 => (0.0..=48.0).contains(&plain),
@@ -399,7 +402,7 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
     } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(index, 6 | 8 | 9 | 12 | 31 | 34 | 35) {
+    } else if matches!(index, 6 | 8 | 9 | 12 | 31 | 34 | 35 | 36) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -444,6 +447,7 @@ pub fn defaults() -> [f64; COUNT] {
         100.0,             // Mix: 100%
         0.0,               // Rate: x1
         0.0,               // Smooth: ADAAなし
+        0.0,               // PM Smooth: ADAAなし
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -650,9 +654,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v16: 固定292バイト。波形番号u32と、その他の実単位f64を保持する。
+// v17: 固定300バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x10\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x11\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -918,6 +922,7 @@ mod tests {
                 values[13] = to_normalized(13, -59.95);
                 values[20] = to_normalized(20, 62.5);
                 values[21] = to_normalized(21, -35.25);
+                values[36] = 1.0;
                 for (i, plain) in [7500.25, 10000.0, 6000.0, 0.4567, 10000.0, -1234.125]
                     .into_iter()
                     .enumerate()
@@ -936,12 +941,12 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17] {
+                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18] {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                (*stream).bytes[4] = 16;
+                (*stream).bytes[4] = 17;
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -1011,6 +1016,9 @@ mod tests {
                     (35, 3.0),
                     (35, 0.5),
                     (35, f64::NAN),
+                    (36, 3.0),
+                    (36, 0.5),
+                    (36, f64::NAN),
                 ] {
                     let offset = 12 + (index - 1) * 8;
                     let original: [u8; 8] =

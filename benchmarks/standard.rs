@@ -71,6 +71,7 @@ const BASE: [f64; parameters::COUNT] = [
     100.,
     0.,
     0.,
+    0., // PM Smooth: None
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),
