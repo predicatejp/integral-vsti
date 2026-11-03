@@ -15,6 +15,8 @@ pub struct SynthesizerState {
     next_oscillator_id: usize,
     /// 現在使用する枠数（1..=32）。範囲外の枠は停止し、位相だけ保持する。
     polyphony: usize,
+    /// 停止後に一度でもNote Onを割り当てた枠の上端。未使用枠のサンプル処理を省く。
+    used_voices: usize,
     /// 全オシレータに共通のサンプルレート（Hz）。
     sample_rate: f64,
     /// 適用済みの正規化値。変更時だけ実単位へ換算する。
@@ -51,6 +53,7 @@ impl Synthesizer {
                 voices: std::array::from_fn(|_| Voice::new()),
                 next_oscillator_id: 0,
                 polyphony: 1,
+                used_voices: 0,
                 sample_rate: 44100.0,
                 parameters: parameters::defaults(),
                 master_gain: 1.0,
@@ -97,6 +100,7 @@ impl Synthesizer {
                 voice.stop();
             }
             self.state.polyphony = count;
+            self.state.used_voices = self.state.used_voices.min(count);
             self.state.next_oscillator_id %= count;
         }
         // 変更のないグループの時間換算（pow）なども省く。
@@ -196,13 +200,17 @@ impl Synthesizer {
         if !self.state.voices[self.state.next_oscillator_id].note_on(note, tuning, velocity) {
             return false;
         }
+        self.state.used_voices = self
+            .state
+            .used_voices
+            .max(self.state.next_oscillator_id + 1);
         self.state.next_oscillator_id = (self.state.next_oscillator_id + 1) % self.state.polyphony;
         true
     }
 
     pub fn note_off(&mut self, note: Note) {
         // 同じID、またはID未提供の同チャンネル・同音高が複数あれば全一致をreleaseする。
-        for voice in &mut self.state.voices[..self.state.polyphony] {
+        for voice in &mut self.state.voices[..self.state.used_voices] {
             voice.note_off(note);
         }
     }
@@ -216,6 +224,7 @@ impl Synthesizer {
     pub fn stop(&mut self) {
         self.state.previous_dry = [0.0; 2];
         self.state.started = false;
+        self.state.used_voices = 0;
         self.state.transition = 0;
         self.state.processing = self.state.requested_processing;
         for voice in &mut self.state.voices {
@@ -225,7 +234,7 @@ impl Synthesizer {
 
     /// 表示用の同時発音数。ブロック末尾で読み、ユニゾンや発振器数は加算しない。
     pub fn active_voice_count(&self) -> u32 {
-        self.state.voices[..self.state.polyphony]
+        self.state.voices[..self.state.used_voices]
             .iter()
             .filter(|voice| voice.is_active())
             .count() as u32
@@ -248,7 +257,7 @@ impl Synthesizer {
         } else {
             let mut distortion = self.state.distortion;
             distortion.clipper = clipper;
-            for voice in &mut self.state.voices[..self.state.polyphony] {
+            for voice in &mut self.state.voices[..self.state.used_voices] {
                 let (input, output) = voice.generate_distorted_sample(
                     self.state.sample_rate,
                     &self.state.panning_gains,
@@ -284,7 +293,7 @@ impl Synthesizer {
     /// フィルタまでのVoice出力を加算しMasterを適用する。
     fn mix_sample(&mut self) -> [f64; 2] {
         let mut sum = [0.0; 2];
-        for voice in &mut self.state.voices[..self.state.polyphony] {
+        for voice in &mut self.state.voices[..self.state.used_voices] {
             let sample = voice.generate_sample(
                 self.state.sample_rate,
                 &self.state.panning_gains,
