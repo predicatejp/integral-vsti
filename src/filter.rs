@@ -297,6 +297,20 @@ impl Filter {
         }
         // 左右・両段で係数を共用し、積分器の履歴だけ独立させる。
         let coefficients = self.state.stages[0][0].prepare_coefficients(parameters, sample_rate);
+        match output_index {
+            0 => self.process_selected_sample::<0>(samples, coefficients, count),
+            1 => self.process_selected_sample::<1>(samples, coefficients, count),
+            _ => self.process_selected_sample::<2>(samples, coefficients, count),
+        }
+    }
+
+    #[inline(always)]
+    fn process_selected_sample<const OUTPUT: usize>(
+        &mut self,
+        samples: [f64; 2],
+        coefficients: SvfCoefficients,
+        count: usize,
+    ) -> [f64; 2] {
         let mut output = samples;
         let (left, right) = self.state.stages.split_at_mut(1);
         for stage in 0..count {
@@ -305,7 +319,7 @@ impl Filter {
                 output,
                 coefficients,
             );
-            output = [result.low, result.high, result.band][output_index];
+            output = [result.low, result.high, result.band][OUTPUT];
         }
         output
     }
