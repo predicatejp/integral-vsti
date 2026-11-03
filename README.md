@@ -205,6 +205,10 @@ FM=200%でモジュレータが±1なら、±2回転なので周期波形は無�
 途中の値では位相がずれるため、変調音が生じます。
 Osc1のユニゾン各音には同じ位相変調量を適用します。FMの変更点間は正規化空間で線形補間します。
 
+位相変調を受ける周期波には2階ADAAを適用します。Osc2→Osc1、Osc3→Osc2の各経路で、対応するFMが0なら通常の波形読出しを使います。
+ADAAは直前2サンプルの変調後位相と、波形ごとの1階・2階原始関数テーブルで計算します。全ユニゾンに適用し、Note On・波形・発音数の変更時に履歴を初期化します。
+原始関数テーブルは`scripts/generate-pm-primitives.py`（NumPy）で生成します。共有データは約127 MiBです。
+
 発振器は各ユニゾンについて理想波形のピーク振幅1を基準とした生波形を出力し、帯域制限のオーバーシュートを保持します。
 実効値補正・ユニゾン合成・Vol・Panは独立した`volume`モジュールで適用し、3発振器の加算後にAHDSRを掛けます。
 生波形を変調に使うため、Volが−∞でも変調は継続します。
@@ -439,10 +443,6 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-位相変調を受ける周期波には2階ADAAを適用します。Osc2→Osc1、Osc3→Osc2の各経路で、対応するFMが0なら通常の波形読出しを使います。
-ADAAは直前2サンプルの変調後位相と、波形ごとの1階・2階原始関数テーブルで計算します。全ユニゾンに適用し、Note On・波形・発音数の変更時に履歴を初期化します。
-原始関数テーブルは`scripts/generate-pm-primitives.py`（NumPy）で生成します。共有データは約127 MiBです。
-
 サイズは784×560物理ピクセルで固定です。標準フォントは18px、見出しは24pxです。
 `python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中・発音中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`、`target/gui-voices.png`へ保存します。
 Windowsでは、描画中に再描画と編集配送タイマーを意図的に再入させ、描画の延期と、描画終了後の編集通知を検証します。

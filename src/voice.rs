@@ -353,6 +353,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // 全波形・深度のFourier照合は通常のCPUテストで行う。
     fn phase_modulation_chain_matches_same_sample_raw_waveforms() {
         for rate in [44100.0, 48000.0, 96000.0] {
             for wave in [
