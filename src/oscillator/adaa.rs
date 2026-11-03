@@ -72,10 +72,7 @@ impl Bank {
                 v + (f(self.lo) - v) * self.mix
             }
     }
-    pub fn generate_sample<const O: usize>(self, a: f64, b: f64, c: f64) -> f64 {
-        if O == 1 {
-            return self.blend(|t| t.first(a, b, FIRST));
-        }
+    pub fn generate_sample(self, a: f64, b: f64, c: f64) -> f64 {
         let (mut x, mut y, mut z) = (a, b, c);
         if x > y {
             std::mem::swap(&mut x, &mut y)
@@ -118,29 +115,6 @@ impl Table {
         let (i, t) = self.loc(q);
         let c = self.c1(i, data);
         self.n * (c[1] + t * (2. * c[2] + t * (3. * c[3] + t * 4. * c[4])))
-    }
-    fn first(self, mut a: f64, mut b: f64, data: &[u8]) -> f64 {
-        if a > b {
-            std::mem::swap(&mut a, &mut b)
-        }
-        let d = b - a;
-        // Within one polynomial, factor the divided difference algebraically.
-        // This also evaluates its repeated-point limit without subtraction.
-        if d * self.n < 1. {
-            let (i, x) = self.loc(a);
-            let y = x + d * self.n;
-            if y <= 1. {
-                let c = self.c1(i, data);
-                let h1 = x + y;
-                let h2 = x * x + x * y + y * y;
-                let h3 = (x + y) * (x * x + y * y);
-                return self.n * (c[1] + c[2] * h1 + c[3] * h2 + c[4] * h3);
-            }
-        }
-        if d * self.n < 0.0001 {
-            return self.raw((a + b) * 0.5, data);
-        }
-        (self.p1(b, data) - self.p1(a, data)) / d
     }
     fn sec(self, a: f64, b: f64, ga: f64, gb: f64, f1: &[u8]) -> f64 {
         let d = b - a;
@@ -206,35 +180,21 @@ mod tests {
         for a in [-2.0, -0.271, 0.0, 0.125, 0.999999, 2.2] {
             for delta in [0.0_f64, 1e-12, 1e-8, 0.0002, 0.01, 0.2, 1.4] {
                 let b = a + delta;
-                let x = TAU * delta * 0.5;
-                let expected =
-                    (TAU * (a + b) * 0.5).sin() * if x == 0.0 { 1.0 } else { x.sin() / x };
-                for (a, b) in [(a, b), (b, a)] {
-                    assert!((bank.generate_sample::<1>(a, b, 0.0) - expected).abs() < 1e-8);
-                }
-                if delta < 1e-8 {
-                    let expected = (TAU * (a + delta)).sin();
-                    let actual = bank.generate_sample::<2>(a, b, b + delta);
-                    assert!((actual - expected).abs() < 1e-8, "{a} {delta} {actual}");
-                } else if delta >= 0.01 {
-                    let c = a + delta * 2.3;
-                    let primitive = |q: f64| -(TAU * q).sin() / (TAU * TAU);
-                    let expected = 2.0
-                        * ((primitive(c) - primitive(b)) / (c - b)
-                            - (primitive(b) - primitive(a)) / (b - a))
-                        / (c - a);
-                    for q in [
-                        [a, b, c],
-                        [c, a, b],
-                        [b, c, a],
-                        [a, c, b],
-                        [b, a, c],
-                        [c, b, a],
-                    ] {
-                        assert!(
-                            (bank.generate_sample::<2>(q[0], q[1], q[2]) - expected).abs() < 1e-8
-                        );
-                    }
+                let c = a + delta * 2.3;
+                let expected = crate::oscillator::reference::antialiased_sample(
+                    Waveform::Sine,
+                    [a, b, c],
+                    0.02,
+                );
+                for q in [
+                    [a, b, c],
+                    [c, a, b],
+                    [b, c, a],
+                    [a, c, b],
+                    [b, a, c],
+                    [c, b, a],
+                ] {
+                    assert!((bank.generate_sample(q[0], q[1], q[2]) - expected).abs() < 1e-8);
                 }
             }
         }
@@ -259,12 +219,7 @@ mod tests {
                             .generate_sample(wave, phase)
                     };
                     assert!((bank.read_sample(phase) - expected).abs() < 1e-6);
-                    assert!(
-                        (bank.generate_sample::<1>(phase, phase, phase) - expected).abs() < 1e-6
-                    );
-                    assert!(
-                        (bank.generate_sample::<2>(phase, phase, phase) - expected).abs() < 1e-6
-                    );
+                    assert!((bank.generate_sample(phase, phase, phase) - expected).abs() < 1e-6);
                 }
             }
         }

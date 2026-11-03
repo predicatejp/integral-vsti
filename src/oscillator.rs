@@ -7,14 +7,6 @@ use crate::random::Random;
 #[path = "oscillator/adaa.rs"]
 mod adaa;
 
-/// 位相変調の波形読出しへ適用するADAAの次数。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PhaseSmoothing {
-    None,
-    First,
-    Second,
-}
-
 #[cfg(test)]
 #[path = "oscillator/reference.rs"]
 pub(crate) mod reference;
@@ -135,8 +127,8 @@ pub struct OscillatorInput {
     pub frequency_hz: f64,
     /// 波形を読む位置への位相変調（周期単位）。有限のi32範囲を受け取り、保持位相には累積しない。
     pub phase_modulation: f64,
-    /// 変調を受ける周期波に適用する次数。変調なし・NoiseはNone。
-    pub smoothing: PhaseSmoothing,
+    /// 位相変調が有効な周期波には2階ADAAを適用する。瞬間的に変調量0でも有効。
+    pub phase_modulated: bool,
     /// 音量AHDSRの発音期間。release中もtrue、終了・停止後はfalse。
     pub active: bool,
     /// Note Onごとに増える世代番号。同音高の再トリガーでも位相モードを適用する。
@@ -174,12 +166,10 @@ pub struct OscillatorState {
     history: [[f64; 2]; 7],
     /// 現在の周波数に対応する原始関数テーブル。
     bank: [adaa::Bank; 7],
-    /// 履歴を連続使用できるか。ノート・次数・波形・発音数変更時に破棄する。
+    /// 履歴を連続使用できるか。ノート・波形・発音数変更時に破棄する。
     valid: bool,
     /// 履歴に有効なユニゾン数。未使用スロットの再利用を検出する。
     history_count: usize,
-    /// 前回の有効なADAA次数。
-    smoothing: PhaseSmoothing,
     /// Note On時だけ進める位相用乱数。ノイズ用とは独立した状態を持つ。
     random: Random,
     /// ノイズ専用xoshiro256+の状態。各ユニゾンに連続する別の値を割り当てる。
@@ -221,7 +211,6 @@ impl Oscillator {
                 bank: [adaa::Bank::new(Waveform::Sine, 0.); 7],
                 valid: false,
                 history_count: 0,
-                smoothing: PhaseSmoothing::None,
                 random: Random::new(),
                 noise: Random::new(),
                 note_generation: 0,
@@ -271,10 +260,6 @@ impl Oscillator {
                 count: 0,
             };
         }
-        if self.state.smoothing != input.smoothing {
-            self.state.valid = false;
-            self.state.smoothing = input.smoothing;
-        }
         self.refresh_frequency(input, sample_rate);
         let sample = self.generate_waveform_sample(input);
         self.update_sample(input);
@@ -313,10 +298,8 @@ impl Oscillator {
     ) -> OscillatorSample {
         let count = input.rendered_voices();
         let mut values = [0.0; 7];
-        match input.smoothing {
-            PhaseSmoothing::First => return self.generate_antialiased_sample::<1>(input),
-            PhaseSmoothing::Second => return self.generate_antialiased_sample::<2>(input),
-            PhaseSmoothing::None => {}
+        if input.phase_modulated {
+            return self.generate_antialiased_sample(input);
         }
         self.state.valid = false;
         // 整数周期を先に除き、±1/±2回転では元の位相を厳密に保持する。
@@ -355,10 +338,7 @@ impl Oscillator {
     }
 
     #[inline(never)]
-    fn generate_antialiased_sample<const ORDER: usize>(
-        &mut self,
-        input: &OscillatorInput,
-    ) -> OscillatorSample {
+    fn generate_antialiased_sample(&mut self, input: &OscillatorInput) -> OscillatorSample {
         let count = input.rendered_voices();
         let mut values = [0.; 7];
         if self.state.history_count != count {
@@ -374,7 +354,7 @@ impl Oscillator {
             } else {
                 [q - inc, q - 2. * inc]
             };
-            *value = self.state.bank[k].generate_sample::<ORDER>(q, b, c);
+            *value = self.state.bank[k].generate_sample(q, b, c);
             // 次サンプルで保持位相が巻き戻る量を履歴にも適用する。
             // 変調量は折り返さず、周期を跨ぐ差商の距離を保持する。
             let wrap = f64::from((phase + inc >= 1.) as u8);
@@ -1027,53 +1007,58 @@ mod tests {
 
     #[test]
     fn smoothing_tracks_unwrapped_phase_and_resets_new_unison_slots() {
-        for order in [PhaseSmoothing::First, PhaseSmoothing::Second] {
-            let mut oscillator = Oscillator::new();
-            let mut input = OscillatorInput {
-                frequency_hz: 876.0,
-                smoothing: order,
-                ..test_input()
-            };
-            let bank = adaa::Bank::new(Waveform::Sine, 876.0 / 48000.0);
-            let increment = input.frequency_hz / 48000.0;
-            let mut history = [-increment, -2.0 * increment];
-            for n in 0..4096 {
-                input.phase_modulation = 2.0 * (n as f64 * 0.183).sin();
-                let q = n as f64 * increment + input.phase_modulation;
-                let expected = match order {
-                    PhaseSmoothing::First => bank.generate_sample::<1>(q, history[0], history[1]),
-                    _ => bank.generate_sample::<2>(q, history[0], history[1]),
-                };
-                let actual = oscillator.generate_sample(&input, 48000.0).values[0];
-                assert!(
-                    (actual - expected).abs() < 1e-7,
-                    "{n}: {actual} != {expected}"
-                );
-                history = [q, history[0]];
-            }
-            for count in [7, 2, 6, 1] {
-                input.unison_voices = count;
-                input.detune_cents = 25.0;
-                let old_phases = oscillator.state.phases;
-                let actual = oscillator.generate_sample(&input, 48000.0);
-                for (k, phase) in old_phases.iter().enumerate().take(actual.count) {
-                    let q = phase + input.phase_modulation;
-                    let inc = oscillator.state.phase_increments[k];
-                    let bank = oscillator.state.bank[k];
-                    let expected = match order {
-                        PhaseSmoothing::First => {
-                            bank.generate_sample::<1>(q, q - inc, q - 2.0 * inc)
-                        }
-                        _ => bank.generate_sample::<2>(q, q - inc, q - 2.0 * inc),
-                    };
-                    assert!((actual.values[k] - expected).abs() < 1e-9);
-                }
-                // Detune automation preserves history for the existing slots.
-                input.detune_cents = 26.0;
-                oscillator.generate_sample(&input, 48000.0);
-                assert!(oscillator.state.valid);
-            }
+        let mut oscillator = Oscillator::new();
+        let mut input = OscillatorInput {
+            frequency_hz: 876.0,
+            phase_modulated: true,
+            ..test_input()
+        };
+        let bank = adaa::Bank::new(Waveform::Sine, 876.0 / 48000.0);
+        let increment = input.frequency_hz / 48000.0;
+        let mut history = [-increment, -2.0 * increment];
+        for n in 0..4096 {
+            input.phase_modulation = 2.0 * (n as f64 * 0.183).sin();
+            let q = n as f64 * increment + input.phase_modulation;
+            let expected = bank.generate_sample(q, history[0], history[1]);
+            let actual = oscillator.generate_sample(&input, 48000.0).values[0];
+            assert!(
+                (actual - expected).abs() < 1e-7,
+                "{n}: {actual} != {expected}"
+            );
+            history = [q, history[0]];
         }
+        for count in [7, 2, 6, 1] {
+            input.unison_voices = count;
+            input.detune_cents = 25.0;
+            let old_phases = oscillator.state.phases;
+            let actual = oscillator.generate_sample(&input, 48000.0);
+            for (k, phase) in old_phases.iter().enumerate().take(actual.count) {
+                let q = phase + input.phase_modulation;
+                let inc = oscillator.state.phase_increments[k];
+                let bank = oscillator.state.bank[k];
+                let expected = bank.generate_sample(q, q - inc, q - 2.0 * inc);
+                assert!((actual.values[k] - expected).abs() < 1e-9);
+            }
+            // Detune automation preserves history for the existing slots.
+            input.detune_cents = 26.0;
+            oscillator.generate_sample(&input, 48000.0);
+            assert!(oscillator.state.valid);
+        }
+        input.unison_voices = 1;
+        input.detune_cents = 0.0;
+        input.phase_modulation = 0.0;
+        input.phase_modulated = false;
+        let phase = oscillator.state.phases[0];
+        assert_eq!(
+            oscillator.generate_sample(&input, 48000.0).values[0],
+            sine_sample(phase)
+        );
+        assert!(!oscillator.state.valid);
+        input.phase_modulated = true;
+        input.phase_modulation = 0.3;
+        let q = oscillator.state.phases[0] + input.phase_modulation;
+        let expected = bank.generate_sample(q, q - increment, q - 2.0 * increment);
+        assert!((oscillator.generate_sample(&input, 48000.0).values[0] - expected).abs() < 1e-9);
     }
 
     fn test_input() -> OscillatorInput {
@@ -1084,7 +1069,7 @@ mod tests {
             detune_cents: 0.0,
             frequency_hz: 1.0,
             phase_modulation: 0.0,
-            smoothing: crate::oscillator::PhaseSmoothing::None,
+            phase_modulated: false,
             active: true,
             note_generation: 1,
         }
@@ -1335,7 +1320,7 @@ mod tests {
             waveform: Waveform::Sine,
             frequency_hz: 1.0,
             phase_modulation: 0.0,
-            smoothing: crate::oscillator::PhaseSmoothing::None,
+            phase_modulated: false,
             active: true,
             ..test_input()
         };

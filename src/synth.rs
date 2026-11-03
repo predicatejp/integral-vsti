@@ -166,16 +166,6 @@ impl Synthesizer {
                 }
             }
         }
-        if values[36] != previous[36] {
-            let order = [
-                crate::oscillator::PhaseSmoothing::None,
-                crate::oscillator::PhaseSmoothing::First,
-                crate::oscillator::PhaseSmoothing::Second,
-            ][parameters::to_plain(36, values[36]) as usize];
-            for voice in &mut self.state.voices {
-                voice.set_phase_smoothing(order);
-            }
-        }
         if values[29..31] != previous[29..31] {
             for voice in &mut self.state.voices {
                 voice.set_phase_modulation([values[29] * 2.0, values[30] * 2.0]);
@@ -211,7 +201,7 @@ impl Synthesizer {
             self.state.distortion = distortion;
             self.state.distortion_gain_end = values[32];
         }
-        if values[31] != previous[31] || values[34..36] != previous[34..36] {
+        if values[31] != previous[31] || values[34..] != previous[34..] {
             self.state.requested_processing = if self.state.distortion.clipper == ClipperType::None
             {
                 BYPASS
@@ -479,46 +469,11 @@ mod tests {
                 for id in 0..32 {
                     assert!(synth.note_on(note(id, 0, 127), 0.0, 1.0));
                 }
-                for order in [0.0, 0.5, 1.0, 0.0] {
-                    values[36] = order;
-                    synth.set_parameters(values);
-                    for _ in 0..33 {
-                        assert!(synth.mix_sample().iter().all(|x| x.is_finite()));
-                    }
+                for _ in 0..33 {
+                    assert!(synth.mix_sample().iter().all(|x| x.is_finite()));
                 }
                 synth.stop();
                 assert_eq!(synth.mix_sample(), [0.0; 2]);
-            }
-        }
-    }
-
-    #[test]
-    fn phase_smoothing_reaches_receivers_and_bypasses_unmodulated_oscillators() {
-        for depth in [0.0, 0.3] {
-            let mut synths: [Synthesizer; 3] = std::array::from_fn(|order| {
-                let mut synth = Synthesizer::new();
-                synth.set_sample_rate(48000.0);
-                let mut values = parameters::sine_preset();
-                values[24] = parameters::to_normalized(24, 700.0);
-                values[27] = parameters::to_normalized(27, 1300.0);
-                values[29] = depth;
-                values[30] = depth;
-                values[36] = order as f64 / 2.0;
-                synth.set_parameters(values);
-                synth.note_on(note(0, 0, 81), 0.0, 1.0);
-                synth
-            });
-            let mut differences = [0.0; 2];
-            for _ in 0..1024 {
-                let samples = synths.each_mut().map(|s| s.mix_sample()[0]);
-                for i in 0..2 {
-                    differences[i] += (samples[i + 1] - samples[0]).powi(2);
-                }
-            }
-            if depth == 0.0 {
-                assert_eq!(differences, [0.0; 2]);
-            } else {
-                assert!(differences.iter().all(|&e| e > 0.01));
             }
         }
     }

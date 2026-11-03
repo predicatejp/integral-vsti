@@ -306,8 +306,20 @@ public:
     tresult PLUGIN_API tell(int64*) override { assert(false); return kNotImplemented; }
 };
 
+// Analytic sine antiderivative divided differences, independent of the plugin tables.
+double sineAdaa2(std::array<double, 3> phase) {
+    std::sort(phase.begin(), phase.end());
+    const double span = phase[2] - phase[0], tau = 2*std::acos(-1.0);
+    if (span*tau < 1e-4) return std::sin(tau*(phase[0]+phase[1]+phase[2])/3);
+    auto sec = [&](double a, double b) {
+        const double t = tau*(b-a)/2, sinc = t == 0 ? 1 : std::sin(t)/t;
+        return -std::cos(tau*(a+b)/2)*sinc/tau;
+    };
+    return 2*(sec(phase[1],phase[2])-sec(phase[0],phase[1]))/span;
+}
+
 // 音声倍率込みの有限Fourier級数。波形切替の期待値をテーブル実装から独立に求める。
-double bandlimited(int wave, double phase, double increment) {
+double bandlimited(int wave, double phase, double increment, const std::array<double, 3>* interval = nullptr) {
     std::vector<int> bands;
     for (int i = 0; i <= 28; ++i) {
         const int h = static_cast<int>(std::pow(2.0, i / 2.0));
@@ -325,7 +337,8 @@ double bandlimited(int wave, double phase, double increment) {
             if (wave == 2) a = 4/x;
             if (wave == 1) a = 8*(h % 4 == 1 ? 1 : -1)/(x*x);
         }
-        value += a * (index == 0 || h > low ? 1 - fade : 1) * std::sin(2*x*phase);
+        const double sample = interval ? sineAdaa2({(*interval)[0]*h, (*interval)[1]*h, (*interval)[2]*h}) : std::sin(2*x*phase);
+        value += a * (index == 0 || h > low ? 1 - fade : 1) * sample;
     }
     return value * .5 * (wave == 2 ? 1 : std::sqrt(3.0));
 }
@@ -339,7 +352,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(info.id == waveformId && info.stepCount == 4 && info.defaultNormalizedValue == 0.0);
     assert(info.unitId == 0 && info.flags == (ParameterInfo::kCanAutomate | ParameterInfo::kIsList));
     assert(std::u16string(info.title) == u"Osc1 Waveform");
-    assert(controller->getParameterInfo(38, info) == kInvalidArgument);
+    assert(controller->getParameterInfo(37, info) == kInvalidArgument);
     const std::array<std::u16string, 5> names {u"Sine", u"Triangle", u"Square", u"Sawtooth", u"Noise"};
     for (size_t i = 0; i < names.size(); ++i) {
         const double normalized = static_cast<double>(i) / 4.0;
@@ -358,7 +371,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(controller->setParamNormalized(0, 0.0) == kInvalidArgument);
     StateStream initial;
     assert(component->getState(&initial) == kResultOk);
-    assert(initial.bytes.size() == 300 && initial.bytes[4] == 17 && initial.bytes[8] == 0);
+    assert(initial.bytes.size() == 292 && initial.bytes[4] == 16 && initial.bytes[8] == 0);
     configureEnvelope(processor, true);
     // Controllerへの表示更新だけではProcessorの値は変わらない。
     assert(controller->getParamNormalized(waveformId) == 1.0);
@@ -448,7 +461,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     for (int error = 0; error < 5; ++error) {
         StateStream broken; broken.bytes = saved.bytes;
         if (error == 0) broken.bytes.resize(11);
-        if (error == 1) broken.bytes[4] = 18;
+        if (error == 1) broken.bytes[4] = 17;
         if (error == 2) broken.bytes[8] = 5;
         if (error == 3) broken.bytes[0] = 0;
         if (error == 4) broken.fail = true;
@@ -548,7 +561,7 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
     check({.3, .25, .2, .15}); // offset=-1の0.7からoffset=3の0.3へ線形補間。
     changes.queues.clear(); check({.15, .15});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 300 && saved.bytes[4] == 17);
+    assert(saved.bytes.size() == 292 && saved.bytes[4] == 16);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(std::abs(controller->getParamNormalized(envelopeIds[3]) - .3) < 1e-12);
     // 不正な時間値はControllerにもDSPにも適用しない。
@@ -624,7 +637,7 @@ void checkUnison(IComponent* component, IAudioProcessor* processor, IEditControl
         events.values.clear(); previousCount = n; previousDetune = target;
     }
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 300 && saved.bytes[4] == 17);
+    assert(saved.bytes.size() == 292 && saved.bytes[4] == 16);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(unisonId) == 1.0);
     assert(controller->getParamNormalized(detuneId) == 1.0);
@@ -726,7 +739,7 @@ void checkPolyphony(IComponent* component, IAudioProcessor* processor, IEditCont
     events.values = {note(true, 0, 200, 12, 0, .5f), note(false, 0, 100, 12)};
     check({15.75, 15.75});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 300 && saved.bytes[4] == 17);
+    assert(saved.bytes.size() == 292 && saved.bytes[4] == 16);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(polyphonyId) == 1.0);
     // 次の割り当て位置は2。減少で範囲外の音を止め、増加しても復活させない。
@@ -818,7 +831,7 @@ void checkFilter(IComponent* component, IAudioProcessor* processor, IEditControl
             assert(std::abs(buffer[n] - reference.next(expected)) < 1e-5);
         }
         assert(bus.silenceFlags == 3);
-        StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes.size() == 300);
+        StateStream saved; assert(component->getState(&saved) == kResultOk && saved.bytes.size() == 292);
         assert(controller->setComponentState(&saved) == kResultOk);
         assert(controller->getParamNormalized(filterIds[0]) == t / 6.0);
         assert(controller->getParamNormalized(filterIds[1]) == 1.0);
@@ -1039,21 +1052,26 @@ void checkFm(IComponent* component, IAudioProcessor* processor, IEditController*
         return a+(b-a)*t;
     };
     std::array<double, 3> phase {};
+    std::array<std::array<double, 2>, 2> history {};
     for (int n = 0; n < 33; ++n) {
         if (n == 23) phase.fill(0);
         const double fm2 = n < 16 ? .25 + 1.75 * (n + 1) / 16. : 2;
         const double fm3 = n <= 8 ? .5 : n < 16 ? .5 + 1.5 * (n - 8) / 8. : 2;
         const double m3 = sine(phase[2]);
-        const double m2 = sine(phase[1] + fm3 * m3);
-        const double modulated = phase[0] + fm2 * m2;
-        const double wrapped = modulated - std::floor(modulated);
-        const double expected = n < 31 ? std::sqrt(2.) * bandlimited(3, wrapped, 440.0/48000) : 0;
+        auto interval = [&](int i, double q, double increment) {
+            if (n == 0 || n == 23) history[i] = {q-increment, q-2*increment};
+            const std::array<double, 3> points {q, history[i][0], history[i][1]};
+            history[i] = {q, points[1]};
+            return points;
+        };
+        const double m2 = sineAdaa2(interval(1, phase[1] + fm3*m3, 880./48000));
+        const auto points = interval(0, phase[0] + fm2*m2, 440./48000);
+        const double expected = n < 31 ? std::sqrt(2.) * bandlimited(3, points[0], 440.0/48000, &points) : 0;
         const auto delayed = reference.next(0, expected);
         assert(left[n] == delayed[0] && std::abs(right[n] - delayed[1]) < 2e-5);
-        phase[0] = std::fmod(phase[0] + 440 / 48000., 1.);
-        phase[1] = std::fmod(phase[1] + 880 / 48000., 1.);
-        phase[2] = std::fmod(phase[2] + 220 / 48000., 1.);
-        for (auto& p : phase) if (p < 0) p += 1;
+        phase[0] += 440 / 48000.;
+        phase[1] += 880 / 48000.;
+        phase[2] += 220 / 48000.;
     }
     // 無効化を0サンプルで受理し、次のNote Onは無変調になる。
     points[5].values = {{0, 0}}; points[6].values = {{0, 0}};
@@ -1378,9 +1396,9 @@ void checkNoise(IComponent* component, IAudioProcessor* processor, IEditControll
 }
 
 void checkStateReload(IPluginFactory* factory, const TUID cid) {
-    // 全37設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
-    const std::array<double, 37> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125, 62.5, -35.25, -3.7, 2, -1234.5, -8.1, 3, 1599.75, -std::numeric_limits<double>::infinity(), 137.5, 200, 2, 12.3, 37.5, 2, 2, 2};
-    std::array<double, 37> expected {};
+    // 全36設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
+    const std::array<double, 36> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125, 62.5, -35.25, -3.7, 2, -1234.5, -8.1, 3, 1599.75, -std::numeric_limits<double>::infinity(), 137.5, 200, 2, 12.3, 37.5, 2, 2};
+    std::array<double, 36> expected {};
     StateStream saved;
     for (bool restore : {false, true}) {
         void* object = nullptr;
@@ -1390,7 +1408,7 @@ void checkStateReload(IPluginFactory* factory, const TUID cid) {
         auto* controller = query<IEditController>(component, IEditController_iid);
         assert(component->initialize(factory) == kResultOk);
         if (!restore) {
-            std::array<Points, 37> points;
+            std::array<Points, 36> points;
             Changes changes;
             for (size_t i = 0; i < points.size(); ++i) {
                 ParameterInfo info {};
@@ -1549,7 +1567,7 @@ int main(int argc, char** argv) {
         assert(bus.channelCount == 2 && bus.name[0] == u'S');
         SpeakerArrangement output = SpeakerArr::kStereo;
         assert(processor->setBusArrangements(nullptr, 0, &output, 1) == kResultOk);
-        assert(controller->getParameterCount() == 38);
+        assert(controller->getParameterCount() == 37);
         checkViewContract(controller);
         assert(controller->setComponentHandler(nullptr) == kResultOk);
         assert(processor->getLatencySamples() == 69 && processor->getTailSamples() == kInfiniteTail);
