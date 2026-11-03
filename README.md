@@ -16,7 +16,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
 | サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
-| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・FM、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / Mixを公開。eguiでも操作可能 |
+| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・Mod、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / Mixを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | 1サンプル。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
@@ -192,16 +192,16 @@ Phaseは3発振器共通で、Randomの乱数と位相はそれぞれ独立し�
 
 ## 位相変調
 
-Osc2/3の**FM**ノブは位相変調の深さを指定します。0〜200%（初期値0%、GUIは1%刻み）で、
+Osc2/3の**Mod**ノブは位相変調の深さを指定します。0〜200%（初期値0%、GUIは1%刻み）で、
 生波形の値が1のとき、100%は1回転、200%は2回転（4π rad）です。
 帯域制限によるオーバーシュートも、その大きさに比例して位相偏移へ反映します。
-Osc2 FM（ParamID `0x4f32464d`）はOsc1、Osc3 FM（`0x4f33464d`）はOsc2を変調します。
+Osc2 Mod（ParamID `0x4f32464d`）はOsc1、Osc3 Mod（`0x4f33464d`）はOsc2を変調します。
 各サンプル時刻でOsc3→Osc2→Osc1の順に生成し、受け側の波形を読む位相を次の式で決めます。
 
-`読出し位相 = (保持位相 + FM / 100 × 生波形) mod 1`（周期単位）
+`読出し位相 = (保持位相 + Mod / 100 × 生波形) mod 1`（周期単位）
 
 保持位相はTune・Detune適用後の周波数で進め、変調量は累積しません。
-FM=200%でモジュレータが±1なら、±2回転なので周期波形は無変調時と同じ位相になります。
+Mod=200%でモジュレータが±1なら、±2回転なので周期波形は無変調時と同じ位相になります。
 途中の値では位相がずれるため、変調音が生じます。
 Osc1のユニゾン各音には同じ位相変調量を適用します。FMの変更点間は正規化空間で線形補間します。
 
@@ -333,7 +333,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 | パラメーター | 変更点の間の処理 |
 | --- | --- |
 | Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper type | 直前の値を保持し、変更点で切り替える |
-| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・FM・Width・Pan・Gain・Mix | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
+| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mix | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
 
 最後の点以降は値を保持します。同位置ではパラメーターをキュー順に適用した後、ノートをイベントリスト順に処理します。
 
@@ -342,7 +342,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v17は276バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 FM/Osc3 FM/Clipper type/Gain/Mixを各f64。little endian）です。
+保存形式v17は276バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mixを各f64。little endian）です。
 読み込みは現行形式v17のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
@@ -364,7 +364,7 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | Filter / Cutoff / Resonance | None / +4800 cent / Q=1 |
 | カットオフAHDSR / Amount | A/H/D/R=0 ms、S=1 / 0 cent |
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
-| Osc2/3 Waveform / Tune / Volume / FM | Sine / 0 cent / −∞ dB / 0% |
+| Osc2/3 Waveform / Tune / Volume / Mod | Sine / 0 cent / −∞ dB / 0% |
 
 ノートオン・オフで即時に発音・消音し、最大ベロシティ時の実効値は片チャンネル当たり0.5です。
 選択すると全設定を読み直し、同じ「Sine」の再選択でも編集した値を元に戻します。
@@ -405,7 +405,9 @@ Gain・Mixはホストから届いた変更点間をホストレートで補間�
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
 左にOsc1/2/3を縦に並べ、中央上段にAmp、中央にカットオフAHDSRを統合したFilter、その下にDistortion、右にMasterを配置します。AmpのAHDSRは横一列です。WaveformとFilterのドロップダウンはタイトルの右に置きます。DistortionのGain・Mixはグループ内に均等配置します。Masterは144px幅とし、Phaseラベルと選択欄を左揃えで上下にまとめ、その下にPoly・Vol・Panを縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
-Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・FM、Masterには共通Phase・Polyphony・Volume・Panを配置します。
+タイトルバーの発音数インジケータの上に、同じ幅の出力ピークメータを表示します。Master音量適用後の左右最大サンプルピークを−60〜＋12 dBFSで表示します。0 dBFSまでの部分は緑、0 dBFSを超えた部分は赤とし、0 dBFSの境界線を示します。描画間のピークを保持し、表示は24 dB/秒で減衰します。
+
+Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・Mod、Masterには共通Phase・Polyphony・Volume・Panを配置します。
 ノブは行内を均等割りします。ノブ行は80px高、外周・グループ間・枠内の左右余白は8pxで統一します。各列の下端を揃え、見出しの下に残る高さは上余白・行間・下余白へ均等配分します。見出し行とドロップダウンは28px高です。
 ノブは直径44pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
 Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
@@ -424,7 +426,7 @@ Waveform・Filter・Phaseはドロップダウンで選択します。リスト�
 | Vol | −∞と−54〜+12 dBの6 dB刻み | 0 dB |
 | Gain | 0〜48 dB、12 dB刻み | 0 dB |
 | Pan | −100 / −50 / 0 / 50 / 100 % | 中央 |
-| FM | 0 / 50 / 100 / 150 / 200 % | 0 % |
+| Mod | 0 / 50 / 100 / 150 / 200 % | 0 % |
 
 操作中はカーソルを隠して移動のたびに基準位置へ戻し、ノブの中央直上に「正式名称」「現在値」を中央揃えの2行で表示します。オーバーレイは全パラメーター共通の224×60 pxとし、枠全体が画面内に収まるよう位置を補正します。
 Unison・Polyphonyは整数、連続パラメーターは小数点以下最大3桁と単位を表示し、末尾の不要なゼロは省略します。

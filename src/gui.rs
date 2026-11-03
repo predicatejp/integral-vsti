@@ -75,6 +75,8 @@ struct ViewState {
     parameters: Arc<SharedParameters>,
     /// 音声側と共有する表示専用の発音数。
     active_voices: Arc<AtomicU32>,
+    /// GUIが受け取るまでの左右最大サンプルピーク。非負f32のビット表現。
+    output_peak: Arc<AtomicU32>,
     /// 描画側からの操作の送り口。音声スレッドでは使用しない。
     sender: Arc<Edits>,
     /// 開始が成功した編集先。終了時にtakeし、再入による二重通知を防ぐ。
@@ -231,6 +233,7 @@ pub unsafe fn create(
     controller: This,
     parameters: Arc<SharedParameters>,
     active_voices: Arc<AtomicU32>,
+    output_peak: Arc<AtomicU32>,
 ) -> This {
     let Some(controller) = (unsafe { HostRef::retain(controller) }) else {
         return ptr::null_mut();
@@ -247,6 +250,7 @@ pub unsafe fn create(
             ticker: RefCell::new(None),
             parameters,
             active_voices,
+            output_peak,
             sender,
             editing: RefCell::new(None),
             polling: Cell::new(false),
@@ -380,6 +384,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
         .with_gl_config(Some(baseview::gl::GlConfig::default()));
     let parameters = Arc::clone(&state.state.parameters);
     let active_voices = Arc::clone(&state.state.active_voices);
+    let output_peak = Arc::clone(&state.state.output_peak);
     let edits = state.state.sender.clone();
     // baseviewが画面作成中に使う一時GLコンテキストも、ホストへ戻る前に復元する。
     #[cfg(target_os = "windows")]
@@ -393,6 +398,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
             window,
             parameters,
             active_voices,
+            output_peak,
             edits,
             #[cfg(target_os = "windows")]
             view,

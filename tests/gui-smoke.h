@@ -457,25 +457,39 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(processor->setProcessing(true) == kResultOk);
             Points poly; poly.id = polyphonyId; poly.values = {{0, 2.0 / 31.0}};
             assert(controller->setParamNormalized(polyphonyId, 2.0 / 31.0) == kResultOk);
-            Changes changes; changes.queues = {&poly};
+            Points master; master.id = volumeId; master.values = {{0, 1.0}};
+            assert(controller->setParamNormalized(volumeId, 1.0) == kResultOk);
+            Changes changes; changes.queues = {&poly, &master};
             Events events; events.values = {note(true, 0, 100), note(true, 0, 101), note(true, 0, 102)};
+            std::array<float, 64> left {}, right {};
+            Sample32* channels[] {left.data(), right.data()};
+            AudioBusBuffers bus {}; bus.numChannels = 2; bus.channelBuffers32 = channels;
+            assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
             ProcessData audio {}; audio.numSamples = 1; audio.symbolicSampleSize = kSample32;
+            audio.numOutputs = 1; audio.outputs = &bus;
             audio.inputParameterChanges = &changes; audio.inputEvents = &events;
 #ifdef _WIN32
-            const uint32 lit = RGB(20, 96, 76), unlit = RGB(143, 160, 147);
+            const uint32 lit = RGB(20, 96, 76), unlit = RGB(143, 160, 147), over = RGB(192, 55, 45);
 #else
-            const uint32 lit = 0x14604c, unlit = 0x8fa093;
+            const uint32 lit = 0x14604c, unlit = 0x8fa093, over = 0xc0372d;
 #endif
             auto meter = [&](int count) {
                 for (int i = 0; i < 32; ++i) {
-                    if (parent.pixel(517 + i * 8, 26) != (i < count ? lit : unlit)) return false;
+                    if (parent.pixel(517 + i * 8, 32) != (i < count ? lit : unlit)) return false;
                 }
                 return true;
             };
             assert(processor->process(audio) == kResultOk);
             waitFor([&] { return meter(3); }, "three active voices");
+            audio.inputParameterChanges = nullptr; audio.inputEvents = nullptr;
+            audio.numSamples = 64;
+            for (int i = 0; i < 16; ++i) assert(processor->process(audio) == kResultOk);
+            waitFor([&] {
+                assert(processor->process(audio) == kResultOk);
+                return parent.pixel(600, 20) == lit && parent.pixel(766, 20) == over;
+            }, "peak at +12 dBFS: green below zero, red above");
             parent.screenshot("target/gui-voices.ppm");
-            audio.inputParameterChanges = nullptr;
+            audio.inputEvents = &events;
             events.values = {note(false, 0, 100), note(false, 0, 101), note(false, 0, 102)};
             assert(processor->process(audio) == kResultOk);
             pump(); assert(meter(3)); // release中も点灯する。
@@ -488,6 +502,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return meter(3); }, "voices before stop");
             assert(processor->setProcessing(false) == kResultOk);
             waitFor([&] { return meter(0); }, "voices after stop");
+            waitFor([&] { return parent.pixel(517, 20) == unlit; }, "peak decays to silence");
             assert(component->setActive(false) == kResultOk);
             assert(component->setState(&original) == kResultOk);
         }
