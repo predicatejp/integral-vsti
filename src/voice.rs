@@ -291,11 +291,19 @@ impl Voice {
             input.phase_modulation = modulation;
             input.phase_modulated = i < 2 && self.state.phase_depths[i] != 0.0;
             if self.state.oscillator_gains[i] == 0.0 && depths[i] == 0.0 {
-                self.state.oscillators[i].advance_sample(input, sample_rate);
+                // SAFETY: 定常設定は親、ノート周波数とレートはVoiceで検証済み。
+                // 変調入力は有限の波形と0〜2周期の深度から生成し、i32範囲内に収まる。
+                unsafe {
+                    self.state.oscillators[i]
+                        .generate_validated_sample::<false>(input, sample_rate);
+                }
                 modulation = 0.0;
                 continue;
             }
-            let current = self.state.oscillators[i].generate_sample(input, sample_rate);
+            // SAFETY: 上記と同じ検証済みの定常設定・周波数・レート・変調入力を使う。
+            let current = unsafe {
+                self.state.oscillators[i].generate_validated_sample::<true>(input, sample_rate)
+            };
             modulation = current.values[0] * depths[i];
             if self.state.oscillator_gains[i] != 0.0 {
                 // 無音の変調源はrawだけを使い、音声用の定位・加算を省く。

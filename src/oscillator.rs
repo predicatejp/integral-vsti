@@ -236,6 +236,7 @@ impl Oscillator {
     }
 
     /// 音声・変調のどちらにも使わないサンプルの状態だけを更新する。
+    #[cfg(test)]
     #[inline]
     pub fn advance_sample(&mut self, input: &OscillatorInput, sample_rate: f64) {
         self.generate_optional_sample::<false>(input, sample_rate);
