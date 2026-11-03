@@ -93,7 +93,6 @@ impl Synthesizer {
         // 変更した設定グループだけ配送する。未発音の枠も次のNote Onに備えて更新する。
         let oscillator_changed = values[..8] != previous[..8] || values[12] != previous[12];
         let envelope_changed = values[14..20] != previous[14..20];
-        let filter_changed = values[9..12] != previous[9..12];
         if values[8] != previous[8] {
             let count = parameters::to_plain(8, values[8]) as usize;
             for voice in &mut self.state.voices[count..self.state.polyphony.max(count)] {
@@ -184,12 +183,17 @@ impl Synthesizer {
                 self.reset_distortion();
             }
         }
-        if filter_changed {
+        if values[9..11] != previous[9..11] {
             let filter_type = parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize];
             let cutoff_cents = parameters::to_plain(10, values[10]);
             let resonance_q = parameters::to_plain(11, values[11]);
             for voice in &mut self.state.voices {
                 voice.set_filter(filter_type, cutoff_cents, resonance_q);
+            }
+        } else if values[11] != previous[11] {
+            let resonance_q = parameters::to_plain(11, values[11]);
+            for voice in &mut self.state.voices {
+                voice.set_resonance(resonance_q);
             }
         }
         true

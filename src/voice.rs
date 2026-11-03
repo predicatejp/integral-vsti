@@ -184,6 +184,11 @@ impl Voice {
         self.state.resonance_q = resonance_q;
     }
 
+    /// Qだけが変わるときは、カットオフの指数換算と書込みを省く。
+    pub fn set_resonance(&mut self, resonance_q: f64) {
+        self.state.resonance_q = resonance_q;
+    }
+
     pub fn set_cutoff_envelope(&mut self, parameters: EnvelopeParameters, amount_cents: f64) {
         self.state.cutoff_envelope_parameters = parameters;
         self.state.cutoff_amount_cents = amount_cents;
