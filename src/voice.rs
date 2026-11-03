@@ -227,7 +227,7 @@ impl Voice {
         );
     }
 
-    /// 親が検証したOsc2・Osc3のFM設定を配送する。
+    /// 親が検証したOsc2・Osc3のMod設定を配送する。
     pub fn set_phase_modulation(&mut self, depths: [f64; 2]) {
         self.state.phase_depths = depths;
     }
