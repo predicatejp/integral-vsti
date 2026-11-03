@@ -225,6 +225,7 @@ impl Oscillator {
 
     /// 現在の入力・状態でサンプルを生成し、その後で次のサンプルに向けて状態を更新する。
     /// sample_rateは処理環境のサンプルレート（Hz）。不正な入力・レートでは無音を返し、状態を保持する。
+    #[allow(dead_code)] // 単体ベンチマークが使う、入力検証付きの入口。
     #[inline]
     pub fn generate_sample(
         &mut self,
@@ -252,6 +253,18 @@ impl Oscillator {
                 count: 0,
             };
         }
+        self.generate_validated_sample::<OUTPUT>(input, sample_rate)
+    }
+
+    /// Voice内で検証済みの定常入力とレートから、生成と状態更新を行う。
+    /// 入力の各範囲はis_validと同じ。OUTPUT=falseは状態だけを更新する。
+    #[inline]
+    pub(super) fn generate_validated_sample<const OUTPUT: bool>(
+        &mut self,
+        input: &OscillatorInput,
+        sample_rate: f64,
+    ) -> OscillatorSample {
+        debug_assert!(input.is_valid() && sample_rate.is_finite() && sample_rate > 0.0);
         // ノート境界と位相モードを反映して生成した後、次サンプルへ進める。
         // キャッシュを含むState全体のサンプルごとのコピーは行わない。
         if input.note_generation != self.state.note_generation && input.active {
