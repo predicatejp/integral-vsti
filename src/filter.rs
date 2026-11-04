@@ -275,7 +275,12 @@ impl Filter {
         sample_rate: f64,
     ) -> [f64; 2] {
         if matches!(filter_type, FilterType::None) {
-            self.reset();
+            // 履歴を進める前には必ず先頭SVFで係数を準備する。
+            // 初回バイパスで両方を消去すれば、以降のゼロ書込みは不要。
+            if self.state.stages[0][0].state.coefficients.is_some() {
+                self.reset();
+                self.state.stages[0][0].state.coefficients = None;
+            }
             return samples;
         }
         if !(valid_input(samples[0], parameters, sample_rate) & samples[1].is_finite()) {
