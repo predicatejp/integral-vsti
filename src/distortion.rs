@@ -30,7 +30,7 @@ pub const LATENCY: usize = 1;
 struct DistortionState {
     /// 過去2点のGain適用済み入力。Gain変更時も当時の値を維持する。
     input: [[f64; 2]; 2],
-    /// 過去2点の原始関数。F2を保持する。
+    /// Soft用の過去2点の原始関数。Clipper切替時にresetする。
     integral: [[f64; 2]; 2],
 }
 
@@ -77,8 +77,10 @@ impl Distortion {
             if ch == 1 && mono {
                 self.state.input[0][1] = self.state.input[0][0];
                 self.state.input[1][1] = self.state.input[1][0];
-                self.state.integral[0][1] = self.state.integral[0][0];
-                self.state.integral[1][1] = self.state.integral[1][0];
+                if SOFT {
+                    self.state.integral[0][1] = self.state.integral[0][0];
+                    self.state.integral[1][1] = self.state.integral[1][0];
+                }
                 return left;
             }
             let x = input[ch] * gain;
@@ -110,8 +112,10 @@ impl Distortion {
             };
             self.state.input[1][ch] = previous;
             self.state.input[0][ch] = x;
-            self.state.integral[1][ch] = self.state.integral[0][ch];
-            self.state.integral[0][ch] = integral;
+            if SOFT {
+                self.state.integral[1][ch] = self.state.integral[0][ch];
+                self.state.integral[0][ch] = integral;
+            }
             left = out;
             out
         })
