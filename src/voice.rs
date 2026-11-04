@@ -392,6 +392,12 @@ impl Voice {
                     input.active = false;
                 }
             }
+            if matches!(self.state.filter_type, FilterType::None) {
+                for (sample, amplitude) in rest.iter_mut().zip(amplitudes) {
+                    *sample = sample.map(|value| value * amplitude);
+                }
+                continue;
+            }
             for (n, sample) in rest.iter_mut().enumerate() {
                 let cents = cutoffs[n];
                 if !matches!(self.state.filter_type, FilterType::None)
