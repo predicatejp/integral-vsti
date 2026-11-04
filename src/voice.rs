@@ -357,7 +357,7 @@ impl Voice {
             output.fill([0.0; 2]);
             return;
         }
-        // 呼出し元の通常生成で、この定常区間の発振器は全て準備済み。
+        // この区間で発音する発振器は、呼出し元の通常生成で準備済み。
         for rest in output.chunks_mut(32) {
             let mut amplitudes = [0.0; 32];
             let mut cutoffs = [0.0; 32];
@@ -379,8 +379,6 @@ impl Voice {
                 let gain = self.state.oscillator_gains[i];
                 let pans = if i == 0 { gains } else { &mono };
                 let input = &mut self.state.oscillator_inputs[i];
-                input.phase_modulated = i < 2 && self.state.phase_depths[i] != 0.0;
-                input.active = true;
                 if gain == 0.0 && depths[i] == 0.0 {
                     for phase_modulation in &mut modulation[..active_count] {
                         input.phase_modulation = *phase_modulation;
@@ -423,9 +421,7 @@ impl Voice {
             }
             for (n, sample) in rest.iter_mut().enumerate() {
                 let cents = cutoffs[n];
-                if !matches!(self.state.filter_type, FilterType::None)
-                    && cents != self.state.cutoff_modulation.0
-                {
+                if cents != self.state.cutoff_modulation.0 {
                     self.state.cutoff_modulation = (cents, 2.0_f64.powf(cents / 1200.0));
                 }
                 *sample = self.state.filter.process_sample(

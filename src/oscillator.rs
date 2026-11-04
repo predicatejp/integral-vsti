@@ -360,7 +360,7 @@ impl Oscillator {
             return OscillatorSample { values, count };
         }
         // 整数周期を先に除き、±1/±2回転では元の位相を厳密に保持する。
-        // SAFETY: generate_sampleで位相変調が有限のi32範囲であることを検証済み。
+        // SAFETY: generate_prepared_sampleの契約で、位相変調は有限のi32範囲内。
         let cycles = unsafe { input.phase_modulation.to_int_unchecked::<i32>() };
         let offset = input.phase_modulation - f64::from(cycles);
         if offset == 0.0 {
@@ -483,7 +483,7 @@ impl Oscillator {
 
     /// 発音中のサンプル生成後に、定常入力を用いて内部状態を1サンプル分進める。
     fn update_sample(&mut self) {
-        // generate_sampleが発音中であることを確認してから呼ぶ。
+        // generate_prepared_sampleが発音中であることを確認してから呼ぶ。
         for (phase, increment) in self.state.phases[..self.state.rendered_count]
             .iter_mut()
             .zip(&self.state.phase_increments)
