@@ -65,15 +65,53 @@ impl Distortion {
         }
     }
 
+    /// 同じ設定の入力系列へ2階ADAAを適用する。
+    #[inline]
+    pub fn process_samples(
+        &mut self,
+        input: &[[f64; 2]],
+        output: &mut [[f64; 2]],
+        parameters: &DistortionParameters,
+    ) {
+        debug_assert_eq!(input.len(), output.len());
+        match parameters.clipper {
+            ClipperType::Soft => self.process_adaa_samples::<true>(input, output, parameters.gain),
+            ClipperType::Hard => self.process_adaa_samples::<false>(input, output, parameters.gain),
+            ClipperType::None => output.copy_from_slice(input),
+        }
+    }
+
+    #[inline(never)]
+    fn process_adaa_samples<const SOFT: bool>(
+        &mut self,
+        input: &[[f64; 2]],
+        output: &mut [[f64; 2]],
+        gain: f64,
+    ) {
+        for (input, output) in input.iter().zip(output) {
+            *output = self.process_adaa_inner_sample::<SOFT>(*input, gain);
+        }
+    }
+
     // ADAAの大きな計算経路を分離し、Noneの経路にレジスター退避を持ち込まない。
     #[inline(never)]
     fn process_adaa_sample<const SOFT: bool>(&mut self, input: [f64; 2], gain: f64) -> [f64; 2] {
+        self.process_adaa_inner_sample::<SOFT>(input, gain)
+    }
+
+    #[inline(always)]
+    fn process_adaa_inner_sample<const SOFT: bool>(
+        &mut self,
+        input: [f64; 2],
+        gain: f64,
+    ) -> [f64; 2] {
         // 入力3点が左右で一致すれば、原始関数とADAA出力も同値になる。
         let mono = input[0] == input[1]
             && self.state.input[0][0] == self.state.input[0][1]
             && self.state.input[1][0] == self.state.input[1][1];
         let mut left = 0.0;
-        std::array::from_fn(|ch| {
+        let mut output = [0.0; 2];
+        for (ch, value) in output.iter_mut().enumerate() {
             if ch == 1 && mono {
                 self.state.input[0][1] = self.state.input[0][0];
                 self.state.input[1][1] = self.state.input[1][0];
@@ -81,7 +119,8 @@ impl Distortion {
                     self.state.integral[0][1] = self.state.integral[0][0];
                     self.state.integral[1][1] = self.state.integral[1][0];
                 }
-                return left;
+                *value = left;
+                continue;
             }
             let x = input[ch] * gain;
             let previous = self.state.input[0][ch];
@@ -117,8 +156,9 @@ impl Distortion {
                 self.state.integral[0][ch] = integral;
             }
             left = out;
-            out
-        })
+            *value = out;
+        }
+        output
     }
 }
 

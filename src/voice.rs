@@ -285,9 +285,7 @@ impl Voice {
     ) {
         debug_assert_eq!(dry.len(), wet.len());
         self.generate_samples(sample_rate, gains, mono_gains, dry);
-        for (input, output) in dry.iter().zip(wet) {
-            *output = self.state.distortion.process_sample(*input, parameters);
-        }
+        self.state.distortion.process_samples(dry, wet, parameters);
     }
 
     /// Voiceの3発振器・音量AHDSR・SVFまでをホストレートで処理する。
