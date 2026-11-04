@@ -255,10 +255,10 @@ impl Synthesizer {
 
     /// パラメーターとノートが一定の区間を、Voiceごとのサンプル系列で加算する。
     pub fn generate_samples(&mut self, output: &mut [[f64; 2]]) {
-        if output.is_empty() {
-            return;
-        }
-        if self.state.transition != 0 || self.state.processing != self.state.requested_processing {
+        if output.len() <= 1
+            || self.state.transition != 0
+            || self.state.processing != self.state.requested_processing
+        {
             for out in output {
                 *out = self.generate_sample();
             }
