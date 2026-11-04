@@ -35,6 +35,8 @@ pub struct SynthesizerState {
     transition: u8,
     /// 発音前・停止中の設定は即時反映する。
     started: bool,
+    /// 停止・使用範囲拡大後の未使用枠を、次の有効サンプルで一度だけ更新する。
+    unused_pending: bool,
     /// Dryは平均化を通さず、1サンプルの純遅延だけを掛ける。
     previous_dry: [f64; 2],
     /// 現在のクリップ設定。線形Gainは設定変更時に計算する。
@@ -64,6 +66,7 @@ impl Synthesizer {
                 processing: ClipperType::None,
                 transition: 0,
                 started: false,
+                unused_pending: false,
                 previous_dry: [0.0; 2],
                 distortion: parameters::distortion(&parameters::defaults()),
             }),
@@ -104,6 +107,7 @@ impl Synthesizer {
             for voice in &mut self.state.voices[count..self.state.polyphony.max(count)] {
                 voice.stop();
             }
+            self.state.unused_pending |= count > self.state.polyphony;
             self.state.polyphony = count;
             self.state.used_voices = self.state.used_voices.min(count);
             self.state.next_oscillator_id %= count;
@@ -274,6 +278,7 @@ impl Synthesizer {
         self.state.previous_dry = [0.0; 2];
         self.state.started = false;
         self.state.used_voices = 0;
+        self.state.unused_pending = true;
         self.state.transition = 0;
         self.state.processing = self.state.distortion.clipper;
         for voice in &mut self.state.voices {
@@ -299,6 +304,9 @@ impl Synthesizer {
                 *out = self.generate_sample();
             }
             return;
+        }
+        if self.state.unused_pending {
+            self.update_unused_sample();
         }
         self.state.started = true;
         let clipper = self.state.processing;
@@ -359,6 +367,9 @@ impl Synthesizer {
     }
 
     pub fn generate_sample(&mut self) -> [f64; 2] {
+        if self.state.unused_pending {
+            self.update_unused_sample();
+        }
         self.state.started = true;
         if self.state.transition == 0 && self.state.processing != self.state.distortion.clipper {
             self.state.transition = 66;
@@ -408,6 +419,23 @@ impl Synthesizer {
         std::array::from_fn(|ch| dry[ch] * (1.0 - mix) + wet[ch] * mix * gain)
     }
 
+    /// 未使用枠の遅延停止を消化し、後続ノートと同時刻の停止として残さない。
+    #[cold]
+    #[inline(never)]
+    fn update_unused_sample(&mut self) {
+        if !(self.state.sample_rate.is_finite() && self.state.sample_rate > 0.0) {
+            return;
+        }
+        for voice in &mut self.state.voices[self.state.used_voices..self.state.polyphony] {
+            voice.generate_sample(
+                self.state.sample_rate,
+                &self.state.panning_gains,
+                &self.state.mono_gains,
+            );
+        }
+        self.state.unused_pending = false;
+    }
+
     /// フィルタまでのVoice出力を加算しMasterを適用する。
     fn mix_sample(&mut self) -> [f64; 2] {
         let mut sum = [0.0; 2];
@@ -441,6 +469,61 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn unused_stop_is_consumed_only_after_a_valid_sample() {
+        for resized in [false, true] {
+            for advance in 0..6 {
+                let mut synth = Synthesizer::new();
+                let mut values = parameters::sine_preset();
+                values[5] = parameters::to_normalized(5, 100.0);
+                values[8] = parameters::to_normalized(8, if resized { 2.0 } else { 1.0 });
+                synth.set_parameters(values);
+                synth.set_sample_rate(48000.0);
+                if resized {
+                    // 2枠目を停止して外し、再拡大後も未使用のままにする。
+                    values[8] = parameters::to_normalized(8, 1.0);
+                    synth.set_parameters(values);
+                    synth.generate_samples(&mut [[0.0; 2]; 8]);
+                    values[8] = parameters::to_normalized(8, 2.0);
+                    synth.set_parameters(values);
+                    assert!(synth.note_on(note(1, 0, 60), 0.0, 0.0));
+                } else {
+                    synth.stop();
+                }
+                match advance {
+                    0 => {}
+                    1 => synth.generate_samples(&mut []),
+                    2 => {
+                        synth.generate_sample();
+                    }
+                    3 => synth.generate_samples(&mut [[0.0; 2]; 64]),
+                    4 | 5 => {
+                        synth.set_sample_rate(f64::NAN);
+                        synth.generate_samples(&mut [[0.0; 2]; 64]);
+                        assert!(synth.state.unused_pending);
+                        synth.set_sample_rate(48000.0);
+                        if advance == 5 {
+                            synth.generate_sample();
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+                let next = note(2, 0, 69);
+                assert!(synth.note_on(next, 0.0, 1.0));
+                synth.note_off(next);
+                let mut output = [[0.0; 2]; 64];
+                synth.generate_samples(&mut output);
+                let peak = output.iter().flatten().fold(0.0_f64, |p, v| p.max(v.abs()));
+                let advanced = matches!(advance, 2 | 3 | 5);
+                assert_eq!(peak > 0.1, advanced, "resized={resized}, advance={advance}");
+                assert_eq!(
+                    synth.active_voice_count(),
+                    u32::from(resized) + u32::from(advanced)
+                );
+            }
+        }
     }
 
     #[test]
