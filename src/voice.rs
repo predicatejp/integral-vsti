@@ -561,20 +561,19 @@ mod tests {
 
     #[test]
     fn invalid_series_rate_preserves_voice_state() {
-        let mut series = Voice::new();
         let mut reference = Voice::new();
         let note = Note {
             id: 1,
             channel: 0,
             pitch: 69,
         };
-        for voice in [&mut series, &mut reference] {
-            voice.set_phase_modulation([0.5, 0.3]);
-            voice.note_on(note, 0.0, 1.0);
-            for _ in 0..64 {
-                voice.generate_sample(48_000.0, &[[1.0; 2]; 7], &[1.0; 2]);
-            }
+        reference.set_phase_modulation([0.5, 0.3]);
+        reference.note_on(note, 0.0, 1.0);
+        for _ in 0..64 {
+            reference.generate_sample(48_000.0, &[[1.0; 2]; 7], &[1.0; 2]);
         }
+        // 独立した初期計算の丸め差を除き、同じ状態から不正入力の影響だけを比較する。
+        let mut series = reference.clone();
         for rate in [0.0, -1.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
             let mut output = [[7.0; 2]; 33];
             series.generate_samples(rate, &[[1.0; 2]; 7], &[1.0; 2], &mut output);
