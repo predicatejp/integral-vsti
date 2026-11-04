@@ -339,8 +339,9 @@ mod tests {
         };
         let mut envelope = Envelope::new();
         envelope.set_input(&parameters, rate, 0.7);
+        envelope.note_on();
         for sample in 0..104 {
-            let actual = envelope.generate_sample(true, 1, 0);
+            let actual = envelope.generate_sample();
             let expected = value(
                 &parameters,
                 f64::from(sample) / rate * 1000.0,
