@@ -416,7 +416,17 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         } while (std::chrono::steady_clock::now() < deadline);
         parent.screenshot();
-        std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size() << std::endl;
+        std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size()
+                  << ", parameter=" << handler.editedId << std::endl;
+#ifdef _WIN32
+        CURSORINFO cursor {}; cursor.cbSize = sizeof(cursor);
+        POINT pointer {};
+        const auto cursorOk = GetCursorInfo(&cursor), pointerOk = GetCursorPos(&pointer);
+        std::cerr << "Windows cursor: query=" << cursorOk << ", flags=" << cursor.flags
+                  << ", handle=" << cursor.hCursor << ", capture=" << GetCapture() << ", focus=" << GetFocus()
+                  << ", pointer query=" << pointerOk << ", position=" << pointer.x << ',' << pointer.y
+                  << ", child=" << parent.child() << ", keyboard=" << parent.keyboard << std::endl;
+#endif
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
@@ -615,7 +625,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
             assert(parent.pointerAt(x, y));
             parent.movePointer(20, 20); pump(); assert(parent.pointerAt(20, 20));
-            assert(parent.cursorVisible());
+            waitFor([&] { return parent.cursorVisible(); }, "cursor restored after knob");
             handler.sequence.clear();
             if (i == 21) {
                 // 吸着点から開始すると内部位置40。大きい側から再進入すると80。
@@ -680,7 +690,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         INPUT escape {}; escape.type = INPUT_KEYBOARD; escape.ki.wVk = VK_ESCAPE;
         assert(SendInput(1, &escape, sizeof(INPUT)) == 1);
         waitFor([&] { return handler.sequence.size() == 2; }, "escape without plug-in focus");
-        assert(parent.focused() && parent.cursorVisible());
+        waitFor([&] { return parent.focused() && parent.cursorVisible(); }, "host focus and cursor after escape");
         escape.ki.dwFlags = KEYEVENTF_KEYUP;
         assert(SendInput(1, &escape, sizeof(INPUT)) == 1);
         parent.knobButton(false); pump(); handler.sequence.clear();
@@ -696,7 +706,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         parent.unfocus();
         assert(handler.sequence == (std::vector<int>{0, 2}));
-        assert(parent.cursorVisible());
+        waitFor([&] { return parent.cursorVisible(); }, "cursor restored after focus loss");
         parent.knobButton(false); pump(); handler.sequence.clear();
         // 押したまま画面を閉じても開始済み編集は終了する。
         parent.movePointer(uiPixel(controls[6].first), uiPixel(controls[6].second)); pump(); parent.knobButton(true);
