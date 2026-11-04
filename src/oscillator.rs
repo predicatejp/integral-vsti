@@ -176,10 +176,10 @@ pub struct OscillatorState {
     noise: Random,
     /// サンプル処理へ反映済みのNote On世代番号。
     note_generation: u64,
-    /// 周波数倍率の計算に使った（ユニゾン数, Detune）。Noneは未計算。
-    unison_input: Option<(u32, f64)>,
-    /// 位相増分・帯域選択の計算に使った（基音Hz, サンプルレート, 波形）。
-    frequency_input: Option<(f64, f64, Waveform)>,
+    /// 周波数倍率の計算に使った（ユニゾン数, Detune）。初期値の0音は未計算を表す。
+    unison_input: (u32, f64),
+    /// 位相増分・帯域選択の計算に使った（基音Hz, サンプルレート, 波形）。初期レート0は未計算。
+    frequency_input: (f64, f64, Waveform),
     /// 各ユニゾンの帯域とクロスフェード係数。
     bands: [wavetable::Selection; 7],
     /// 各ユニゾンの基音に対する周波数倍率。入力の音程幅が変わったときだけ更新する。
@@ -214,8 +214,8 @@ impl Oscillator {
                 random: Random::new(),
                 noise: Random::new(),
                 note_generation: 0,
-                unison_input: None,
-                frequency_input: None,
+                unison_input: (0, 0.0),
+                frequency_input: (0.0, 0.0, Waveform::Sine),
                 bands: [wavetable::Selection::EMPTY; 7],
                 frequency_ratios: [1.0; 7],
                 phase_increments: [0.0; 7],
@@ -421,7 +421,7 @@ impl Oscillator {
     #[inline]
     fn refresh_frequency(&mut self, input: &OscillatorInput, sample_rate: f64) {
         let unison = (input.unison_voices, input.detune_cents);
-        let changed = self.state.unison_input != Some(unison);
+        let changed = self.state.unison_input != unison;
         if changed {
             let count = input.rendered_voices();
             if self.state.rendered_count != count {
@@ -431,16 +431,12 @@ impl Oscillator {
             for (k, ratio) in self.state.frequency_ratios[..count].iter_mut().enumerate() {
                 *ratio = input.frequency_ratio(k);
             }
-            self.state.unison_input = Some(unison);
+            self.state.unison_input = unison;
         }
         let count = self.state.rendered_count;
         let frequency = (input.frequency_hz, sample_rate, input.waveform);
-        if changed || self.state.frequency_input != Some(frequency) {
-            if self
-                .state
-                .frequency_input
-                .is_some_and(|old| old.2 != input.waveform)
-            {
+        if changed || self.state.frequency_input != frequency {
+            if self.state.frequency_input.2 != input.waveform {
                 self.state.valid = false;
             }
             for (k, (increment, ratio)) in self.state.phase_increments[..count]
@@ -467,7 +463,7 @@ impl Oscillator {
                     hz % sample_rate
                 } / sample_rate;
             }
-            self.state.frequency_input = Some(frequency);
+            self.state.frequency_input = frequency;
         }
     }
 
