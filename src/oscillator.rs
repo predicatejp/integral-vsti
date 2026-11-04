@@ -197,6 +197,7 @@ pub struct OscillatorSample {
 }
 
 /// Oscillatorの処理を担当し、専用のStateを所有するコンポーネント。
+#[cfg_attr(test, derive(Clone))]
 pub struct Oscillator {
     /// このコンポーネントの内部状態。
     state: OscillatorState,
@@ -286,22 +287,40 @@ impl Oscillator {
             }
         }
         self.state.note_generation = input.note_generation;
-        // activeはVoiceの共通AHDSRから渡す。無音のattack中も位相を進める。
+        if input.active {
+            self.refresh_frequency(input, sample_rate);
+        }
+        // SAFETY: 上で同じ定常入力のノート境界と周波数を反映した。
+        unsafe { self.generate_prepared_sample::<OUTPUT>(input) }
+    }
+
+    /// 区間の先頭で反映した定常入力から1サンプルを生成する。
+    ///
+    /// # Safety
+    /// 直前のgenerate_validated_sampleとwaveform・frequency_hz・unison_voices・
+    /// detune_cents・note_generation・phase_mode・phase_modulatedが同じこと。
+    /// activeがfalseからtrueへ変わる場合は、改めてvalidated入口で準備すること。
+    /// phase_modulationは変化してよいが、有限のi32範囲内であること。
+    #[inline]
+    pub(super) unsafe fn generate_prepared_sample<const OUTPUT: bool>(
+        &mut self,
+        input: &OscillatorInput,
+    ) -> OscillatorSample {
+        debug_assert!(input.is_valid());
         if !input.active {
             self.state.valid = false;
             return OscillatorSample {
-                values: [0.0; 7],
+                values: [0.; 7],
                 count: 0,
             };
         }
-        self.refresh_frequency(input, sample_rate);
         let sample = self.generate_waveform_sample::<OUTPUT>(input);
         self.update_sample();
         sample
     }
 
     /// 位相変調は読出し位置だけへ適用する。Noiseはユニゾンごとに乱数を一つ進める。
-    #[inline]
+    #[inline(always)]
     fn generate_waveform_sample<const OUTPUT: bool>(
         &mut self,
         input: &OscillatorInput,

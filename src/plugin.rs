@@ -1035,8 +1035,13 @@ fn generate_output_samples(
             nonzero |= write(offset as usize, synth.generate_sample());
         }
     } else {
-        for offset in range {
-            nonzero |= write(offset as usize, synth.generate_sample());
+        let mut samples = [[0.0; 2]; 32];
+        for start in (range.start..range.end).step_by(samples.len()) {
+            let count = (range.end - start).min(samples.len() as i32) as usize;
+            synth.generate_samples(&mut samples[..count]);
+            for (offset, &sample) in samples[..count].iter().enumerate() {
+                nonzero |= write(start as usize + offset, sample);
+            }
         }
     }
     nonzero

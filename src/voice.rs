@@ -21,6 +21,7 @@ pub struct Note {
 }
 
 /// 同時発音の1枠。入力・内部状態・ノートの対応を他の枠から独立させる。
+#[cfg_attr(test, derive(Clone))]
 pub struct VoiceState {
     /// Osc1・Osc2・Osc3の定常入力。Osc1だけがユニゾン設定を持つ。
     pub(super) oscillator_inputs: [OscillatorInput; 3],
@@ -69,6 +70,7 @@ pub struct VoiceState {
 }
 
 /// Voiceの処理を担当し、専用のStateを所有するコンポーネント。
+#[cfg_attr(test, derive(Clone))]
 pub struct Voice {
     /// このコンポーネントの内部状態。
     pub(super) state: VoiceState,
@@ -271,8 +273,52 @@ impl Voice {
         (input, wet)
     }
 
+    /// 同じ長さのDry/Wet系列を、各Voice固有のADAA履歴を用いて生成する。
+    pub fn generate_distorted_samples(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+        parameters: &DistortionParameters,
+        dry: &mut [[f64; 2]],
+        wet: &mut [[f64; 2]],
+    ) {
+        debug_assert_eq!(dry.len(), wet.len());
+        self.generate_samples(sample_rate, gains, mono_gains, dry);
+        for (input, output) in dry.iter().zip(wet) {
+            *output = self.state.distortion.process_sample(*input, parameters);
+        }
+    }
+
     /// Voiceの3発振器・音量AHDSR・SVFまでをホストレートで処理する。
+    #[inline(never)] // 大きい1サンプル本体をSynthesizerへ重複展開しない。
     pub fn generate_sample(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+    ) -> [f64; 2] {
+        self.generate_one_sample::<false>(sample_rate, gains, mono_gains)
+    }
+
+    /// 定常入力が同じ区間の先頭で発振器を準備し、残りのサンプルを生成する。
+    pub fn generate_samples(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+        output: &mut [[f64; 2]],
+    ) {
+        if let Some((first, rest)) = output.split_first_mut() {
+            *first = self.generate_sample(sample_rate, gains, mono_gains);
+            for value in rest {
+                *value = self.generate_one_sample::<true>(sample_rate, gains, mono_gains);
+            }
+        }
+    }
+
+    #[inline]
+    fn generate_one_sample<const PREPARED: bool>(
         &mut self,
         sample_rate: f64,
         gains: &PanningGains,
@@ -318,16 +364,27 @@ impl Voice {
                 if self.state.oscillator_gains[i] == 0.0 && depths[i] == 0.0 {
                     // SAFETY: 定常設定は親、ノート周波数とレートはVoiceで検証済み。
                     // 変調入力は有限の波形と0〜2周期の深度から生成し、i32範囲内に収まる。
+                    // PREPAREDは同じ設定の区間の2サンプル目以降だけ。
+                    // ノート変更はなく、activeはtrueからfalseへの遷移だけを許す。
                     unsafe {
-                        self.state.oscillators[i]
-                            .generate_validated_sample::<false>(input, sample_rate);
+                        if PREPARED {
+                            self.state.oscillators[i].generate_prepared_sample::<false>(input);
+                        } else {
+                            self.state.oscillators[i]
+                                .generate_validated_sample::<false>(input, sample_rate);
+                        }
                     }
                     modulation = 0.0;
                     continue;
                 }
                 // SAFETY: 上記と同じ検証済みの定常設定・周波数・レート・変調入力を使う。
                 let current = unsafe {
-                    self.state.oscillators[i].generate_validated_sample::<true>(input, sample_rate)
+                    if PREPARED {
+                        self.state.oscillators[i].generate_prepared_sample::<true>(input)
+                    } else {
+                        self.state.oscillators[i]
+                            .generate_validated_sample::<true>(input, sample_rate)
+                    }
                 };
                 modulation = current.values[0] * depths[i];
                 if self.state.oscillator_gains[i] != 0.0 {

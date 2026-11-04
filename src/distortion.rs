@@ -26,6 +26,7 @@ pub struct DistortionParameters {
 /// ADAA2の群遅延。Dryとホストへの申告を同じ1サンプルに揃える。
 pub const LATENCY: usize = 1;
 
+#[cfg_attr(test, derive(Clone))]
 struct DistortionState {
     /// 過去2点のGain適用済み入力。Gain変更時も当時の値を維持する。
     input: [[f64; 2]; 2],
@@ -33,6 +34,7 @@ struct DistortionState {
     integral: [[f64; 2]; 2],
 }
 
+#[cfg_attr(test, derive(Clone))]
 pub struct Distortion {
     state: DistortionState,
 }

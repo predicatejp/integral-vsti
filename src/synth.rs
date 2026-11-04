@@ -8,6 +8,7 @@ use crate::oscillator::{PanningGains, panning_gains};
 use crate::parameters;
 use crate::voice::{Note, Voice};
 
+#[cfg_attr(test, derive(Clone))]
 pub struct SynthesizerState {
     /// 最大32枠を初期化時に確保し、音声処理中は確保・解放しない。
     voices: [Voice; 32],
@@ -41,6 +42,7 @@ pub struct SynthesizerState {
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
+#[cfg_attr(test, derive(Clone))]
 pub struct Synthesizer {
     /// このコンポーネントの内部状態。
     state: Box<SynthesizerState>,
@@ -251,6 +253,75 @@ impl Synthesizer {
             .count() as u32
     }
 
+    /// パラメーターとノートが一定の区間を、Voiceごとのサンプル系列で加算する。
+    pub fn generate_samples(&mut self, output: &mut [[f64; 2]]) {
+        if output.is_empty() {
+            return;
+        }
+        if self.state.transition != 0 || self.state.processing != self.state.requested_processing {
+            for out in output {
+                *out = self.generate_sample();
+            }
+            return;
+        }
+        self.state.started = true;
+        let clipper = self.state.processing;
+        let gain = self.state.master_gain;
+        output.fill([0.0; 2]);
+        if clipper == ClipperType::None {
+            for chunk in output.chunks_mut(32) {
+                let mut voice_output = [[0.0; 2]; 32];
+                for voice in &mut self.state.voices[..self.state.used_voices] {
+                    voice.generate_samples(
+                        self.state.sample_rate,
+                        &self.state.panning_gains,
+                        &self.state.mono_gains,
+                        &mut voice_output[..chunk.len()],
+                    );
+                    for (out, value) in chunk.iter_mut().zip(&voice_output) {
+                        out[0] += value[0];
+                        out[1] += value[1];
+                    }
+                }
+            }
+            for out in output {
+                let current = out.map(|v| v * gain);
+                *out = std::mem::replace(&mut self.state.previous_dry, current);
+            }
+        } else {
+            for chunk in output.chunks_mut(32) {
+                let mut dry = [[0.0; 2]; 32];
+                let mut distortion = self.state.distortion;
+                distortion.clipper = clipper;
+                let mut voice_dry = [[0.0; 2]; 32];
+                let mut voice_wet = [[0.0; 2]; 32];
+                for voice in &mut self.state.voices[..self.state.used_voices] {
+                    voice.generate_distorted_samples(
+                        self.state.sample_rate,
+                        &self.state.panning_gains,
+                        &self.state.mono_gains,
+                        &distortion,
+                        &mut voice_dry[..chunk.len()],
+                        &mut voice_wet[..chunk.len()],
+                    );
+                    for i in 0..chunk.len() {
+                        for ch in 0..2 {
+                            dry[i][ch] += voice_dry[i][ch];
+                            chunk[i][ch] += voice_wet[i][ch];
+                        }
+                    }
+                }
+                for (out, dry) in chunk.iter_mut().zip(&dry) {
+                    let dry =
+                        std::mem::replace(&mut self.state.previous_dry, dry.map(|v| v * gain));
+                    *out = std::array::from_fn(|ch| {
+                        dry[ch] * (1.0 - distortion.mix) + (out[ch] * gain) * distortion.mix
+                    });
+                }
+            }
+        }
+    }
+
     pub fn generate_sample(&mut self) -> [f64; 2] {
         self.state.started = true;
         if self.state.transition == 0 && self.state.processing != self.state.requested_processing {
@@ -334,6 +405,103 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // 多数の音声境界のビット比較は実CPUで行う。
+    fn constant_input_series_matches_sample_processing_across_boundaries() {
+        for phase in 0..3 {
+            let mut values = parameters::sine_preset();
+            for (index, value) in [(5, 1.), (12, phase as f64), (32, 18.), (33, 65.)] {
+                values[index] = parameters::to_normalized(index, value);
+            }
+            let mut serial = Synthesizer::new();
+            serial.set_sample_rate(48000.);
+            serial.set_parameters(values);
+            // ノイズ・Random位相を含む全ての初期乱数状態を同じにする。
+            let mut series = serial.clone();
+            let mut heard = false;
+            for step in 0..40 {
+                let changes: &[(usize, f64)] = match step {
+                    4 => &[
+                        (0, 3.),
+                        (6, 3.),
+                        (7, 25.),
+                        (8, 4.),
+                        (9, 2.),
+                        (10, 1200.),
+                        (11, 2.),
+                        (14, 3.),
+                        (15, 1.),
+                        (16, 5.),
+                        (17, 0.25),
+                        (18, 7.),
+                        (19, 1200.),
+                        (20, 75.),
+                        (23, 1.),
+                        (25, -12.),
+                        (26, 2.),
+                        (28, -12.),
+                        (29, 23.),
+                        (30, 17.),
+                    ],
+                    8 => &[(31, 1.)],
+                    12 => &[(0, 4.), (23, 4.), (26, 0.)],
+                    16 => &[(31, 2.)],
+                    20 => &[(0, 0.), (23, 2.), (26, 1.), (25, -60.), (28, -60.)],
+                    24 => &[(31, 0.)],
+                    28 => &[(29, 0.), (30, 0.)],
+                    32 => &[(25, -12.), (28, -12.), (29, 23.), (30, 17.)],
+                    36 => &[(23, 4.), (29, 100.)],
+                    _ => &[],
+                };
+                for &(index, value) in changes {
+                    values[index] = parameters::to_normalized(index, value);
+                }
+                let events: &[(bool, i32, i16)] = match step {
+                    0 => &[(true, 1, 60)],
+                    4 => &[(true, 2, 64), (true, 3, 67)],
+                    10 => &[(false, 2, 64), (true, 4, 64)],
+                    16 => &[(true, 5, 64), (false, 4, 64)],
+                    27 => &[(true, 6, 60)],
+                    31 => &[(false, 6, 60), (true, 7, 60)],
+                    35 => &[(true, 8, 60), (false, 7, 60)],
+                    _ => &[],
+                };
+                for synth in [&mut serial, &mut series] {
+                    synth.set_parameters(values);
+                    for &(on, id, pitch) in events {
+                        if on {
+                            assert!(synth.note_on(note(id, 0, pitch), 0., 0.8));
+                        } else {
+                            synth.note_off(note(id, 0, pitch));
+                        }
+                    }
+                    if step == 21 {
+                        for id in 1..=5 {
+                            synth.note_off(note(id, 0, 64));
+                        }
+                    }
+                    if matches!(step, 24 | 39) {
+                        synth.stop();
+                    }
+                }
+                let count = [0, 1, 2, 7, 31, 32, 33, 127][step % 8];
+                let mut output = [[f64::NAN; 2]; 127];
+                series.generate_samples(&mut output[..count]);
+                for value in &output[..count] {
+                    let expected = serial.generate_sample();
+                    assert_eq!(
+                        value.map(f64::to_bits),
+                        expected.map(f64::to_bits),
+                        "phase={phase}, step={step}"
+                    );
+                    heard |= *value != [0.; 2];
+                }
+                assert_eq!(series.active_voice_count(), serial.active_voice_count());
+            }
+            assert!(heard);
+        }
     }
 
     #[test]

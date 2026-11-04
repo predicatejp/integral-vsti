@@ -77,6 +77,7 @@ struct SvfCoefficients {
 
 /// 1段のTPT SVF。フィルタタイプ・多段化・ノートを扱わない。
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 pub struct SvfState {
     /// 台形積分器の履歴。[帯域通過側, 低域通過側]。設定変更時も保持する。
     integrators: [f64; 2],
@@ -86,6 +87,7 @@ pub struct SvfState {
 
 /// TPT SVFの処理。Stateは積分器の履歴と計算済み係数を保持する。
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 pub struct Svf {
     /// この段の積分器の状態。
     state: SvfState,
@@ -235,12 +237,14 @@ fn valid_input(sample: f64, parameters: &FilterParameters, sample_rate: f64) -> 
 }
 
 /// SVFの外側で出力を選択し、必要な段数だけ直列接続するコンポーネント。
+#[cfg_attr(test, derive(Clone))]
 pub struct FilterState {
     /// [左右][段]のSVF。左右の履歴を独立させ、未使用の段は消去する。
     stages: [[Svf; 2]; 2],
 }
 
 /// Filterの処理を担当し、専用のStateを所有するコンポーネント。
+#[cfg_attr(test, derive(Clone))]
 pub struct Filter {
     /// このコンポーネントの内部状態。
     state: FilterState,
@@ -262,7 +266,7 @@ impl Filter {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn process_sample(
         &mut self,
         samples: [f64; 2],
