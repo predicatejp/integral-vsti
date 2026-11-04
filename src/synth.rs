@@ -4,6 +4,7 @@
 #[cfg(test)]
 use crate::distortion::LATENCY;
 use crate::distortion::{ClipperType, DistortionParameters};
+use crate::envelope::DEFAULT_ENVELOPE;
 use crate::oscillator::{PanningGains, panning_gains};
 use crate::parameters;
 use crate::voice::{Note, Voice};
@@ -110,21 +111,60 @@ impl Synthesizer {
             self.state.next_oscillator_id %= count;
         }
         // 変更のないグループの時間換算（pow）なども省く。
-        if oscillator_changed {
-            let waveform = parameters::from_normalized(values[0]).expect("validated values");
-            let envelope = parameters::envelope(&values, 1);
-            let unison_voices = parameters::to_plain(6, values[6]) as u32;
-            let detune_cents = parameters::to_plain(7, values[7]);
-            let phase_mode = parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize];
-            for voice in &mut self.state.voices[..self.state.polyphony] {
-                voice.set_parameters(waveform, envelope, unison_voices, detune_cents, phase_mode);
+        if oscillator_changed || envelope_changed {
+            // Voice 0は常に有効で、適用済みの実単位を保持している。
+            let mut envelopes = self.state.voices[0].envelope_parameters();
+            for (update, first, envelope) in [oscillator_changed, envelope_changed]
+                .into_iter()
+                .zip([1, 14])
+                .zip(&mut envelopes)
+                .map(|((update, first), envelope)| (update, first, envelope))
+            {
+                if update {
+                    // 初期実値と正規化値の往復で丸めが変わるため、初回は従来と同じ全換算。
+                    if *envelope == DEFAULT_ENVELOPE {
+                        *envelope = parameters::envelope(&values, first);
+                        continue;
+                    }
+                    for (i, field) in [
+                        &mut envelope.attack_ms,
+                        &mut envelope.hold_ms,
+                        &mut envelope.decay_ms,
+                        &mut envelope.sustain,
+                        &mut envelope.release_ms,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if values[first + i] != previous[first + i] {
+                            *field = parameters::to_plain(first + i, values[first + i]);
+                        }
+                    }
+                }
             }
-        }
-        if envelope_changed {
-            let cutoff_envelope = parameters::envelope(&values, 14);
-            let cutoff_amount = parameters::to_plain(19, values[19]);
-            for voice in &mut self.state.voices[..self.state.polyphony] {
-                voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
+            if oscillator_changed {
+                let waveform = parameters::from_normalized(values[0]).expect("validated values");
+                let envelope = envelopes[0];
+                let unison_voices = parameters::to_plain(6, values[6]) as u32;
+                let detune_cents = parameters::to_plain(7, values[7]);
+                let phase_mode =
+                    parameters::PHASE_MODES[parameters::to_plain(12, values[12]) as usize];
+                for voice in &mut self.state.voices[..self.state.polyphony] {
+                    voice.set_parameters(
+                        waveform,
+                        envelope,
+                        unison_voices,
+                        detune_cents,
+                        phase_mode,
+                    );
+                }
+            }
+            if envelope_changed {
+                let cutoff_envelope = envelopes[1];
+                let cutoff_amount = parameters::to_plain(19, values[19]);
+                for voice in &mut self.state.voices[..self.state.polyphony] {
+                    voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
+                }
             }
         }
         if values[21] != previous[21] {
@@ -519,6 +559,34 @@ mod tests {
                 assert_eq!(series.active_voice_count(), serial.active_voice_count());
             }
             assert!(heard);
+        }
+    }
+
+    #[test]
+    fn reused_envelopes_preserve_initial_conversion_and_expansion() {
+        let mut synth = Synthesizer::new();
+        let mut values = parameters::defaults();
+        let mut expected = [DEFAULT_ENVELOPE; 2];
+        for (index, plain) in [
+            (13, 6.),
+            (7, 10.),
+            (19, 1200.),
+            (6, 3.),
+            (4, 0.5),
+            (16, 500.),
+            (8, 32.),
+        ] {
+            values[index] = parameters::to_normalized(index, plain);
+            if index <= 8 {
+                expected[0] = parameters::envelope(&values, 1);
+            }
+            if (14..20).contains(&index) || index == 8 {
+                expected[1] = parameters::envelope(&values, 14);
+            }
+            synth.set_parameters(values);
+            for voice in &synth.state.voices[..synth.state.polyphony] {
+                assert_eq!(voice.envelope_parameters(), expected);
+            }
         }
     }
 

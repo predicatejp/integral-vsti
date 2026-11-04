@@ -218,6 +218,14 @@ impl Voice {
         self.state.cutoff_amount_cents = amount_cents;
     }
 
+    /// 親の差分換算に使う、適用済みの音量・カットオフAHDSR設定。
+    pub fn envelope_parameters(&self) -> [EnvelopeParameters; 2] {
+        [
+            self.state.envelope_parameters,
+            self.state.cutoff_envelope_parameters,
+        ]
+    }
+
     pub fn set_parameters(
         &mut self,
         waveform: Waveform,
