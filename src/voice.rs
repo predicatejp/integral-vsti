@@ -36,10 +36,8 @@ pub struct VoiceState {
     tune_ratios: [f64; 3],
     /// ノートを保持している間true。Note Offでは共通AHDSRのreleaseへ移る。
     pub(super) gate: bool,
-    /// Note Onの世代。3発振器と両AHDSRへ同じ番号を渡す。
+    /// Note Onの世代。3発振器へ同じ番号を渡す。
     note_generation: u64,
-    /// 即時停止の世代。両AHDSRへ渡す。
-    reset_generation: u64,
     /// 両Envelopeへ反映済みの有効なレート。生成時に変わった場合だけ再検証する。
     sample_rate: f64,
     /// ベロシティを反映した共通AHDSRの目標実効振幅。
@@ -103,7 +101,6 @@ impl Voice {
                 tune_ratios: [1.0; 3],
                 gate: false,
                 note_generation: 0,
-                reset_generation: 0,
                 sample_rate: MIN_SAMPLE_RATE,
                 amplitude: 0.0,
                 envelope_parameters: DEFAULT_ENVELOPE,
@@ -151,6 +148,8 @@ impl Voice {
             self.state.sample_rate,
             self.state.amplitude,
         );
+        self.state.envelope.note_on();
+        self.state.cutoff_envelope.note_on();
         self.state.gate = true;
         self.state.note = Some(note);
         true
@@ -165,6 +164,8 @@ impl Voice {
             }
         }) {
             self.state.gate = false;
+            self.state.envelope.note_off();
+            self.state.cutoff_envelope.note_off();
             self.state.note = None;
         }
     }
@@ -177,7 +178,8 @@ impl Voice {
     pub fn stop(&mut self) {
         // releaseとは区別し、次サンプルで即時消音する。位相は保持する。
         self.state.gate = false;
-        self.state.reset_generation = self.state.reset_generation.wrapping_add(1);
+        self.state.envelope.stop();
+        self.state.cutoff_envelope.stop();
         self.state.note = None;
         self.state.filter.reset();
         self.reset_distortion();
@@ -292,16 +294,8 @@ impl Voice {
                 1.0,
             );
         }
-        let amplitude = self.state.envelope.generate_sample(
-            self.state.gate,
-            self.state.note_generation,
-            self.state.reset_generation,
-        );
-        let level = self.state.cutoff_envelope.generate_sample(
-            self.state.gate,
-            self.state.note_generation,
-            self.state.reset_generation,
-        );
+        let amplitude = self.state.envelope.generate_sample();
+        let level = self.state.cutoff_envelope.generate_sample();
         let cents = level * self.state.cutoff_amount_cents;
         // バイパス中もEnvelopeは進め、有効化したサンプルで現在値の倍率を求める。
         if !matches!(self.state.filter_type, FilterType::None)
