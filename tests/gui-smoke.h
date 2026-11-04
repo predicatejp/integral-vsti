@@ -176,7 +176,18 @@ struct NativeParent {
     void movePointer(int x, int y) {
 #ifdef _WIN32
         POINT point {x, y}; assert(ClientToScreen(child(), &point));
-        assert(SetCursorPos(point.x, point.y));
+        const auto absolute = [](LONG coordinate, int origin, int extent) {
+            const auto offset = static_cast<long long>(coordinate) - origin;
+            assert(extent > 0 && extent <= 65536 && offset >= 0 && offset < extent);
+            // 画素の範囲内へ切り上げ、整数化で1px手前へ戻るのを防ぐ。
+            return static_cast<LONG>((offset * 65536 + extent - 1) / extent);
+        };
+        INPUT input {}; input.type = INPUT_MOUSE;
+        input.mi.dx = absolute(point.x, GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN));
+        input.mi.dy = absolute(point.y, GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        // 座標のワープだけでなくマウス移動を送り、OSのタッチ入力によるカーソル抑制を解く。
+        input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        assert(SendInput(1, &input, sizeof(input)) == 1);
 #else
         XWarpPointer(display, 0, child(), 0, 0, 0, 0, x, y); XFlush(display);
 #endif
