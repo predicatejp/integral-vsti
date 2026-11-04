@@ -256,24 +256,21 @@ impl Oscillator {
             };
         }
         // SAFETY: 上の検証で入力とレートの全条件を満たすことを確認した。
-        unsafe { self.generate_validated_sample::<OUTPUT>(input, sample_rate) }
+        unsafe {
+            self.prepare_sample(input, sample_rate);
+            self.generate_prepared_sample::<OUTPUT>(input)
+        }
     }
 
-    /// Voice内で検証済みの定常入力とレートから、生成と状態更新を行う。
-    /// OUTPUT=falseは状態だけを更新する。
+    /// 検証済みの定常入力とレートから、ノート境界・位相・周波数を反映する。
     ///
     /// # Safety
     /// input.is_valid()がtrue、sample_rateが有限の正数であること。
     /// 後段の高速整数変換と固定長配列の処理はこの範囲を前提とする。
-    #[inline]
-    pub(super) unsafe fn generate_validated_sample<const OUTPUT: bool>(
-        &mut self,
-        input: &OscillatorInput,
-        sample_rate: f64,
-    ) -> OscillatorSample {
+    #[inline(never)]
+    pub(super) unsafe fn prepare_sample(&mut self, input: &OscillatorInput, sample_rate: f64) {
         debug_assert!(input.is_valid() && sample_rate.is_finite() && sample_rate > 0.0);
-        // ノート境界と位相モードを反映して生成した後、次サンプルへ進める。
-        // キャッシュを含むState全体のサンプルごとのコピーは行わない。
+        // ノートの切替時だけ、位相モードとADAAの履歴初期化を反映する。
         if input.note_generation != self.state.note_generation && input.active {
             self.state.valid = false;
             match input.phase_mode {
@@ -290,16 +287,14 @@ impl Oscillator {
         if input.active {
             self.refresh_frequency(input, sample_rate);
         }
-        // SAFETY: 上で同じ定常入力のノート境界と周波数を反映した。
-        unsafe { self.generate_prepared_sample::<OUTPUT>(input) }
     }
 
-    /// 区間の先頭で反映した定常入力から1サンプルを生成する。
+    /// 反映済みの定常入力から1サンプルを生成する。
     ///
     /// # Safety
-    /// 直前のgenerate_validated_sampleとwaveform・frequency_hz・unison_voices・
+    /// 直前のprepare_sampleとwaveform・frequency_hz・unison_voices・
     /// detune_cents・note_generation・phase_mode・phase_modulatedが同じこと。
-    /// activeがfalseからtrueへ変わる場合は、改めてvalidated入口で準備すること。
+    /// activeがfalseからtrueへ変わる場合は、改めてprepare_sampleで準備すること。
     /// phase_modulationは変化してよいが、有限のi32範囲内であること。
     #[inline]
     pub(super) unsafe fn generate_prepared_sample<const OUTPUT: bool>(

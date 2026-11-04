@@ -27,6 +27,8 @@ pub struct VoiceState {
     pub(super) oscillator_inputs: [OscillatorInput; 3],
     /// 発振器ごとに独立した位相・乱数の状態。
     oscillators: [Oscillator; 3],
+    /// 各発振器へ定常入力を反映済みなら対応ビットが1。設定・ノート変更時に失効する。
+    oscillators_prepared: u8,
     /// Volの線形倍率。−∞ dBでは0。
     oscillator_volumes: [f64; 3],
     /// 波形・ユニゾン補正とVolを合わせた倍率。設定変更時に計算する。
@@ -97,6 +99,7 @@ impl Voice {
                     note_generation: 0,
                 }; 3],
                 oscillators: std::array::from_fn(|_| Oscillator::new()),
+                oscillators_prepared: 0,
                 oscillator_volumes: [1.0, 0.0, 0.0],
                 oscillator_gains: [std::f64::consts::SQRT_2, 0.0, 0.0],
                 phase_depths: [0.0; 2],
@@ -134,6 +137,7 @@ impl Voice {
         if !frequency_hz.is_finite() {
             return false;
         }
+        self.state.oscillators_prepared = 0;
         self.state.note_generation = self.state.note_generation.wrapping_add(1);
         for (input, ratio) in self
             .state
@@ -178,6 +182,7 @@ impl Voice {
     }
 
     pub fn stop(&mut self) {
+        self.state.oscillators_prepared = 0;
         // releaseとは区別し、次サンプルで即時消音する。位相は保持する。
         self.state.gate = false;
         self.state.envelope.stop();
@@ -221,6 +226,15 @@ impl Voice {
         detune: f64,
         phase_mode: PhaseMode,
     ) {
+        let input = &self.state.oscillator_inputs[0];
+        if input.phase_mode != phase_mode {
+            self.state.oscillators_prepared = 0;
+        } else if input.waveform != waveform
+            || input.unison_voices != unison
+            || input.detune_cents != detune
+        {
+            self.state.oscillators_prepared &= !1;
+        }
         self.state.oscillator_inputs[0].waveform = waveform;
         self.state.envelope_parameters = envelope;
         self.state
@@ -239,9 +253,13 @@ impl Voice {
         self.state.oscillator_volumes[index] = gain;
         self.state.tune_ratios[index] = tune_ratio;
         let base_hz = self.state.oscillator_inputs[0].frequency_hz;
+        let frequency_hz = (base_hz * tune_ratio).min(f64::MAX);
         let input = &mut self.state.oscillator_inputs[index];
+        if input.waveform != waveform || input.frequency_hz != frequency_hz {
+            self.state.oscillators_prepared &= !(1 << index);
+        }
         input.waveform = waveform;
-        input.frequency_hz = (base_hz * tune_ratio).min(f64::MAX);
+        input.frequency_hz = frequency_hz;
         self.refresh_volume(index);
     }
 
@@ -256,6 +274,11 @@ impl Voice {
 
     /// 親が検証したOsc2・Osc3のMod設定を配送する。
     pub fn set_phase_modulation(&mut self, depths: [f64; 2]) {
+        for (i, (&old, &new)) in self.state.phase_depths.iter().zip(&depths).enumerate() {
+            if (old != 0.0) != (new != 0.0) {
+                self.state.oscillators_prepared &= !(1 << i);
+            }
+        }
         self.state.phase_depths = depths;
     }
 
@@ -432,6 +455,7 @@ impl Voice {
             if !(sample_rate.is_finite() & (sample_rate > 0.0)) {
                 return [0.0; 2];
             }
+            self.state.oscillators_prepared = 0;
             self.state.sample_rate = sample_rate;
             self.state.envelope.set_input(
                 &self.state.envelope_parameters,
@@ -457,6 +481,7 @@ impl Voice {
         let mono = [*mono_gains; 7];
         let mut sample = [0.0; 2];
         if active {
+            let prepared = self.state.oscillators_prepared;
             let depths = [0.0, self.state.phase_depths[0], self.state.phase_depths[1]];
             let mut modulation = 0.0;
             // 同じサンプル時刻の生波形をOsc3→Osc2→Osc1へ渡す。
@@ -465,31 +490,23 @@ impl Voice {
                 let input = &mut self.state.oscillator_inputs[i];
                 input.phase_modulation = modulation;
                 input.phase_modulated = i < 2 && self.state.phase_depths[i] != 0.0;
+                // SAFETY: 定常設定・周波数・レートは親とVoiceで検証済み。
+                // 設定・ノート変更は各入口で対応する準備済みビットを失効させる。
+                // 変調入力は有限の生波形と0〜2周期の深度から生成する。
+                if !PREPARED && prepared & (1 << i) == 0 {
+                    unsafe { self.state.oscillators[i].prepare_sample(input, sample_rate) };
+                }
                 if self.state.oscillator_gains[i] == 0.0 && depths[i] == 0.0 {
-                    // SAFETY: 定常設定は親、ノート周波数とレートはVoiceで検証済み。
-                    // 変調入力は有限の波形と0〜2周期の深度から生成し、i32範囲内に収まる。
-                    // PREPAREDは同じ設定の区間の2サンプル目以降だけ。
-                    // ノート変更はなく、activeはtrueからfalseへの遷移だけを許す。
+                    // SAFETY: 同じ定常入力を上記の入口か前サンプルで反映済み。
                     unsafe {
-                        if PREPARED {
-                            self.state.oscillators[i].generate_prepared_sample::<false>(input);
-                        } else {
-                            self.state.oscillators[i]
-                                .generate_validated_sample::<false>(input, sample_rate);
-                        }
+                        self.state.oscillators[i].generate_prepared_sample::<false>(input);
                     }
                     modulation = 0.0;
                     continue;
                 }
-                // SAFETY: 上記と同じ検証済みの定常設定・周波数・レート・変調入力を使う。
-                let current = unsafe {
-                    if PREPARED {
-                        self.state.oscillators[i].generate_prepared_sample::<true>(input)
-                    } else {
-                        self.state.oscillators[i]
-                            .generate_validated_sample::<true>(input, sample_rate)
-                    }
-                };
+                // SAFETY: 上記と同じ準備済み入力。再発音はNote Onを通る。
+                let current =
+                    unsafe { self.state.oscillators[i].generate_prepared_sample::<true>(input) };
                 modulation = current.values[0] * depths[i];
                 if self.state.oscillator_gains[i] != 0.0 {
                     // 無音の変調源はrawだけを使い、音声用の定位・加算を省く。
@@ -501,6 +518,9 @@ impl Voice {
                     sample[0] += audio[0];
                     sample[1] += audio[1];
                 }
+            }
+            if !PREPARED {
+                self.state.oscillators_prepared = 0b111;
             }
         } else {
             // 再発音は必ずNote Onを通り、各Oscillatorの世代変更で履歴を更新する。

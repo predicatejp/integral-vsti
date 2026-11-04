@@ -424,6 +424,17 @@ mod tests {
             let mut heard = false;
             for step in 0..40 {
                 let changes: &[(usize, f64)] = match step {
+                    1 => &[(24, 600.)],
+                    2 => &[(6, 7.)],
+                    3 => &[(7, 8.)],
+                    5 => &[(0, 1.)],
+                    6 => &[(27, -700.)],
+                    7 => &[(12, 2.)],
+                    11 => &[(29, 0.)],
+                    13 => &[(29, 37.)],
+                    15 => &[(24, 0.)],
+                    19 => &[(7, 0.)],
+                    22 => &[(4, 0.43)],
                     4 => &[
                         (0, 3.),
                         (6, 3.),
@@ -470,6 +481,12 @@ mod tests {
                     _ => &[],
                 };
                 for synth in [&mut serial, &mut series] {
+                    if step == 9 {
+                        synth.set_sample_rate(44100.);
+                    }
+                    if step == 17 {
+                        synth.set_sample_rate(96000.);
+                    }
                     synth.set_parameters(values);
                     for &(on, id, pitch) in events {
                         if on {
