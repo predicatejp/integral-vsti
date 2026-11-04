@@ -715,11 +715,14 @@ sh scripts/install-ci-tools.sh
 
 ```sh
 . scripts/ci-versions.sh
-cargo +"$CI_NIGHTLY" miri test --locked --lib
+MIRIFLAGS=-Zmiri-no-extra-rounding-error cargo +"$CI_NIGHTLY" miri test --locked --lib
 cargo +stable deny --locked check
 mkdir -p target/coverage
 cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path target/coverage/lcov.info
 ```
+
+Miriでは数学関数へのランダムな追加丸めを無効にし、独立した音源の出力を厳密に比較します。
+メモリ安全性の検査は有効です。
 
 GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.toml` で監査します。
 依存を追加する際は、利用条件と通知ファイルを確認して許可リストも更新してください。本体の配布ライセンスはこの設定では決定しません。

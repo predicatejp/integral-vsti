@@ -99,7 +99,7 @@ jobs:
       - run: sh scripts/install-ci-tools.sh miri
       - run: |
           source scripts/ci-versions.sh
-          cargo +"$CI_NIGHTLY" miri test --locked --lib
+          MIRIFLAGS=-Zmiri-no-extra-rounding-error cargo +"$CI_NIGHTLY" miri test --locked --lib
 
   coverage:
     name: Coverage

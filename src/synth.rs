@@ -680,7 +680,7 @@ mod tests {
             for id in 0..4 {
                 assert!(synth.note_on(note(id, 0, 60 + id as i16), 0.0, 0.8));
             }
-            for _ in 0..128 {
+            for _ in 0..if cfg!(miri) { 8 } else { 128 } {
                 synth.generate_sample();
             }
             let mut limited = values;
@@ -732,7 +732,8 @@ mod tests {
             assert!(delayed.note_on(n, 0.0, 0.7));
             assert!(reference.note_on(n, 0.0, 0.7));
         }
-        for _ in 0..4096 {
+        // Miriでも両エンベロープがsustainへ達する480サンプルを越えて比較する。
+        for _ in 0..if cfg!(miri) { 512 } else { 4096 } {
             assert_eq!(delayed.generate_sample(), reference.generate_sample());
         }
     }
@@ -931,7 +932,8 @@ mod tests {
                         synth.note_on(note(id, 0, 69), 0.0, 1.0);
                     }
                     let gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
-                    for _ in 0..96 {
+                    // Miriでは2点のADAA履歴充填後まで、全パラメーター・枠数を照合する。
+                    for _ in 0..if cfg!(miri) { 8 } else { 96 } {
                         let sample = reference.generate_sample(
                             48000.0,
                             &synth.state.panning_gains,
