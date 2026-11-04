@@ -330,7 +330,7 @@ impl Voice {
         self.generate_one_sample::<false>(sample_rate, gains, mono_gains)
     }
 
-    /// 定常入力が同じ区間の先頭で発振器を準備し、残りのサンプルを生成する。
+    /// 定常入力が同じ区間の先頭で必要な準備を済ませ、残りのサンプルを生成する。
     pub fn generate_samples(
         &mut self,
         sample_rate: f64,
