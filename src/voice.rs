@@ -311,8 +311,108 @@ impl Voice {
     ) {
         if let Some((first, rest)) = output.split_first_mut() {
             *first = self.generate_sample(sample_rate, gains, mono_gains);
+            if self.state.oscillator_inputs[0].phase_modulated
+                || self.state.oscillator_inputs[1].phase_modulated
+            {
+                self.generate_pipeline_samples(sample_rate, gains, mono_gains, rest);
+                return;
+            }
             for value in rest {
                 *value = self.generate_one_sample::<true>(sample_rate, gains, mono_gains);
+            }
+        }
+    }
+
+    /// 位相変調の一方向の依存関係に従い、発振器ごとに定常区間を生成する。
+    #[inline(never)]
+    fn generate_pipeline_samples(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+        output: &mut [[f64; 2]],
+    ) {
+        if !(sample_rate.is_finite() && sample_rate > 0.0) {
+            output.fill([0.0; 2]);
+            return;
+        }
+        // 呼出し元の通常生成で、この定常区間の発振器は全て準備済み。
+        for rest in output.chunks_mut(32) {
+            let mut amplitudes = [0.0; 32];
+            let mut cutoffs = [0.0; 32];
+            let mut active_count = 0;
+            let mut modulation = [0.0; 32];
+            for n in 0..rest.len() {
+                amplitudes[n] = self.state.envelope.generate_sample();
+                cutoffs[n] =
+                    self.state.cutoff_envelope.generate_sample() * self.state.cutoff_amount_cents;
+                active_count += usize::from(self.state.envelope.is_active());
+                self.state.envelope.update_sample();
+                self.state.cutoff_envelope.update_sample();
+            }
+            rest.fill([0.0; 2]);
+            let mono = [*mono_gains; 7];
+            let depths = [0.0, self.state.phase_depths[0], self.state.phase_depths[1]];
+            // 変調配列をOsc3→Osc2→Osc1の順に上書きし、同じ順で音声へ加算する。
+            for i in (0..3).rev() {
+                let gain = self.state.oscillator_gains[i];
+                let pans = if i == 0 { gains } else { &mono };
+                let input = &mut self.state.oscillator_inputs[i];
+                input.phase_modulated = i < 2 && self.state.phase_depths[i] != 0.0;
+                input.active = true;
+                if gain == 0.0 && depths[i] == 0.0 {
+                    for phase_modulation in &mut modulation[..active_count] {
+                        input.phase_modulation = *phase_modulation;
+                        // SAFETY: 区間の先頭で同じ定常入力を反映済み。
+                        // activeはtrue→falseだけ、変調は有限のi32範囲内。
+                        unsafe {
+                            self.state.oscillators[i].generate_prepared_sample::<false>(input);
+                        }
+                        *phase_modulation = 0.0;
+                    }
+                } else {
+                    for n in 0..active_count {
+                        input.phase_modulation = modulation[n];
+                        // SAFETY: 上と同じ準備済みの定常入力と発音期間を使う。
+                        let current = unsafe {
+                            self.state.oscillators[i].generate_prepared_sample::<true>(input)
+                        };
+                        modulation[n] = current.values[0] * depths[i];
+                        if gain != 0.0 {
+                            let audio = volume::process_sample(
+                                &current.values[..current.count],
+                                pans,
+                                gain,
+                            );
+                            rest[n][0] += audio[0];
+                            rest[n][1] += audio[1];
+                        }
+                    }
+                }
+                // 定常区間内でactiveはtrue→falseだけ。次Note Onで履歴を再準備する。
+                if active_count < rest.len() {
+                    input.active = false;
+                }
+            }
+            for (n, sample) in rest.iter_mut().enumerate() {
+                let cents = cutoffs[n];
+                if !matches!(self.state.filter_type, FilterType::None)
+                    && cents != self.state.cutoff_modulation.0
+                {
+                    self.state.cutoff_modulation = (cents, 2.0_f64.powf(cents / 1200.0));
+                }
+                *sample = self.state.filter.process_sample(
+                    sample.map(|value| value * amplitudes[n]),
+                    self.state.filter_type,
+                    &FilterParameters {
+                        cutoff_hz: (self.state.oscillator_inputs[0].frequency_hz
+                            * self.state.cutoff_ratio
+                            * self.state.cutoff_modulation.1)
+                            .min(f64::MAX),
+                        resonance_q: self.state.resonance_q,
+                    },
+                    sample_rate,
+                );
             }
         }
     }
@@ -429,6 +529,35 @@ mod tests {
 
     fn audio_values(oscillator: &mut Oscillator, input: &OscillatorInput, rate: f64) -> [f64; 7] {
         oscillator.generate_sample(input, rate).values
+    }
+
+    #[test]
+    fn invalid_series_rate_preserves_voice_state() {
+        let mut series = Voice::new();
+        let mut reference = Voice::new();
+        let note = Note {
+            id: 1,
+            channel: 0,
+            pitch: 69,
+        };
+        for voice in [&mut series, &mut reference] {
+            voice.set_phase_modulation([0.5, 0.3]);
+            voice.note_on(note, 0.0, 1.0);
+            for _ in 0..64 {
+                voice.generate_sample(48_000.0, &[[1.0; 2]; 7], &[1.0; 2]);
+            }
+        }
+        for rate in [0.0, -1.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let mut output = [[7.0; 2]; 33];
+            series.generate_samples(rate, &[[1.0; 2]; 7], &[1.0; 2], &mut output);
+            assert_eq!(output, [[0.0; 2]; 33]);
+        }
+        for _ in 0..128 {
+            assert_eq!(
+                series.generate_sample(48_000.0, &[[1.0; 2]; 7], &[1.0; 2]),
+                reference.generate_sample(48_000.0, &[[1.0; 2]; 7], &[1.0; 2]),
+            );
+        }
     }
 
     #[test]
