@@ -279,7 +279,11 @@ impl Envelope {
             (0.0, boundary)
         };
         self.state.increment = slope / sample_rate * 1000.0;
-        self.state.remaining = boundary.saturating_sub(self.state.elapsed_samples);
+        // ms→sampleとsample→msの丸めが境界の両側へ分かれる場合も、
+        // 境界直前から元式で判定し、0ms段階の切替を遅らせない。
+        self.state.remaining = boundary
+            .saturating_sub(1)
+            .saturating_sub(self.state.elapsed_samples);
     }
 }
 
@@ -301,6 +305,35 @@ mod tests {
             (actual - expected).abs() < 1e-12,
             "time={time}, off={off:?}: {actual} != {expected}"
         );
+    }
+
+    #[test]
+    fn fractional_sample_rate_preserves_zero_decay_boundary() {
+        let rate = 44100.5;
+        let parameters = EnvelopeParameters {
+            attack_ms: 100.0 * 1000.0 / rate,
+            hold_ms: 0.0,
+            decay_ms: 0.0,
+            sustain: 0.31,
+            release_ms: 0.0,
+        };
+        let mut envelope = Envelope::new();
+        envelope.set_input(&parameters, rate, 0.7);
+        for sample in 0..104 {
+            let actual = envelope.generate_sample(true, 1, 0);
+            let expected = value(
+                &parameters,
+                f64::from(sample) / rate * 1000.0,
+                None,
+                0.0,
+                0.7,
+            );
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "sample={sample}: {actual} != {expected}"
+            );
+            envelope.update_sample();
+        }
     }
 
     #[test]
