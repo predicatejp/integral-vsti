@@ -1103,8 +1103,8 @@ void checkFm(IComponent* component, IAudioProcessor* processor, IEditController*
             return points;
         };
         const double m2 = sineAdaa2(interval(1, phase[1] + fm3*m3, 880./48000));
-        const auto points = interval(0, phase[0] + fm2*m2, 440./48000);
-        const double expected = n < 31 ? std::sqrt(2.) * bandlimited(3, points[0], 440.0/48000, &points) : 0;
+        const auto carrierPoints = interval(0, phase[0] + fm2*m2, 440./48000);
+        const double expected = n < 31 ? std::sqrt(2.) * bandlimited(3, carrierPoints[0], 440.0/48000, &carrierPoints) : 0;
         const auto delayed = reference.next(0, expected);
         assert(left[n] == delayed[0] && std::abs(right[n] - delayed[1]) < 2e-5);
         phase[0] += 440 / 48000.;

@@ -555,7 +555,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             parent.knobButton(true);
             waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
             assert(handler.sequence == (std::vector<int>{0}));
-            assert(!parent.cursorVisible());
+            waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
             const int overlayX = std::clamp(logicalX - 112, 0, 560);
             const int overlayY = std::clamp(logicalY - 91, 0, 500);

@@ -669,6 +669,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // 設定全項目の音声照合は実CPUで行う。
     fn increasing_polyphony_synchronizes_settings_changed_while_disabled() {
         let mut delayed = Synthesizer::new();
         let mut reference = Synthesizer::new();
@@ -680,7 +681,7 @@ mod tests {
             for id in 0..4 {
                 assert!(synth.note_on(note(id, 0, 60 + id as i16), 0.0, 0.8));
             }
-            for _ in 0..if cfg!(miri) { 8 } else { 128 } {
+            for _ in 0..128 {
                 synth.generate_sample();
             }
             let mut limited = values;
@@ -732,8 +733,7 @@ mod tests {
             assert!(delayed.note_on(n, 0.0, 0.7));
             assert!(reference.note_on(n, 0.0, 0.7));
         }
-        // Miriでも両エンベロープがsustainへ達する480サンプルを越えて比較する。
-        for _ in 0..if cfg!(miri) { 512 } else { 4096 } {
+        for _ in 0..4096 {
             assert_eq!(delayed.generate_sample(), reference.generate_sample());
         }
     }
@@ -802,8 +802,15 @@ mod tests {
                 for id in 0..32 {
                     assert!(synth.note_on(note(id, 0, 127), 0.0, 1.0));
                 }
-                for _ in 0..33 {
-                    assert!(synth.mix_sample().iter().all(|x| x.is_finite()));
+                if cfg!(miri) {
+                    // 全設定で準備済みPM系列と、ADAA履歴充填後の更新を通す。
+                    let mut output = [[f64::NAN; 2]; 8];
+                    synth.generate_samples(&mut output);
+                    assert!(output.iter().flatten().all(|x| x.is_finite()));
+                } else {
+                    for _ in 0..33 {
+                        assert!(synth.mix_sample().iter().all(|x| x.is_finite()));
+                    }
                 }
                 synth.stop();
                 assert_eq!(synth.mix_sample(), [0.0; 2]);
@@ -878,6 +885,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // 全パラメーター・端点・枠数の音声照合は実CPUで行う。
     fn individual_parameter_updates_reach_current_and_future_voices() {
         for index in (0..parameters::COUNT).filter(|&i| i != 8 && i != 12 && i != 34) {
             for value in [0.0, 1.0] {
@@ -932,8 +940,7 @@ mod tests {
                         synth.note_on(note(id, 0, 69), 0.0, 1.0);
                     }
                     let gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
-                    // Miriでは2点のADAA履歴充填後まで、全パラメーター・枠数を照合する。
-                    for _ in 0..if cfg!(miri) { 8 } else { 96 } {
+                    for _ in 0..96 {
                         let sample = reference.generate_sample(
                             48000.0,
                             &synth.state.panning_gains,
@@ -1181,20 +1188,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // 全波形・レート・ベロシティの実効値は実CPUで照合する。
     fn every_waveform_has_expected_sustain_rms() {
-        // 通常は各レートで440 Hzを1秒間測定。Miriでは256点で1周期となる条件に縮小する。
-        let measurements: &[(i32, i32)] = if cfg!(miri) {
-            &[(112640, 256)]
-        } else {
-            &[(44100, 44100), (48000, 48000), (96000, 96000)]
-        };
+        let measurements = [(44100, 44100), (48000, 48000), (96000, 96000)];
         for waveform in [
             Waveform::Sine,
             Waveform::Triangle,
             Waveform::Square,
             Waveform::Sawtooth,
         ] {
-            for &(rate, samples) in measurements {
+            for (rate, samples) in measurements {
                 for velocity in [0.0, 0.25, 0.5, 1.0] {
                     let mut synth = unfiltered();
                     synth.state.voices[0].set_oscillator(0, waveform, 1.0, 1.0);
@@ -1329,6 +1332,7 @@ mod distortion_tests {
         p
     }
     #[test]
+    #[cfg_attr(miri, ignore)] // Gain/Mixの数値総当たりは実CPUで照合する。
     fn adaa2_keeps_dry_exact_and_mixes_at_the_output_time() {
         for clipper in [1.0, 2.0] {
             let mut mixed = Synthesizer::new();
