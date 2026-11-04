@@ -340,6 +340,17 @@ impl Voice {
     ) {
         if let Some((first, rest)) = output.split_first_mut() {
             *first = self.generate_sample(sample_rate, gains, mono_gains);
+            // 先頭を生成した時点で既に停止済みなら、後続の入力・時計も変化しない。
+            // 更新直後にreleaseが完了した区間は、active表示の同期を通常経路へ任せる。
+            if matches!(self.state.filter_type, FilterType::None)
+                && !self.state.oscillator_inputs[0].active
+                && !self.state.envelope.is_active()
+                && !self.state.cutoff_envelope.is_active()
+            {
+                std::hint::cold_path();
+                rest.fill([0.0; 2]);
+                return;
+            }
             if self.state.oscillator_inputs[0].phase_modulated
                 || self.state.oscillator_inputs[1].phase_modulated
             {

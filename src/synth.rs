@@ -540,7 +540,7 @@ mod tests {
             // ノイズ・Random位相を含む全ての初期乱数状態を同じにする。
             let mut series = serial.clone();
             let mut heard = false;
-            for step in 0..40 {
+            for step in 0..50 {
                 let changes: &[(usize, f64)] = match step {
                     1 => &[(24, 600.)],
                     2 => &[(6, 7.)],
@@ -583,6 +583,8 @@ mod tests {
                     28 => &[(29, 0.), (30, 0.), (9, 2.)],
                     32 => &[(25, -12.), (28, -12.), (29, 23.), (30, 17.)],
                     36 => &[(23, 4.), (29, 100.)],
+                    40 => &[(5, 0.), (9, 0.), (18, 0.)],
+                    44 => &[(29, 0.), (30, 0.)],
                     _ => &[],
                 };
                 for &(index, value) in changes {
@@ -596,6 +598,11 @@ mod tests {
                     27 => &[(true, 6, 60)],
                     31 => &[(false, 6, 60), (true, 7, 60)],
                     35 => &[(true, 8, 60), (false, 7, 60)],
+                    41 => &[(true, 9, 60)],
+                    42 => &[(false, 9, 60)],
+                    45 => &[(true, 10, 60)],
+                    46 => &[(false, 10, 60)],
+                    48 => &[(true, 11, 60)],
                     _ => &[],
                 };
                 for synth in [&mut serial, &mut series] {
@@ -635,6 +642,10 @@ mod tests {
                     heard |= *value != [0.; 2];
                 }
                 assert_eq!(series.active_voice_count(), serial.active_voice_count());
+                if matches!(step, 43 | 44 | 47) {
+                    assert!(output[..count].iter().all(|sample| *sample == [0.; 2]));
+                    assert_eq!(series.active_voice_count(), 0);
+                }
             }
             assert!(heard);
         }
@@ -783,7 +794,13 @@ mod tests {
 
     #[test]
     fn maximum_phase_modulation_stays_finite_with_high_notes_and_all_waveforms() {
-        for rate in [44100.0, 48000.0, 96000.0] {
+        // Miriは最小レートで全波形・最大枠の系列を通し、レート別の数値走査は実CPUで行う。
+        let rates: &[f64] = if cfg!(miri) {
+            &[44100.0]
+        } else {
+            &[44100.0, 48000.0, 96000.0]
+        };
+        for &rate in rates {
             for wave in 0..5 {
                 let mut synth = Synthesizer::new();
                 synth.set_sample_rate(rate);
