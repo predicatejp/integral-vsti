@@ -94,8 +94,7 @@ impl Synthesizer {
                 return true;
             }
         }
-        let previous = self.state.parameters;
-        self.state.parameters = values;
+        let previous = &self.state.parameters;
         // 有効範囲が広がるときは、休止していた枠へ現在の全設定を配送する。
         let expanded = values[8] > previous[8];
         let oscillator_changed =
@@ -185,13 +184,6 @@ impl Synthesizer {
             let distortion = parameters::distortion(&values);
             self.state.distortion = distortion;
         }
-        if values[31] != previous[31] {
-            self.state.requested_processing = self.state.distortion.clipper;
-            if !self.state.started {
-                self.state.processing = self.state.requested_processing;
-                self.reset_distortion();
-            }
-        }
         if expanded || values[9..11] != previous[9..11] {
             let filter_type = parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize];
             let cutoff_cents = parameters::to_plain(10, values[10]);
@@ -203,6 +195,15 @@ impl Synthesizer {
             let resonance_q = parameters::to_plain(11, values[11]);
             for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_resonance(resonance_q);
+            }
+        }
+        let clipper_changed = values[31] != previous[31];
+        self.state.parameters = values;
+        if clipper_changed {
+            self.state.requested_processing = self.state.distortion.clipper;
+            if !self.state.started {
+                self.state.processing = self.state.requested_processing;
+                self.reset_distortion();
             }
         }
         true
