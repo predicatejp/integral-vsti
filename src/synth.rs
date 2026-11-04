@@ -29,9 +29,8 @@ pub struct SynthesizerState {
     panning_gains: PanningGains,
     /// ユニゾンを使わないOsc2/3の共通Pan係数。
     mono_gains: [f64; 2],
-    /// 適用中のClipperと切り替え先。
+    /// 適用中のClipper。切り替え先はdistortion.clipperに保持する。
     processing: ClipperType,
-    requested_processing: ClipperType,
     /// 32サンプルのfade-out、2のADAA履歴充填、32のfade-inの残り。
     transition: u8,
     /// 発音前・停止中の設定は即時反映する。
@@ -63,7 +62,6 @@ impl Synthesizer {
                 panning_gains: [[1.0; 2]; 7],
                 mono_gains: [1.0; 2],
                 processing: ClipperType::None,
-                requested_processing: ClipperType::None,
                 transition: 0,
                 started: false,
                 previous_dry: [0.0; 2],
@@ -239,12 +237,9 @@ impl Synthesizer {
         }
         let clipper_changed = values[31] != previous[31];
         self.state.parameters = values;
-        if clipper_changed {
-            self.state.requested_processing = self.state.distortion.clipper;
-            if !self.state.started {
-                self.state.processing = self.state.requested_processing;
-                self.reset_distortion();
-            }
+        if clipper_changed && !self.state.started {
+            self.state.processing = self.state.distortion.clipper;
+            self.reset_distortion();
         }
         true
     }
@@ -280,7 +275,7 @@ impl Synthesizer {
         self.state.started = false;
         self.state.used_voices = 0;
         self.state.transition = 0;
-        self.state.processing = self.state.requested_processing;
+        self.state.processing = self.state.distortion.clipper;
         for voice in &mut self.state.voices {
             voice.stop();
         }
@@ -298,7 +293,7 @@ impl Synthesizer {
     pub fn generate_samples(&mut self, output: &mut [[f64; 2]]) {
         if output.len() <= 1
             || self.state.transition != 0
-            || self.state.processing != self.state.requested_processing
+            || self.state.processing != self.state.distortion.clipper
         {
             for out in output {
                 *out = self.generate_sample();
@@ -365,11 +360,11 @@ impl Synthesizer {
 
     pub fn generate_sample(&mut self) -> [f64; 2] {
         self.state.started = true;
-        if self.state.transition == 0 && self.state.processing != self.state.requested_processing {
+        if self.state.transition == 0 && self.state.processing != self.state.distortion.clipper {
             self.state.transition = 66;
         }
         if self.state.transition == 34 {
-            self.state.processing = self.state.requested_processing;
+            self.state.processing = self.state.distortion.clipper;
             self.reset_distortion();
         }
         let clipper = self.state.processing;
