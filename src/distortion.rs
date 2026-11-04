@@ -160,11 +160,12 @@ mod tests {
     fn subnormal_interval_with_normal_endpoints_remains_finite() {
         let _mode = crate::float_mode::FloatMode::flush_subnormals();
         // 端点はnormalだが、差は3.12e-309でFTZによって0になる。
-        let (a, b, c) = (
+        // 定数畳み込みはFTZを考慮しないため、入力を実行時に読み出す。
+        let (a, b, c) = std::hint::black_box((
             5.655013176369847e-306,
             5.658134873944616e-306,
             1.2268606283216226,
-        );
+        ));
         let expected = 0.40636791694234973;
         assert!((hard_second(a, b, c) - expected).abs() < 1e-14);
         assert!((hard_second(-c, -b, -a) + expected).abs() < 1e-14);
@@ -173,7 +174,7 @@ mod tests {
             ([-1e154, -1e154, 1e154], -0.5),
             ([-1e154, 1e154, 1e154], 0.5),
         ] {
-            let [a, b, c] = points;
+            let [a, b, c] = std::hint::black_box(points);
             assert!((hard_second(a, b, c) - expected).abs() < 1e-14);
         }
     }
