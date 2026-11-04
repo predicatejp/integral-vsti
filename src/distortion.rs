@@ -229,7 +229,8 @@ mod tests {
     fn matching_channels_preserve_history_when_stereo_returns() {
         let mut stereo = Distortion::new();
         let mut channels = [Distortion::new(), Distortion::new()];
-        for n in 0..2000 {
+        // MiriでもSoft→Hard→None→Softとmono/stereoの切替を通す。
+        for n in 0..if cfg!(miri) { 384 } else { 2000 } {
             let clipper = [ClipperType::Soft, ClipperType::Hard, ClipperType::None][n / 97 % 3];
             if n % 97 == 0 {
                 stereo.reset();

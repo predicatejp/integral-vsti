@@ -1075,7 +1075,8 @@ mod tests {
         let bank = adaa::Bank::new(Waveform::Sine, 876.0 / 48000.0);
         let increment = input.frequency_hz / 48000.0;
         let mut history = [-increment, -2.0 * increment];
-        for n in 0..4096 {
+        // Miriでも複数の位相折返しを通し、後続のユニゾン切替を照合する。
+        for n in 0..if cfg!(miri) { 512 } else { 4096 } {
             input.phase_modulation = 2.0 * (n as f64 * 0.183).sin();
             let q = n as f64 * increment + input.phase_modulation;
             let expected = bank.generate_sample(q, history[0], history[1]);
@@ -1156,7 +1157,8 @@ mod tests {
             Waveform::Sawtooth,
             Waveform::Noise,
         ];
-        for n in 0..5000 {
+        // Miriでも全波形・ユニゾン数・位相モードと出力再開を通す。
+        for n in 0..if cfg!(miri) { 1024 } else { 5000 } {
             let mut input = test_input();
             input.waveform = waves[n / 61 % waves.len()];
             input.unison_voices = (n / 79 % 7 + 1) as u32;

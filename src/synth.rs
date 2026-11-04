@@ -1521,7 +1521,8 @@ mod distortion_tests {
                 1.0,
             );
         }
-        for n in 0..3000 {
+        // MiriでもNone→Soft→Hard→Noneの各切替と66サンプルの遷移を通す。
+        for n in 0..if cfg!(miri) { 1200 } else { 3000 } {
             if n % 300 == 0 {
                 p[31] = ((n / 300) % 3) as f64 / 2.0;
                 synth.set_parameters(p);
