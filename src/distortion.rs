@@ -157,6 +157,7 @@ fn hard_second(a: f64, b: f64, c: f64) -> f64 {
 mod tests {
     use super::*;
     #[test]
+    #[cfg(not(miri))]
     fn subnormal_interval_with_normal_endpoints_remains_finite() {
         let _mode = crate::float_mode::FloatMode::flush_subnormals();
         // 端点はnormalだが、差は3.12e-309でFTZによって0になる。
