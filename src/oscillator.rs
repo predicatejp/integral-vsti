@@ -168,8 +168,8 @@ pub struct OscillatorState {
     bank: [adaa::Bank; 7],
     /// 履歴を連続使用できるか。ノート・波形・発音数変更時に破棄する。
     valid: bool,
-    /// 履歴に有効なユニゾン数。未使用スロットの再利用を検出する。
-    history_count: usize,
+    /// 定常入力から求めた実ユニゾン数。未使用スロットの再利用も検出する。
+    rendered_count: usize,
     /// Note On時だけ進める位相用乱数。ノイズ用とは独立した状態を持つ。
     random: Random,
     /// ノイズ専用xoshiro256+の状態。各ユニゾンに連続する別の値を割り当てる。
@@ -210,7 +210,7 @@ impl Oscillator {
                 history: [[0.; 2]; 7],
                 bank: [adaa::Bank::new(Waveform::Sine, 0.); 7],
                 valid: false,
-                history_count: 0,
+                rendered_count: 0,
                 random: Random::new(),
                 noise: Random::new(),
                 note_generation: 0,
@@ -296,7 +296,7 @@ impl Oscillator {
         }
         self.refresh_frequency(input, sample_rate);
         let sample = self.generate_waveform_sample::<OUTPUT>(input);
-        self.update_sample(input);
+        self.update_sample();
         sample
     }
 
@@ -309,7 +309,7 @@ impl Oscillator {
         match input.waveform {
             Waveform::Noise => {
                 self.state.valid = false;
-                let count = input.rendered_voices();
+                let count = self.state.rendered_count;
                 let mut values = [0.0; 7];
                 for value in &mut values[..count] {
                     *value = 2.0 * self.state.noise.next_f64() - 1.0;
@@ -336,7 +336,7 @@ impl Oscillator {
         &mut self,
         input: &OscillatorInput,
     ) -> OscillatorSample {
-        let count = input.rendered_voices();
+        let count = self.state.rendered_count;
         let mut values = [0.0; 7];
         if input.phase_modulated {
             return self.generate_antialiased_sample::<OUTPUT>(input);
@@ -385,12 +385,8 @@ impl Oscillator {
         &mut self,
         input: &OscillatorInput,
     ) -> OscillatorSample {
-        let count = input.rendered_voices();
+        let count = self.state.rendered_count;
         let mut values = [0.; 7];
-        if self.state.history_count != count {
-            self.state.valid = false;
-            self.state.history_count = count;
-        }
         for (k, value) in values[..count].iter_mut().enumerate() {
             let phase = self.state.phases[k];
             let q = phase + input.phase_modulation;
@@ -426,13 +422,18 @@ impl Oscillator {
     fn refresh_frequency(&mut self, input: &OscillatorInput, sample_rate: f64) {
         let unison = (input.unison_voices, input.detune_cents);
         let changed = self.state.unison_input != Some(unison);
-        let count = input.rendered_voices();
         if changed {
+            let count = input.rendered_voices();
+            if self.state.rendered_count != count {
+                self.state.valid = false;
+                self.state.rendered_count = count;
+            }
             for (k, ratio) in self.state.frequency_ratios[..count].iter_mut().enumerate() {
                 *ratio = input.frequency_ratio(k);
             }
             self.state.unison_input = Some(unison);
         }
+        let count = self.state.rendered_count;
         let frequency = (input.frequency_hz, sample_rate, input.waveform);
         if changed || self.state.frequency_input != Some(frequency) {
             if self
@@ -471,9 +472,9 @@ impl Oscillator {
     }
 
     /// 発音中のサンプル生成後に、定常入力を用いて内部状態を1サンプル分進める。
-    fn update_sample(&mut self, input: &OscillatorInput) {
+    fn update_sample(&mut self) {
         // generate_sampleが発音中であることを確認してから呼ぶ。
-        for (phase, increment) in self.state.phases[..input.rendered_voices()]
+        for (phase, increment) in self.state.phases[..self.state.rendered_count]
             .iter_mut()
             .zip(&self.state.phase_increments)
         {
