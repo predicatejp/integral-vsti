@@ -98,13 +98,26 @@ fn ramp(time: f64, duration: f64) -> f64 {
     (time / duration.abs()).min(1.0).max(0.0)
 }
 
+/// 次の段境界まで適用する線形区間。HoldとSustainはConstantにまとめる。
+#[derive(Clone, Copy, PartialEq)]
+enum Segment {
+    Constant,
+    Attack,
+    Decay,
+    Release,
+}
+
 /// エンベロープの独立した時間・再トリガー履歴。データだけを保持する。
 #[derive(Clone, Copy)]
 struct EnvelopeState {
     /// 次サンプル時点の正規化値。再ノートオンの開始値に使う。
     current_value: f64,
-    /// 現在の線形区間で1サンプル進めたときの増分。
-    increment: f64,
+    /// 現在の区間。線形区間の値は前回値へ加算せず、絶対時刻から求める。
+    segment: Segment,
+    /// Decayのピーク、またはRelease開始時の値。元式と同じ演算順で保持する。
+    segment_value: f64,
+    /// ノートオフ位置を現在のレートで換算したms。設定変更時に再計算する。
+    release_start_ms: f64,
     /// 次の段境界までのサンプル数。設定変更時の0は次回生成での再計算を表す。
     remaining: u64,
     /// 検証・値計算に使用した設定、レート、ピーク。変更時だけ再検証する。
@@ -133,7 +146,9 @@ impl Envelope {
         Self {
             state: EnvelopeState {
                 current_value: 0.0,
-                increment: 0.0,
+                segment: Segment::Constant,
+                segment_value: 0.0,
+                release_start_ms: 0.0,
                 remaining: 0,
                 input: None,
                 start_value: 0.0,
@@ -230,11 +245,41 @@ impl Envelope {
             self.state.elapsed_samples = self.state.elapsed_samples.saturating_add(1);
             if self.state.remaining > 1 {
                 self.state.remaining -= 1;
-                self.state.current_value += self.state.increment;
+                self.update_segment_sample();
             } else {
                 self.refresh_value();
             }
         }
+    }
+
+    /// 元のvalue_validatedと同じ演算順で、現在段の1つのランプだけを求める。
+    #[inline]
+    fn update_segment_sample(&mut self) {
+        if self.state.segment == Segment::Constant {
+            return;
+        }
+        let Some((parameters, sample_rate, peak)) = self.state.input else {
+            return;
+        };
+        let time = self.state.elapsed_samples as f64 / sample_rate * 1000.0;
+        self.state.current_value = match self.state.segment {
+            Segment::Attack => {
+                let attack = ramp(time, parameters.attack_ms);
+                self.state.start_value * (1.0 - attack) + peak * attack
+            }
+            Segment::Decay => {
+                let decay = ramp(
+                    time - parameters.attack_ms - parameters.hold_ms,
+                    parameters.decay_ms,
+                );
+                self.state.segment_value * ((1.0 - decay) + parameters.sustain * decay)
+            }
+            Segment::Release => {
+                self.state.segment_value
+                    * (1.0 - ramp(time - self.state.release_start_ms, parameters.release_ms))
+            }
+            Segment::Constant => self.state.current_value,
+        };
     }
 
     pub fn is_active(&self) -> bool {
@@ -270,23 +315,23 @@ impl Envelope {
         let decay_start = parameters.attack_ms + parameters.hold_ms;
         let decay_end = decay_start + parameters.decay_ms;
         let sample_at = |ms: f64| (ms * sample_rate / 1000.0).ceil() as u64;
-        let (slope, boundary) = if let Some(off) = self.state.note_off_sample {
+        let (segment, value, boundary) = if let Some(off) = self.state.note_off_sample {
             let off_ms = off as f64 / sample_rate * 1000.0;
             let start = value_validated(&parameters, off_ms, None, self.state.start_value, peak);
+            self.state.release_start_ms = off_ms;
             (
-                -start / parameters.release_ms,
+                Segment::Release,
+                start,
                 off.saturating_add(sample_at(parameters.release_ms)),
             )
         } else if time < parameters.attack_ms {
-            (
-                (peak - self.state.start_value) / parameters.attack_ms,
-                sample_at(parameters.attack_ms),
-            )
+            (Segment::Attack, 0.0, sample_at(parameters.attack_ms))
         } else if time < decay_start {
-            (0.0, sample_at(decay_start))
+            (Segment::Constant, 0.0, sample_at(decay_start))
         } else if time < decay_end {
             (
-                peak * (parameters.sustain - 1.0) / parameters.decay_ms,
+                Segment::Decay,
+                self.state.start_value * 0.0 + peak,
                 sample_at(decay_end),
             )
         } else {
@@ -296,9 +341,10 @@ impl Envelope {
             } else {
                 self.state.elapsed_samples.saturating_add(1)
             };
-            (0.0, boundary)
+            (Segment::Constant, 0.0, boundary)
         };
-        self.state.increment = slope / sample_rate * 1000.0;
+        self.state.segment = segment;
+        self.state.segment_value = value;
         // ms→sampleとsample→msの丸めが境界の両側へ分かれる場合も、
         // 境界直前から元式で判定し、0ms段階の切替を遅らせない。
         self.state.remaining = boundary
