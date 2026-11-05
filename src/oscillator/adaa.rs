@@ -21,9 +21,9 @@ static SECOND: &[u8] = include_bytes!("f2.bin");
 #[derive(Clone, Copy)]
 pub(super) struct Bank {
     /// Richer band selected from the unmodulated frequency.
-    hi: Table,
+    hi: &'static Table,
     /// Adjacent band used while removing the highest harmonics.
-    lo: Table,
+    lo: &'static Table,
     /// Crossfade toward the adjacent band.
     mix: f64,
     /// Fundamental fade immediately below Nyquist.
@@ -31,7 +31,7 @@ pub(super) struct Bank {
 }
 impl Bank {
     pub fn new(w: super::Waveform, inc: f64) -> Self {
-        let ts: &[Table] = match w {
+        let ts: &'static [Table] = match w {
             super::Waveform::Sine => &tables::SINE,
             super::Waveform::Triangle => &tables::TRIANGLE,
             super::Waveform::Square => &tables::SQUARE,
@@ -48,8 +48,8 @@ impl Bank {
             ((inc * ts[idx].h * 2. - 0.9) * 10.).clamp(0., 1.)
         };
         Self {
-            hi: ts[idx],
-            lo: ts[idx.saturating_sub(1)],
+            hi: &ts[idx],
+            lo: &ts[idx.saturating_sub(1)],
             mix: if idx == 0 { 0. } else { mix },
             gain: if idx == 0 && w != super::Waveform::Sine {
                 1. - mix
@@ -68,7 +68,7 @@ impl Bank {
             }
         })
     }
-    fn blend(self, f: impl Fn(Table) -> f64) -> f64 {
+    fn blend(self, f: impl Fn(&Table) -> f64) -> f64 {
         let v = f(self.hi);
         self.gain
             * if self.mix == 0. {

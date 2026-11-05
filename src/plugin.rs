@@ -814,19 +814,19 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         if data.num_samples != 0 {
             return NOT_INITIALIZED;
         }
-        // SAFETY: 変更キューは呼び出し中有効。停止中のDSP状態には触れない。
-        let mut program = unsafe { ParameterPoints::new(data, parameters::PROGRAM_INDEX, 0.0) };
-        let loaded = program.take_program_at(0);
-        let mut values = if loaded {
-            parameters::sine_preset()
-        } else {
-            plugin.processor_parameters.snapshot()
-        };
+        let mut values = plugin.processor_parameters.snapshot();
+        // SAFETY: 変更キューはこの呼び出し中有効。停止中のDSP状態には触れない。
+        let mut changes = unsafe { ParameterPoints::all(data, &values) };
+        let loaded = changes[parameters::PROGRAM_INDEX].take_program_at(0);
+        if loaded {
+            values = parameters::sine_preset();
+            for (point, &value) in changes.iter_mut().zip(&values) {
+                point.reset_value(0, value);
+            }
+        }
         for (i, value) in values.iter_mut().enumerate() {
-            // SAFETY: キューの借用期間はこのprocess内だけ。
-            let mut changes = unsafe { ParameterPoints::new(data, i, *value) };
-            *value = changes.value_at(0);
-            if loaded || changes.automated {
+            *value = changes[i].value_at(0);
+            if loaded || changes[i].automated {
                 plugin.processor_parameters.set(i, *value);
             }
         }
@@ -869,10 +869,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
     // SAFETY: 音色設定とProgramのカーソルはこのprocess中だけホストのキューを借用する。
-    let mut changes: [ParameterPoints<'_>; parameters::COUNT + 1] =
-        std::array::from_fn(|i| unsafe {
-            ParameterPoints::new(data, i, values.get(i).copied().unwrap_or(0.0))
-        });
+    let mut changes = unsafe { ParameterPoints::all(data, &values) };
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
         synth.stop();
@@ -973,34 +970,51 @@ unsafe fn generate_samples(
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
     peak: &mut f32,
 ) -> u64 {
+    let automated = changes.iter().enumerate().fold(0_u64, |mask, (i, point)| {
+        mask | (u64::from(point.automated) << i)
+    });
     // バッファの有無と精度は区間ごとに選び、サンプルループ内では分岐しない。
     let nonzero = match channels {
         Some(channels) if data.symbolic_sample_size == SAMPLE32 => {
-            generate_output_samples(plugin, synth, changes, range.clone(), |offset, sample| {
-                let sample = sample.map(|value| value as f32);
-                *peak = (*peak).max(sample[0].abs()).max(sample[1].abs());
-                for (channel, sample) in channels.into_iter().zip(sample) {
-                    // SAFETY: 呼び出し元で検証済み。左右が同じ領域でも順に書き込む。
-                    unsafe { channel.cast::<f32>().add(offset).write(sample) };
-                }
-                u64::from(sample[0] != 0.0) | (u64::from(sample[1] != 0.0) << 1)
-            })
+            generate_output_samples(
+                plugin,
+                synth,
+                changes,
+                automated,
+                range.clone(),
+                |offset, sample| {
+                    let sample = sample.map(|value| value as f32);
+                    *peak = (*peak).max(sample[0].abs()).max(sample[1].abs());
+                    for (channel, sample) in channels.into_iter().zip(sample) {
+                        // SAFETY: 呼び出し元で検証済み。左右が同じ領域でも順に書き込む。
+                        unsafe { channel.cast::<f32>().add(offset).write(sample) };
+                    }
+                    u64::from(sample[0] != 0.0) | (u64::from(sample[1] != 0.0) << 1)
+                },
+            )
         }
         Some(channels) => {
-            generate_output_samples(plugin, synth, changes, range.clone(), |offset, sample| {
-                *peak = (*peak).max(sample[0].abs().max(sample[1].abs()) as f32);
-                for (channel, sample) in channels.into_iter().zip(sample) {
-                    // SAFETY: 呼び出し元で検証済み。排他的sliceは作らない。
-                    unsafe { channel.cast::<f64>().add(offset).write(sample) };
-                }
-                u64::from(sample[0] != 0.0) | (u64::from(sample[1] != 0.0) << 1)
-            })
+            generate_output_samples(
+                plugin,
+                synth,
+                changes,
+                automated,
+                range.clone(),
+                |offset, sample| {
+                    *peak = (*peak).max(sample[0].abs().max(sample[1].abs()) as f32);
+                    for (channel, sample) in channels.into_iter().zip(sample) {
+                        // SAFETY: 呼び出し元で検証済み。排他的sliceは作らない。
+                        unsafe { channel.cast::<f64>().add(offset).write(sample) };
+                    }
+                    u64::from(sample[0] != 0.0) | (u64::from(sample[1] != 0.0) << 1)
+                },
+            )
         }
-        None => generate_output_samples(plugin, synth, changes, range.clone(), |_, _| 0),
+        None => generate_output_samples(plugin, synth, changes, automated, range.clone(), |_, _| 0),
     };
     // ノートと同位置のパラメーターを先に適用。0サンプルフラッシュもここを通る。
     if range.end < data.num_samples || data.num_samples == 0 {
-        apply_parameters(plugin, synth, changes, range.end);
+        apply_parameters(plugin, synth, changes, automated, range.end);
     }
     nonzero
 }
@@ -1010,18 +1024,24 @@ fn generate_output_samples(
     plugin: &Plugin,
     synth: &mut Synthesizer,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
+    automated: u64,
     range: std::ops::Range<i32>,
     mut write: impl FnMut(usize, [f64; 2]) -> u64,
 ) -> u64 {
     let mut nonzero = 0;
-    if changes.iter().any(|change| change.automated) {
+    if automated != 0 {
         for offset in range {
-            apply_parameters(plugin, synth, changes, offset);
+            apply_parameters(plugin, synth, changes, automated, offset);
             nonzero |= write(offset as usize, synth.generate_sample());
         }
     } else {
-        for offset in range {
-            nonzero |= write(offset as usize, synth.generate_sample());
+        let mut samples = [[0.0; 2]; 32];
+        for start in (range.start..range.end).step_by(samples.len()) {
+            let count = (range.end - start).min(samples.len() as i32) as usize;
+            synth.generate_samples(&mut samples[..count]);
+            for (offset, &sample) in samples[..count].iter().enumerate() {
+                nonzero |= write(start as usize + offset, sample);
+            }
         }
     }
     nonzero
@@ -1031,24 +1051,34 @@ fn apply_parameters(
     plugin: &Plugin,
     synth: &mut Synthesizer,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
+    automated: u64,
     offset: i32,
 ) {
-    let loaded = changes[parameters::PROGRAM_INDEX].take_program_at(offset);
+    let loaded = automated & (1 << parameters::PROGRAM_INDEX) != 0
+        && changes[parameters::PROGRAM_INDEX].take_program_at(offset);
+    let mut values = synth.parameters();
     if loaded {
-        let values = parameters::sine_preset();
+        values = parameters::sine_preset();
         for (change, value) in changes.iter_mut().zip(values) {
             change.reset_value(offset, value);
         }
     }
-    let values = std::array::from_fn(|i| changes[i].value_at(offset));
+    let controls = automated & ((1_u64 << parameters::COUNT) - 1);
+    let mut pending = controls;
+    while pending != 0 {
+        let i = pending.trailing_zeros() as usize;
+        pending &= pending - 1;
+        values[i] = changes[i].value_at(offset);
+    }
     let changed = synth.set_parameters(values);
     if loaded {
         plugin.processor_parameters.store(values);
     } else if changed {
-        for (i, change) in changes[..parameters::COUNT].iter().enumerate() {
-            if change.automated {
-                plugin.processor_parameters.set(i, values[i]);
-            }
+        let mut pending = controls;
+        while pending != 0 {
+            let i = pending.trailing_zeros() as usize;
+            pending &= pending - 1;
+            plugin.processor_parameters.set(i, values[i]);
         }
     }
 }

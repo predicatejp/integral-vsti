@@ -32,11 +32,12 @@ macOS・Windows ARM64・32ビット環境は未対応です。
   `BASE_RMS_AMPLITUDE × velocity` とします。velocityが0のNote Onもノートを更新し、attack時間をかけて目標振幅0へ移行します。
 - Note Offは、両イベントにnoteIdがあればIDで照合します。どちらかが `-1` の場合はチャンネルと音高で照合します。
   同じID、またはIDがない同チャンネル・同音高が複数枠にあれば、全一致をreleaseします。上書き済みの旧IDへのNote Offは新しいノートを消しません。
-- `OscillatorInput` は発振器回路の定常入力で、波形・位相モード・ユニゾン数・Detune・目標周波数・目標実効値・発音期間・ノート世代番号を持ちます。
-  `OscillatorState` は位相と乱数の状態を保持し、Voiceが3発振器と共通の音量用`Envelope`を所有します。現在値・attack開始値・経過サンプル数・ノートオフ位置は`EnvelopeState`が保持し、イベント処理は入力だけを書き換えます。
+- `OscillatorInput` は発振器回路の定常入力で、波形・位相モード・ユニゾン数・Detune・周波数・位相変調・発音期間・ノート世代番号を持ちます。
+  `OscillatorState` は位相と乱数の状態を保持し、Voiceが3発振器と共通の音量用`Envelope`を所有します。現在値・attack開始値・経過サンプル数・ノートオフ位置は`EnvelopeState`が保持します。Voiceはノート境界をEnvelopeへ通知し、Envelopeが次のサンプル生成時に反映します。
 - 各サンプルで「現在の入力と状態からサンプル生成 → 入力を用いて状態更新」を繰り返します。
   エンベロープの計算はサンプル数をミリ秒へ変換して行い、位相と時間の更新はサンプル生成後です。
   初期位相は0。Note On時の位相はPhaseの選択に従います。音程変更・ブロック境界では位相を保持します。
+- ノートと設定が一定の区間は32サンプルずつ系列生成します。発振器の準備は、ノートや該当する設定が変わった場合に行います。位相変調はOsc3→Osc2→Osc1の順に系列を作り、同じ時刻の変調値・音量・フィルタ処理を対応させます。Voiceの加算順は維持します。
 - Note Offではreleaseへ移行し、終了後に位相を止めます。release=0msなら即時に消音します。
   再Note Onではreleaseを挟まず、その時点の実効振幅から新しい目標へattack時間全体を使って移行します。
   位相はPhaseの選択に従います。周波数・波形の即時変更や0ms設定ではクリックが発生し得ます。
@@ -714,11 +715,16 @@ sh scripts/install-ci-tools.sh
 
 ```sh
 . scripts/ci-versions.sh
-cargo +"$CI_NIGHTLY" miri test --locked --lib
+MIRIFLAGS=-Zmiri-no-extra-rounding-error cargo +"$CI_NIGHTLY" miri test --locked --lib
 cargo +stable deny --locked check
 mkdir -p target/coverage
 cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path target/coverage/lcov.info
 ```
+
+Miriでは数学関数へのランダムな追加丸めを無効にし、独立した音源の出力を厳密に比較します。
+メモリ安全性の検査は有効です。
+音声の全組合せ・実効値の照合は通常テストで行い、Miriでは各コンポーネントの境界、
+不正入力、状態遷移、ABIと最大設定の系列処理を検証します。
 
 GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.toml` で監査します。
 依存を追加する際は、利用条件と通知ファイルを確認して許可リストも更新してください。本体の配布ライセンスはこの設定では決定しません。

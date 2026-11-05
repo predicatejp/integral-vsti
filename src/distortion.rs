@@ -26,13 +26,15 @@ pub struct DistortionParameters {
 /// ADAA2の群遅延。Dryとホストへの申告を同じ1サンプルに揃える。
 pub const LATENCY: usize = 1;
 
+#[cfg_attr(test, derive(Clone))]
 struct DistortionState {
     /// 過去2点のGain適用済み入力。Gain変更時も当時の値を維持する。
     input: [[f64; 2]; 2],
-    /// 過去2点の原始関数。F2を保持する。
+    /// Soft用の過去2点の原始関数。Clipper切替時にresetする。
     integral: [[f64; 2]; 2],
 }
 
+#[cfg_attr(test, derive(Clone))]
 pub struct Distortion {
     state: DistortionState,
 }
@@ -63,10 +65,63 @@ impl Distortion {
         }
     }
 
+    /// 同じ設定の入力系列へ2階ADAAを適用する。
+    #[inline]
+    pub fn process_samples(
+        &mut self,
+        input: &[[f64; 2]],
+        output: &mut [[f64; 2]],
+        parameters: &DistortionParameters,
+    ) {
+        debug_assert_eq!(input.len(), output.len());
+        match parameters.clipper {
+            ClipperType::Soft => self.process_adaa_samples::<true>(input, output, parameters.gain),
+            ClipperType::Hard => self.process_adaa_samples::<false>(input, output, parameters.gain),
+            ClipperType::None => output.copy_from_slice(input),
+        }
+    }
+
+    #[inline(never)]
+    fn process_adaa_samples<const SOFT: bool>(
+        &mut self,
+        input: &[[f64; 2]],
+        output: &mut [[f64; 2]],
+        gain: f64,
+    ) {
+        for (input, output) in input.iter().zip(output) {
+            *output = self.process_adaa_inner_sample::<SOFT>(*input, gain);
+        }
+    }
+
     // ADAAの大きな計算経路を分離し、Noneの経路にレジスター退避を持ち込まない。
     #[inline(never)]
     fn process_adaa_sample<const SOFT: bool>(&mut self, input: [f64; 2], gain: f64) -> [f64; 2] {
-        std::array::from_fn(|ch| {
+        self.process_adaa_inner_sample::<SOFT>(input, gain)
+    }
+
+    #[inline(always)]
+    fn process_adaa_inner_sample<const SOFT: bool>(
+        &mut self,
+        input: [f64; 2],
+        gain: f64,
+    ) -> [f64; 2] {
+        // 入力3点が左右で一致すれば、原始関数とADAA出力も同値になる。
+        let mono = input[0] == input[1]
+            && self.state.input[0][0] == self.state.input[0][1]
+            && self.state.input[1][0] == self.state.input[1][1];
+        let mut left = 0.0;
+        let mut output = [0.0; 2];
+        for (ch, value) in output.iter_mut().enumerate() {
+            if ch == 1 && mono {
+                self.state.input[0][1] = self.state.input[0][0];
+                self.state.input[1][1] = self.state.input[1][0];
+                if SOFT {
+                    self.state.integral[0][1] = self.state.integral[0][0];
+                    self.state.integral[1][1] = self.state.integral[1][0];
+                }
+                *value = left;
+                continue;
+            }
             let x = input[ch] * gain;
             let previous = self.state.input[0][ch];
             let values = if SOFT { soft::eval(x) } else { [0.0; 4] };
@@ -96,14 +151,19 @@ impl Distortion {
             };
             self.state.input[1][ch] = previous;
             self.state.input[0][ch] = x;
-            self.state.integral[1][ch] = self.state.integral[0][ch];
-            self.state.integral[0][ch] = integral;
-            out
-        })
+            if SOFT {
+                self.state.integral[1][ch] = self.state.integral[0][ch];
+                self.state.integral[0][ch] = integral;
+            }
+            left = out;
+            *value = out;
+        }
+        output
     }
 }
 
-// 区分的な一次クリップ関数を三角形重みで厳密積分する。
+// 三角形分布の生存関数を[-1,1]で積分する。
+// 区間内の位置を正規化し、大きい入力同士の差引きと二乗のオーバーフローを避ける。
 fn hard_second(a: f64, b: f64, c: f64) -> f64 {
     if a >= 1. {
         return 1.;
@@ -112,38 +172,91 @@ fn hard_second(a: f64, b: f64, c: f64) -> f64 {
         return -1.;
     }
     if a >= -1. && c <= 1. {
-        return (a + b + c) / 3.;
+        return (a + b + c) * (1. / 3.);
     }
-    let span = c - a;
-    let integrate = |lo: f64, hi: f64, rising: bool| {
-        if hi == lo {
-            return 0.;
-        }
-        let mut sum = 0.;
-        let mut l = lo;
-        for r in [(-1.0_f64).clamp(lo, hi), 1.0_f64.clamp(lo, hi), hi] {
-            let d = r - l;
-            if d > 0. {
-                let mid = l + d * 0.5;
-                let val = mid.clamp(-1., 1.);
-                let slope = if l >= -1. && r <= 1. { 1. } else { 0. };
-                let (weight, ws) = if rising {
-                    (((l - lo) + d * 0.5) / (hi - lo), 1. / (hi - lo))
-                } else {
-                    (((hi - r) + d * 0.5) / (hi - lo), -1. / (hi - lo))
-                };
-                sum += d * (val * weight + slope * ws * d * d / 12.);
-            }
-            l = r;
-        }
-        sum
-    };
-    2. * (integrate(a, b, true) + integrate(b, c, false)) / span
+    let lo = a.max(-1.);
+    let hi = c.min(1.);
+    let mid = b.max(lo).min(hi);
+    let inverse_span = 1.0 / (c - a);
+    let mut out = lo;
+    // 区間端が異なっても、差分はFTZで0になり得る。
+    let left_width = mid - lo;
+    if left_width > 0. {
+        let span = b - a;
+        let inverse_width = 1.0 / span;
+        let x = (lo - a) * inverse_width;
+        let y = (mid - a) * inverse_width;
+        out += left_width * (1.0 - (x * x + x * y + y * y) * (span * inverse_span) * (1.0 / 3.0));
+    }
+    let right_width = hi - mid;
+    if right_width > 0. {
+        let span = c - b;
+        let inverse_width = 1.0 / span;
+        let x = (c - mid) * inverse_width;
+        let y = (c - hi) * inverse_width;
+        out += right_width * (x * x + x * y + y * y) * (span * inverse_span) * (1.0 / 3.0);
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(not(miri))]
+    fn subnormal_interval_with_normal_endpoints_remains_finite() {
+        let _mode = crate::float_mode::FloatMode::flush_subnormals();
+        // 端点はnormalだが、差は3.12e-309でFTZによって0になる。
+        // 定数畳み込みはFTZを考慮しないため、入力を実行時に読み出す。
+        let (a, b, c) = std::hint::black_box((
+            5.655013176369847e-306,
+            5.658134873944616e-306,
+            1.2268606283216226,
+        ));
+        let expected = 0.40636791694234973;
+        assert!((hard_second(a, b, c) - expected).abs() < 1e-14);
+        assert!((hard_second(-c, -b, -a) + expected).abs() < 1e-14);
+        for (points, expected) in [
+            ([-1e154, 0.0, 1e154], 0.0),
+            ([-1e154, -1e154, 1e154], -0.5),
+            ([-1e154, 1e154, 1e154], 0.5),
+        ] {
+            let [a, b, c] = std::hint::black_box(points);
+            assert!((hard_second(a, b, c) - expected).abs() < 1e-14);
+        }
+    }
+    #[test]
+    fn matching_channels_preserve_history_when_stereo_returns() {
+        let mut stereo = Distortion::new();
+        let mut channels = [Distortion::new(), Distortion::new()];
+        // MiriでもSoft→Hard→None→Softとmono/stereoの切替を通す。
+        for n in 0..if cfg!(miri) { 384 } else { 2000 } {
+            let clipper = [ClipperType::Soft, ClipperType::Hard, ClipperType::None][n / 97 % 3];
+            if n % 97 == 0 {
+                stereo.reset();
+                for channel in &mut channels {
+                    channel.reset();
+                }
+            }
+            let left = (n as f64 * 0.37).sin();
+            let right = if n % 29 < 15 {
+                (n as f64 * 0.51).cos()
+            } else {
+                left
+            };
+            let input = [left, right];
+            let parameters = DistortionParameters {
+                clipper,
+                gain: [1.0, 3.0, 251.188643150958][n / 11 % 3],
+                mix: 1.0,
+            };
+            let actual = stereo.process_sample(input, &parameters);
+            for ch in 0..2 {
+                let expected = channels[ch].process_sample([input[ch]; 2], &parameters)[0];
+                assert_eq!(actual[ch], expected, "sample={n}, ch={ch}, {clipper:?}");
+            }
+        }
+    }
     #[test]
     fn linear_response_gain_history_and_reset() {
         let mut d = Distortion::new();

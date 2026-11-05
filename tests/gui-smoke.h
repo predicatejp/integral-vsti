@@ -176,7 +176,18 @@ struct NativeParent {
     void movePointer(int x, int y) {
 #ifdef _WIN32
         POINT point {x, y}; assert(ClientToScreen(child(), &point));
-        assert(SetCursorPos(point.x, point.y));
+        const auto absolute = [](LONG coordinate, int origin, int extent) {
+            const auto offset = static_cast<long long>(coordinate) - origin;
+            assert(extent > 0 && extent <= 65536 && offset >= 0 && offset < extent);
+            // 画素の範囲内へ切り上げ、整数化で1px手前へ戻るのを防ぐ。
+            return static_cast<LONG>((offset * 65536 + extent - 1) / extent);
+        };
+        INPUT input {}; input.type = INPUT_MOUSE;
+        input.mi.dx = absolute(point.x, GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN));
+        input.mi.dy = absolute(point.y, GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        // 座標のワープだけでなくマウス移動を送り、OSのタッチ入力によるカーソル抑制を解く。
+        input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        assert(SendInput(1, &input, sizeof(input)) == 1);
 #else
         XWarpPointer(display, 0, child(), 0, 0, 0, 0, x, y); XFlush(display);
 #endif
@@ -416,7 +427,17 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         } while (std::chrono::steady_clock::now() < deadline);
         parent.screenshot();
-        std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size() << std::endl;
+        std::cerr << "GUI timeout: " << description << ", edit notifications=" << handler.sequence.size()
+                  << ", parameter=" << handler.editedId << std::endl;
+#ifdef _WIN32
+        CURSORINFO cursor {}; cursor.cbSize = sizeof(cursor);
+        POINT pointer {};
+        const auto cursorOk = GetCursorInfo(&cursor), pointerOk = GetCursorPos(&pointer);
+        std::cerr << "Windows cursor: query=" << cursorOk << ", flags=" << cursor.flags
+                  << ", handle=" << cursor.hCursor << ", capture=" << GetCapture() << ", focus=" << GetFocus()
+                  << ", pointer query=" << pointerOk << ", position=" << pointer.x << ',' << pointer.y
+                  << ", child=" << parent.child() << ", keyboard=" << parent.keyboard << std::endl;
+#endif
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
@@ -555,7 +576,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             parent.knobButton(true);
             waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
             assert(handler.sequence == (std::vector<int>{0}));
-            assert(!parent.cursorVisible());
+            waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
             const int overlayX = std::clamp(logicalX - 112, 0, 560);
             const int overlayY = std::clamp(logicalY - 91, 0, 500);
@@ -615,7 +636,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
             assert(parent.pointerAt(x, y));
             parent.movePointer(20, 20); pump(); assert(parent.pointerAt(20, 20));
-            assert(parent.cursorVisible());
+            waitFor([&] { return parent.cursorVisible(); }, "cursor restored after knob");
             handler.sequence.clear();
             if (i == 21) {
                 // 吸着点から開始すると内部位置40。大きい側から再進入すると80。
@@ -680,7 +701,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         INPUT escape {}; escape.type = INPUT_KEYBOARD; escape.ki.wVk = VK_ESCAPE;
         assert(SendInput(1, &escape, sizeof(INPUT)) == 1);
         waitFor([&] { return handler.sequence.size() == 2; }, "escape without plug-in focus");
-        assert(parent.focused() && parent.cursorVisible());
+        waitFor([&] { return parent.focused() && parent.cursorVisible(); }, "host focus and cursor after escape");
         escape.ki.dwFlags = KEYEVENTF_KEYUP;
         assert(SendInput(1, &escape, sizeof(INPUT)) == 1);
         parent.knobButton(false); pump(); handler.sequence.clear();
@@ -696,7 +717,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         parent.unfocus();
         assert(handler.sequence == (std::vector<int>{0, 2}));
-        assert(parent.cursorVisible());
+        waitFor([&] { return parent.cursorVisible(); }, "cursor restored after focus loss");
         parent.knobButton(false); pump(); handler.sequence.clear();
         // 押したまま画面を閉じても開始済み編集は終了する。
         parent.movePointer(uiPixel(controls[6].first), uiPixel(controls[6].second)); pump(); parent.knobButton(true);

@@ -386,6 +386,18 @@ fn scenario(case: &Case, rate: usize, block: usize, length: usize) -> Scenario {
     }
 }
 
+// 比較元に系列入口がない版では単発呼出しへ戻す。固有メソッドがあればそちらを使う。
+trait GenerateSeries {
+    fn generate_samples(&mut self, output: &mut [[f64; 2]]);
+}
+impl GenerateSeries for synth::Synthesizer {
+    fn generate_samples(&mut self, output: &mut [[f64; 2]]) {
+        for value in output {
+            *value = self.generate_sample();
+        }
+    }
+}
+
 struct PlaybackState {
     synth: synth::Synthesizer,
     parameters: [f64; parameters::COUNT],
@@ -413,25 +425,51 @@ impl Playback {
         let s = &mut self.state;
         for chunk in output.chunks_mut(block) {
             let _float_mode = float_mode::FloatMode::flush_subnormals();
-            for sample in chunk {
-                if let Some(index) = scenario.parameter {
-                    s.parameters[index] = scenario.automation[s.position];
-                    s.synth.set_parameters(black_box(s.parameters));
-
-                }
-                while let Some(event) = scenario.events.get(s.event) {
-                    if event.at != s.position {
-                        break;
+            if scenario.parameter.is_none() {
+                let mut at = 0;
+                while at < chunk.len() {
+                    while let Some(event) = scenario.events.get(s.event) {
+                        if event.at != s.position {
+                            break;
+                        }
+                        if event.on {
+                            assert!(s.synth.note_on(event.note, 0., event.velocity));
+                        } else {
+                            s.synth.note_off(event.note);
+                        }
+                        s.event += 1;
                     }
-                    if event.on {
-                        assert!(s.synth.note_on(event.note, 0., event.velocity));
-                    } else {
-                        s.synth.note_off(event.note);
-                    }
-                    s.event += 1;
+                    let end = scenario
+                        .events
+                        .get(s.event)
+                        .map_or(s.position + chunk.len() - at, |e| {
+                            e.at.min(s.position + chunk.len() - at)
+                        });
+                    let count = end - s.position;
+                    black_box(&mut s.synth).generate_samples(&mut chunk[at..at + count]);
+                    at += count;
+                    s.position += count;
                 }
-                *sample = black_box(&mut s.synth).generate_sample();
-                s.position += 1;
+            } else {
+                for sample in chunk {
+                    if let Some(index) = scenario.parameter {
+                        s.parameters[index] = scenario.automation[s.position];
+                        s.synth.set_parameters(black_box(s.parameters));
+                    }
+                    while let Some(event) = scenario.events.get(s.event) {
+                        if event.at != s.position {
+                            break;
+                        }
+                        if event.on {
+                            assert!(s.synth.note_on(event.note, 0., event.velocity));
+                        } else {
+                            s.synth.note_off(event.note);
+                        }
+                        s.event += 1;
+                    }
+                    *sample = black_box(&mut s.synth).generate_sample();
+                    s.position += 1;
+                }
             }
         }
         black_box(output);

@@ -3,7 +3,7 @@
 
 use crate::distortion::{Distortion, DistortionParameters};
 use crate::envelope::{DEFAULT_ENVELOPE, Envelope, EnvelopeParameters};
-use crate::filter::{Filter, FilterParameters, FilterType};
+use crate::filter::{Filter, FilterParameters, FilterType, MIN_SAMPLE_RATE};
 use crate::oscillator::{Oscillator, OscillatorInput, PanningGains, PhaseMode, Waveform};
 use crate::{parameters, volume};
 
@@ -21,11 +21,14 @@ pub struct Note {
 }
 
 /// 同時発音の1枠。入力・内部状態・ノートの対応を他の枠から独立させる。
+#[cfg_attr(test, derive(Clone))]
 pub struct VoiceState {
     /// Osc1・Osc2・Osc3の定常入力。Osc1だけがユニゾン設定を持つ。
     pub(super) oscillator_inputs: [OscillatorInput; 3],
     /// 発振器ごとに独立した位相・乱数の状態。
     oscillators: [Oscillator; 3],
+    /// 各発振器へ定常入力を反映済みなら対応ビットが1。設定・ノート変更時に失効する。
+    oscillators_prepared: u8,
     /// Volの線形倍率。−∞ dBでは0。
     oscillator_volumes: [f64; 3],
     /// 波形・ユニゾン補正とVolを合わせた倍率。設定変更時に計算する。
@@ -36,10 +39,10 @@ pub struct VoiceState {
     tune_ratios: [f64; 3],
     /// ノートを保持している間true。Note Offでは共通AHDSRのreleaseへ移る。
     pub(super) gate: bool,
-    /// Note Onの世代。3発振器と両AHDSRへ同じ番号を渡す。
+    /// Note Onの世代。3発振器へ同じ番号を渡す。
     note_generation: u64,
-    /// 即時停止の世代。両AHDSRへ渡す。
-    reset_generation: u64,
+    /// 両Envelopeへ反映済みの有効なレート。生成時に変わった場合だけ再検証する。
+    sample_rate: f64,
     /// ベロシティを反映した共通AHDSRの目標実効振幅。
     amplitude: f64,
     /// 発振器の加算出力へ適用する音量AHDSRの設定。
@@ -69,6 +72,7 @@ pub struct VoiceState {
 }
 
 /// Voiceの処理を担当し、専用のStateを所有するコンポーネント。
+#[cfg_attr(test, derive(Clone))]
 pub struct Voice {
     /// このコンポーネントの内部状態。
     pub(super) state: VoiceState,
@@ -77,6 +81,10 @@ pub struct Voice {
 impl Voice {
     pub fn new() -> Self {
         let values = parameters::defaults();
+        let mut envelope = Envelope::new();
+        envelope.set_input(&DEFAULT_ENVELOPE, MIN_SAMPLE_RATE, 0.0);
+        let mut cutoff_envelope = Envelope::new();
+        cutoff_envelope.set_input(&DEFAULT_ENVELOPE, MIN_SAMPLE_RATE, 1.0);
         Self {
             state: VoiceState {
                 oscillator_inputs: [OscillatorInput {
@@ -91,16 +99,17 @@ impl Voice {
                     note_generation: 0,
                 }; 3],
                 oscillators: std::array::from_fn(|_| Oscillator::new()),
+                oscillators_prepared: 0,
                 oscillator_volumes: [1.0, 0.0, 0.0],
                 oscillator_gains: [std::f64::consts::SQRT_2, 0.0, 0.0],
                 phase_depths: [0.0; 2],
                 tune_ratios: [1.0; 3],
                 gate: false,
                 note_generation: 0,
-                reset_generation: 0,
+                sample_rate: MIN_SAMPLE_RATE,
                 amplitude: 0.0,
                 envelope_parameters: DEFAULT_ENVELOPE,
-                envelope: Envelope::new(),
+                envelope,
                 note: None,
                 filter: Filter::new(),
                 distortion: Distortion::new(),
@@ -108,7 +117,7 @@ impl Voice {
                 cutoff_ratio: 2.0_f64.powf(parameters::to_plain(10, values[10]) / 1200.0),
                 resonance_q: parameters::to_plain(11, values[11]),
                 cutoff_envelope_parameters: DEFAULT_ENVELOPE,
-                cutoff_envelope: Envelope::new(),
+                cutoff_envelope,
                 cutoff_amount_cents: 0.0,
                 cutoff_modulation: (0.0, 1.0),
             },
@@ -128,6 +137,7 @@ impl Voice {
         if !frequency_hz.is_finite() {
             return false;
         }
+        self.state.oscillators_prepared = 0;
         self.state.note_generation = self.state.note_generation.wrapping_add(1);
         for (input, ratio) in self
             .state
@@ -139,6 +149,13 @@ impl Voice {
             input.note_generation = self.state.note_generation;
         }
         self.state.amplitude = BASE_RMS_AMPLITUDE * f64::from(velocity);
+        self.state.envelope.set_input(
+            &self.state.envelope_parameters,
+            self.state.sample_rate,
+            self.state.amplitude,
+        );
+        self.state.envelope.note_on();
+        self.state.cutoff_envelope.note_on();
         self.state.gate = true;
         self.state.note = Some(note);
         true
@@ -153,6 +170,8 @@ impl Voice {
             }
         }) {
             self.state.gate = false;
+            self.state.envelope.note_off();
+            self.state.cutoff_envelope.note_off();
             self.state.note = None;
         }
     }
@@ -163,9 +182,11 @@ impl Voice {
     }
 
     pub fn stop(&mut self) {
+        self.state.oscillators_prepared = 0;
         // releaseとは区別し、次サンプルで即時消音する。位相は保持する。
         self.state.gate = false;
-        self.state.reset_generation = self.state.reset_generation.wrapping_add(1);
+        self.state.envelope.stop();
+        self.state.cutoff_envelope.stop();
         self.state.note = None;
         self.state.filter.reset();
         self.reset_distortion();
@@ -184,9 +205,25 @@ impl Voice {
         self.state.resonance_q = resonance_q;
     }
 
+    /// Qだけが変わるときは、カットオフの指数換算と書込みを省く。
+    pub fn set_resonance(&mut self, resonance_q: f64) {
+        self.state.resonance_q = resonance_q;
+    }
+
     pub fn set_cutoff_envelope(&mut self, parameters: EnvelopeParameters, amount_cents: f64) {
         self.state.cutoff_envelope_parameters = parameters;
+        self.state
+            .cutoff_envelope
+            .set_input(&parameters, self.state.sample_rate, 1.0);
         self.state.cutoff_amount_cents = amount_cents;
+    }
+
+    /// 親の差分換算に使う、適用済みの音量・カットオフAHDSR設定。
+    pub fn envelope_parameters(&self) -> [EnvelopeParameters; 2] {
+        [
+            self.state.envelope_parameters,
+            self.state.cutoff_envelope_parameters,
+        ]
     }
 
     pub fn set_parameters(
@@ -197,8 +234,20 @@ impl Voice {
         detune: f64,
         phase_mode: PhaseMode,
     ) {
+        let input = &self.state.oscillator_inputs[0];
+        if input.phase_mode != phase_mode {
+            self.state.oscillators_prepared = 0;
+        } else if input.waveform != waveform
+            || input.unison_voices != unison
+            || input.detune_cents != detune
+        {
+            self.state.oscillators_prepared &= !1;
+        }
         self.state.oscillator_inputs[0].waveform = waveform;
         self.state.envelope_parameters = envelope;
+        self.state
+            .envelope
+            .set_input(&envelope, self.state.sample_rate, self.state.amplitude);
         self.state.oscillator_inputs[0].unison_voices = unison;
         self.state.oscillator_inputs[0].detune_cents = detune;
         self.refresh_volume(0);
@@ -212,9 +261,13 @@ impl Voice {
         self.state.oscillator_volumes[index] = gain;
         self.state.tune_ratios[index] = tune_ratio;
         let base_hz = self.state.oscillator_inputs[0].frequency_hz;
+        let frequency_hz = (base_hz * tune_ratio).min(f64::MAX);
         let input = &mut self.state.oscillator_inputs[index];
+        if input.waveform != waveform || input.frequency_hz != frequency_hz {
+            self.state.oscillators_prepared &= !(1 << index);
+        }
         input.waveform = waveform;
-        input.frequency_hz = (base_hz * tune_ratio).min(f64::MAX);
+        input.frequency_hz = frequency_hz;
         self.refresh_volume(index);
     }
 
@@ -229,6 +282,11 @@ impl Voice {
 
     /// 親が検証したOsc2・Osc3のMod設定を配送する。
     pub fn set_phase_modulation(&mut self, depths: [f64; 2]) {
+        for (i, (&old, &new)) in self.state.phase_depths.iter().zip(&depths).enumerate() {
+            if (old != 0.0) != (new != 0.0) {
+                self.state.oscillators_prepared &= !(1 << i);
+            }
+        }
         self.state.phase_depths = depths;
     }
 
@@ -246,32 +304,187 @@ impl Voice {
         (input, wet)
     }
 
+    /// 同じ長さのDry/Wet系列を、各Voice固有のADAA履歴を用いて生成する。
+    pub fn generate_distorted_samples(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+        parameters: &DistortionParameters,
+        dry: &mut [[f64; 2]],
+        wet: &mut [[f64; 2]],
+    ) {
+        debug_assert_eq!(dry.len(), wet.len());
+        self.generate_samples(sample_rate, gains, mono_gains, dry);
+        self.state.distortion.process_samples(dry, wet, parameters);
+    }
+
     /// Voiceの3発振器・音量AHDSR・SVFまでをホストレートで処理する。
+    #[inline(never)] // 大きい1サンプル本体をSynthesizerへ重複展開しない。
     pub fn generate_sample(
         &mut self,
         sample_rate: f64,
         gains: &PanningGains,
         mono_gains: &[f64; 2],
     ) -> [f64; 2] {
-        if !(sample_rate.is_finite() & (sample_rate > 0.0)) {
-            return [0.0; 2];
+        self.generate_one_sample::<false>(sample_rate, gains, mono_gains)
+    }
+
+    /// 定常入力が同じ区間の先頭で必要な準備を済ませ、残りのサンプルを生成する。
+    pub fn generate_samples(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+        output: &mut [[f64; 2]],
+    ) {
+        if let Some((first, rest)) = output.split_first_mut() {
+            *first = self.generate_sample(sample_rate, gains, mono_gains);
+            // 先頭を生成した時点で既に停止済みなら、後続の入力・時計も変化しない。
+            // 更新直後にreleaseが完了した区間は、active表示の同期を通常経路へ任せる。
+            if matches!(self.state.filter_type, FilterType::None)
+                && !self.state.oscillator_inputs[0].active
+                && !self.state.envelope.is_active()
+                && !self.state.cutoff_envelope.is_active()
+            {
+                std::hint::cold_path();
+                rest.fill([0.0; 2]);
+                return;
+            }
+            if self.state.oscillator_inputs[0].phase_modulated
+                || self.state.oscillator_inputs[1].phase_modulated
+            {
+                self.generate_pipeline_samples(sample_rate, gains, mono_gains, rest);
+                return;
+            }
+            for value in rest {
+                *value = self.generate_one_sample::<true>(sample_rate, gains, mono_gains);
+            }
         }
-        let amplitude = self.state.envelope.generate_sample(
-            &self.state.envelope_parameters,
-            sample_rate,
-            self.state.gate,
-            self.state.note_generation,
-            self.state.reset_generation,
-            self.state.amplitude,
-        );
-        let level = self.state.cutoff_envelope.generate_sample(
-            &self.state.cutoff_envelope_parameters,
-            sample_rate,
-            self.state.gate,
-            self.state.note_generation,
-            self.state.reset_generation,
-            1.0,
-        );
+    }
+
+    /// 位相変調の一方向の依存関係に従い、発振器ごとに定常区間を生成する。
+    #[inline(never)]
+    fn generate_pipeline_samples(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+        output: &mut [[f64; 2]],
+    ) {
+        if !(sample_rate.is_finite() && sample_rate > 0.0) {
+            output.fill([0.0; 2]);
+            return;
+        }
+        // この区間で発音する発振器は、呼出し元の通常生成で準備済み。
+        for rest in output.chunks_mut(32) {
+            let mut amplitudes = [0.0; 32];
+            let mut cutoffs = [0.0; 32];
+            let mut active_count = 0;
+            let mut modulation = [0.0; 32];
+            for n in 0..rest.len() {
+                amplitudes[n] = self.state.envelope.generate_sample();
+                cutoffs[n] =
+                    self.state.cutoff_envelope.generate_sample() * self.state.cutoff_amount_cents;
+                active_count += usize::from(self.state.envelope.is_active());
+                self.state.envelope.update_sample();
+                self.state.cutoff_envelope.update_sample();
+            }
+            rest.fill([0.0; 2]);
+            let mono = [*mono_gains; 7];
+            let depths = [0.0, self.state.phase_depths[0], self.state.phase_depths[1]];
+            // 変調配列をOsc3→Osc2→Osc1の順に上書きし、同じ順で音声へ加算する。
+            for i in (0..3).rev() {
+                let gain = self.state.oscillator_gains[i];
+                let pans = if i == 0 { gains } else { &mono };
+                let input = &mut self.state.oscillator_inputs[i];
+                if gain == 0.0 && depths[i] == 0.0 {
+                    for phase_modulation in &mut modulation[..active_count] {
+                        input.phase_modulation = *phase_modulation;
+                        // SAFETY: 区間の先頭で同じ定常入力を反映済み。
+                        // activeはtrue→falseだけ、変調は有限のi32範囲内。
+                        unsafe {
+                            self.state.oscillators[i].generate_prepared_sample::<false>(input);
+                        }
+                        *phase_modulation = 0.0;
+                    }
+                } else {
+                    for n in 0..active_count {
+                        input.phase_modulation = modulation[n];
+                        // SAFETY: 上と同じ準備済みの定常入力と発音期間を使う。
+                        let current = unsafe {
+                            self.state.oscillators[i].generate_prepared_sample::<true>(input)
+                        };
+                        modulation[n] = current.values[0] * depths[i];
+                        if gain != 0.0 {
+                            let audio = volume::process_sample(
+                                &current.values[..current.count],
+                                pans,
+                                gain,
+                            );
+                            rest[n][0] += audio[0];
+                            rest[n][1] += audio[1];
+                        }
+                    }
+                }
+                // 定常区間内でactiveはtrue→falseだけ。次Note Onで履歴を再準備する。
+                if active_count < rest.len() {
+                    input.active = false;
+                }
+            }
+            if matches!(self.state.filter_type, FilterType::None) {
+                for (sample, amplitude) in rest.iter_mut().zip(amplitudes) {
+                    *sample = sample.map(|value| value * amplitude);
+                }
+                continue;
+            }
+            for (n, sample) in rest.iter_mut().enumerate() {
+                let cents = cutoffs[n];
+                if cents != self.state.cutoff_modulation.0 {
+                    self.state.cutoff_modulation = (cents, 2.0_f64.powf(cents / 1200.0));
+                }
+                *sample = self.state.filter.process_sample(
+                    sample.map(|value| value * amplitudes[n]),
+                    self.state.filter_type,
+                    &FilterParameters {
+                        cutoff_hz: (self.state.oscillator_inputs[0].frequency_hz
+                            * self.state.cutoff_ratio
+                            * self.state.cutoff_modulation.1)
+                            .min(f64::MAX),
+                        resonance_q: self.state.resonance_q,
+                    },
+                    sample_rate,
+                );
+            }
+        }
+    }
+
+    #[inline]
+    fn generate_one_sample<const PREPARED: bool>(
+        &mut self,
+        sample_rate: f64,
+        gains: &PanningGains,
+        mono_gains: &[f64; 2],
+    ) -> [f64; 2] {
+        if sample_rate != self.state.sample_rate {
+            if !(sample_rate.is_finite() & (sample_rate > 0.0)) {
+                return [0.0; 2];
+            }
+            self.state.oscillators_prepared = 0;
+            self.state.sample_rate = sample_rate;
+            self.state.envelope.set_input(
+                &self.state.envelope_parameters,
+                sample_rate,
+                self.state.amplitude,
+            );
+            self.state.cutoff_envelope.set_input(
+                &self.state.cutoff_envelope_parameters,
+                sample_rate,
+                1.0,
+            );
+        }
+        let amplitude = self.state.envelope.generate_sample();
+        let level = self.state.cutoff_envelope.generate_sample();
         let cents = level * self.state.cutoff_amount_cents;
         // バイパス中もEnvelopeは進め、有効化したサンプルで現在値の倍率を求める。
         if !matches!(self.state.filter_type, FilterType::None)
@@ -282,25 +495,52 @@ impl Voice {
         let active = self.state.envelope.is_active();
         let mono = [*mono_gains; 7];
         let mut sample = [0.0; 2];
-        let depths = [0.0, self.state.phase_depths[0], self.state.phase_depths[1]];
-        let mut modulation = 0.0;
-        // 同じサンプル時刻の生波形をOsc3→Osc2→Osc1へ渡す。
-        for i in (0..3).rev() {
-            self.state.oscillator_inputs[i].active = active;
-            let input = &mut self.state.oscillator_inputs[i];
-            input.phase_modulation = modulation;
-            input.phase_modulated = i < 2 && self.state.phase_depths[i] != 0.0;
-            let current = self.state.oscillators[i].generate_sample(input, sample_rate);
-            modulation = current.values[0] * depths[i];
-            if self.state.oscillator_gains[i] != 0.0 {
-                // 無音の変調源はrawだけを使い、音声用の定位・加算を省く。
-                let audio = volume::process_sample(
-                    &current.values[..current.count],
-                    if i == 0 { gains } else { &mono },
-                    self.state.oscillator_gains[i],
-                );
-                sample[0] += audio[0];
-                sample[1] += audio[1];
+        if active {
+            let prepared = self.state.oscillators_prepared;
+            let depths = [0.0, self.state.phase_depths[0], self.state.phase_depths[1]];
+            let mut modulation = 0.0;
+            // 同じサンプル時刻の生波形をOsc3→Osc2→Osc1へ渡す。
+            for i in (0..3).rev() {
+                self.state.oscillator_inputs[i].active = true;
+                let input = &mut self.state.oscillator_inputs[i];
+                input.phase_modulation = modulation;
+                input.phase_modulated = i < 2 && self.state.phase_depths[i] != 0.0;
+                // SAFETY: 定常設定・周波数・レートは親とVoiceで検証済み。
+                // 設定・ノート変更は各入口で対応する準備済みビットを失効させる。
+                // 変調入力は有限の生波形と0〜2周期の深度から生成する。
+                if !PREPARED && prepared & (1 << i) == 0 {
+                    unsafe { self.state.oscillators[i].prepare_sample(input, sample_rate) };
+                }
+                if self.state.oscillator_gains[i] == 0.0 && depths[i] == 0.0 {
+                    // SAFETY: 同じ定常入力を上記の入口か前サンプルで反映済み。
+                    unsafe {
+                        self.state.oscillators[i].generate_prepared_sample::<false>(input);
+                    }
+                    modulation = 0.0;
+                    continue;
+                }
+                // SAFETY: 上記と同じ準備済み入力。再発音はNote Onを通る。
+                let current =
+                    unsafe { self.state.oscillators[i].generate_prepared_sample::<true>(input) };
+                modulation = current.values[0] * depths[i];
+                if self.state.oscillator_gains[i] != 0.0 {
+                    // 無音の変調源はrawだけを使い、音声用の定位・加算を省く。
+                    let audio = volume::process_sample(
+                        &current.values[..current.count],
+                        if i == 0 { gains } else { &mono },
+                        self.state.oscillator_gains[i],
+                    );
+                    sample[0] += audio[0];
+                    sample[1] += audio[1];
+                }
+            }
+            if !PREPARED {
+                self.state.oscillators_prepared = 0b111;
+            }
+        } else {
+            // 再発音は必ずNote Onを通り、各Oscillatorの世代変更で履歴を更新する。
+            for input in &mut self.state.oscillator_inputs {
+                input.active = false;
             }
         }
         let sample = sample.map(|value| value * amplitude);
@@ -316,16 +556,8 @@ impl Voice {
             },
             sample_rate,
         );
-        self.state.envelope.update_sample(
-            &self.state.envelope_parameters,
-            sample_rate,
-            self.state.amplitude,
-        );
-        self.state.cutoff_envelope.update_sample(
-            &self.state.cutoff_envelope_parameters,
-            sample_rate,
-            1.0,
-        );
+        self.state.envelope.update_sample();
+        self.state.cutoff_envelope.update_sample();
         output
     }
 }
@@ -336,6 +568,34 @@ mod tests {
 
     fn audio_values(oscillator: &mut Oscillator, input: &OscillatorInput, rate: f64) -> [f64; 7] {
         oscillator.generate_sample(input, rate).values
+    }
+
+    #[test]
+    fn invalid_series_rate_preserves_voice_state() {
+        let mut reference = Voice::new();
+        let note = Note {
+            id: 1,
+            channel: 0,
+            pitch: 69,
+        };
+        reference.set_phase_modulation([0.5, 0.3]);
+        reference.note_on(note, 0.0, 1.0);
+        for _ in 0..64 {
+            reference.generate_sample(48_000.0, &[[1.0; 2]; 7], &[1.0; 2]);
+        }
+        // 独立した初期計算の丸め差を除き、同じ状態から不正入力の影響だけを比較する。
+        let mut series = reference.clone();
+        for rate in [0.0, -1.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let mut output = [[7.0; 2]; 33];
+            series.generate_samples(rate, &[[1.0; 2]; 7], &[1.0; 2], &mut output);
+            assert_eq!(output, [[0.0; 2]; 33]);
+        }
+        for _ in 0..128 {
+            assert_eq!(
+                series.generate_sample(48_000.0, &[[1.0; 2]; 7], &[1.0; 2]),
+                reference.generate_sample(48_000.0, &[[1.0; 2]; 7], &[1.0; 2]),
+            );
+        }
     }
 
     #[test]

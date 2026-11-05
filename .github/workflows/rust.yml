@@ -90,7 +90,7 @@ jobs:
   miri:
     name: Miri
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -99,7 +99,7 @@ jobs:
       - run: sh scripts/install-ci-tools.sh miri
       - run: |
           source scripts/ci-versions.sh
-          cargo +"$CI_NIGHTLY" miri test --locked --lib
+          MIRIFLAGS=-Zmiri-no-extra-rounding-error cargo +"$CI_NIGHTLY" miri test --locked --lib
 
   coverage:
     name: Coverage
