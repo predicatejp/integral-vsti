@@ -4,6 +4,8 @@
 #![allow(dead_code)] // ABI・保存処理など、計測対象以外の既存定義も読み込む。
 #[path = "../src/abi.rs"]
 mod abi;
+#[path = "../src/chorus.rs"]
+mod chorus;
 #[path = "../src/distortion.rs"]
 mod distortion;
 #[path = "../src/envelope.rs"]
@@ -67,6 +69,7 @@ const BASE: [f64; parameters::COUNT] = [
     0.,
     0.,
     100.,
+    0.0, 20.0, 2.0, 0.7, 50.0, // Chorus
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),

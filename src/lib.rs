@@ -10,6 +10,7 @@
 compile_error!("対応対象はLinux x86_64とWindows x86_64 MSVCです");
 
 mod abi;
+mod chorus;
 mod distortion;
 mod editor;
 mod envelope;
