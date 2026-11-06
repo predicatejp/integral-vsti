@@ -4,6 +4,7 @@
 //! 音源パラメーターの値変換、VST3変更キューと保存ストリームの読み書き。
 
 use crate::abi::*;
+use crate::compressor::CompressorParameters;
 use crate::distortion::{ClipperType, DistortionParameters};
 use crate::envelope::{DEFAULT_ENVELOPE, EnvelopeParameters};
 use crate::filter::FilterType;
@@ -11,7 +12,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 34;
+pub const COUNT: usize = 42;
 /// Osc1・Osc2・Osc3のVolume設定位置。
 pub const OSCILLATOR_VOLUMES: [usize; 3] = [22, 25, 28];
 
@@ -45,6 +46,8 @@ pub fn sine_preset() -> [f64; COUNT] {
 pub const CLIPPER_TYPES: [ClipperType; 3] =
     [ClipperType::None, ClipperType::Soft, ClipperType::Hard];
 pub const CLIPPER_NAMES: [&str; 3] = ["None", "Soft", "Hard"];
+
+pub const COMPRESSOR_MODES: [&str; 2] = ["Off", "On"];
 
 pub const PHASE_MODES: [PhaseMode; 3] = [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random];
 pub const PHASE_NAMES: [&str; 3] = ["Keep", "Zero", "Random"];
@@ -116,6 +119,14 @@ pub const IDS: [u32; COUNT] = [
     0x43545950, // CTYP
     0x43474149, // CGAI
     0x434d4958, // CMIX
+    0x434f0000, // Compressor
+    0x434f0001, // Threshold
+    0x434f0002, // Ratio
+    0x434f0003, // Attack
+    0x434f0004, // Release
+    0x434f0005, // Knee
+    0x434f0006, // Makeup
+    0x434f0007, // Mix
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -152,6 +163,14 @@ pub const NAMES: [&str; COUNT] = [
     "Clipper type",
     "Gain",
     "Mix",
+    "Compressor",
+    "Compressor Threshold",
+    "Compressor Ratio",
+    "Compressor Attack",
+    "Compressor Release",
+    "Compressor Knee",
+    "Compressor Makeup",
+    "Compressor Mix",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -160,6 +179,7 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         9 => &FILTER_NAMES,
         12 => &PHASE_NAMES,
         31 => &CLIPPER_NAMES,
+        34 => &COMPRESSOR_MODES,
         _ => &[],
     }
 }
@@ -178,6 +198,9 @@ pub fn max_tick(index: usize) -> u32 {
             13 | 22 | 25 | 28 => 720,
             24 | 27 | 32 => 480,
             11 => 950,
+            35 => 600,
+            36 => 190,
+            39 | 40 => 240,
             _ => 100,
         }
     }
@@ -194,8 +217,8 @@ pub fn unit(index: usize) -> &'static str {
         "ms"
     } else {
         match index {
-            13 | 22 | 25 | 28 | 32 => "dB",
-            20 | 21 | 29 | 30 | 33 => "%",
+            13 | 22 | 25 | 28 | 32 | 35 | 39 | 40 => "dB",
+            20 | 21 | 29 | 30 | 33 | 41 => "%",
             7 | 10 | 19 | 24 | 27 => "cent",
             _ => "",
         }
@@ -208,13 +231,13 @@ pub fn index(id: u32) -> Option<usize> {
     IDS.iter().position(|&candidate| candidate == id)
 }
 pub fn is_time(index: usize) -> bool {
-    matches!(index, 1 | 2 | 3 | 5 | 14 | 15 | 16 | 18)
+    matches!(index, 1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 | 37 | 38)
 }
 /// 変更点まで直前の値を保持するパラメーター。Cutoffは連続値だが補間しない。
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
@@ -235,7 +258,10 @@ pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
         match index {
             6 | 8 => f64::from(tick) + 1.0,
             7 | 9 | 20 | 29 | 30 | 31 | 33 => f64::from(tick),
-            32 => f64::from(tick) / 10.0,
+            32 | 39 | 40 => f64::from(tick) / 10.0,
+            35 => f64::from(tick) / 10.0 - 60.0,
+            36 => f64::from(tick) / 10.0 + 1.0,
+            34 | 41 => f64::from(tick),
             21 => f64::from(tick) - 100.0,
             10 => f64::from(tick) * 10.0 - 2400.0,
             11 => 0.5 + f64::from(tick) / 100.0,
@@ -258,6 +284,11 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     }
     match index {
         4 | 17 => return normalized,
+        34 => return f64::from(normalized >= 0.5),
+        35 => return normalized * 60.0 - 60.0,
+        36 => return normalized * 19.0 + 1.0,
+        39 | 40 => return normalized * 24.0,
+        41 => return normalized * 100.0,
         6 => return (normalized * 7.0).floor().min(6.0) + 1.0,
         7 | 20 | 33 => return normalized * 100.0,
         32 => return normalized * 48.0,
@@ -295,6 +326,11 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     }
     match index {
         4 | 17 => return plain,
+        34 => return plain.clamp(0.0, 1.0).round(),
+        35 => return (plain + 60.0) / 60.0,
+        36 => return (plain - 1.0) / 19.0,
+        39 | 40 => return plain / 24.0,
+        41 => return plain / 100.0,
         6 => return (plain.clamp(1.0, 7.0).round() - 1.0) / 6.0,
         7 | 20 | 33 => return plain / 100.0,
         32 => return plain / 48.0,
@@ -325,6 +361,11 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
     match index {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         4 | 17 => (0.0..=1.0).contains(&plain),
+        34 => matches!(plain, 0.0 | 1.0),
+        35 => (-60.0..=0.0).contains(&plain),
+        36 => (1.0..=20.0).contains(&plain),
+        39 | 40 => (0.0..=24.0).contains(&plain),
+        41 => (0.0..=100.0).contains(&plain),
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
         7 | 20 | 33 => (0.0..=100.0).contains(&plain),
         29 | 30 => (0.0..=200.0).contains(&plain),
@@ -345,7 +386,7 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
     } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(index, 6 | 8 | 9 | 12 | 31) {
+    } else if matches!(index, 6 | 8 | 9 | 12 | 31 | 34) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -392,9 +433,30 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         0.0,               // Clipper: None
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
+        0.0,               // Off
+        -18.0,             // Threshold: -18 dB
+        4.0,               // Ratio: 4
+        10.0,              // Attack: 10 ms
+        100.0,             // Release: 100 ms
+        6.0,               // Knee: 6 dB
+        0.0,               // Makeup: 0 dB
+        100.0,             // Mix: 100%
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
+pub fn compressor(values: &[f64; COUNT]) -> CompressorParameters {
+    CompressorParameters {
+        enabled: values[34] != 0.0,
+        threshold_db: to_plain(35, values[35]),
+        ratio: to_plain(36, values[36]),
+        attack_ms: to_plain(37, values[37]),
+        release_ms: to_plain(38, values[38]),
+        knee_db: to_plain(39, values[39]),
+        makeup_db: to_plain(40, values[40]),
+        mix: values[41],
+    }
+}
+
 pub fn distortion(values: &[f64; COUNT]) -> DistortionParameters {
     DistortionParameters {
         clipper: CLIPPER_TYPES[to_plain(31, values[31]) as usize],
@@ -604,9 +666,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v17: 固定276バイト。波形番号u32と、その他の実単位f64を保持する。
+// v24: 固定340バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x11\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x18\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -810,6 +872,14 @@ mod tests {
             (31, 2),
             (32, 480),
             (33, 100),
+            (34, 1),
+            (35, 600),
+            (36, 190),
+            (37, 401),
+            (38, 401),
+            (39, 240),
+            (40, 240),
+            (41, 100),
         ] {
             for tick in 0..=max {
                 let plain = tick_to_plain(index, tick);
@@ -874,6 +944,12 @@ mod tests {
                 {
                     values[14 + i] = to_normalized(14 + i, plain);
                 }
+                for (offset, plain) in [1.0, -23.4, 6.7, 14.3, 187.2, 8.3, 2.7, 54.2]
+                    .into_iter()
+                    .enumerate()
+                {
+                    values[34 + offset] = to_normalized(34 + offset, plain);
+                }
                 assert_eq!(write_state(stream.cast(), values), OK);
                 (*stream).position = 0;
                 let restored = read_state(stream.cast()).unwrap();
@@ -886,12 +962,14 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18] {
+                for version in (0..=u8::MAX).filter(|&v| v != STATE_HEADER[4]) {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                (*stream).bytes[4] = 16;
+                (*stream).bytes[4] = STATE_HEADER[4];
+                (*stream).position = 0;
+                assert!(read_state(stream.cast()).is_ok());
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -955,6 +1033,31 @@ mod tests {
                     (33, -0.1),
                     (33, 100.1),
                     (33, f64::INFINITY),
+                    (34, -1.0),
+                    (34, 0.5),
+                    (34, 2.0),
+                    (34, f64::NAN),
+                    (35, -60.1),
+                    (35, 0.1),
+                    (35, f64::INFINITY),
+                    (36, 0.9),
+                    (36, 20.1),
+                    (36, f64::NAN),
+                    (37, -0.1),
+                    (37, 10000.1),
+                    (37, f64::INFINITY),
+                    (38, -0.1),
+                    (38, 10000.1),
+                    (38, f64::NAN),
+                    (39, -0.1),
+                    (39, 24.1),
+                    (39, f64::INFINITY),
+                    (40, -0.1),
+                    (40, 24.1),
+                    (40, f64::NAN),
+                    (41, -0.1),
+                    (41, 100.1),
+                    (41, f64::INFINITY),
                 ] {
                     let offset = 12 + (index - 1) * 8;
                     let original: [u8; 8] =

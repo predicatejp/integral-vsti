@@ -26,9 +26,48 @@ use std::{
 
 /// ノブの表示名。ホスト公開名とオーバーレイはparameters::NAMESを使う。
 const KNOB_NAMES: [&str; parameters::COUNT] = [
-    "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
-    "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix",
+    "Waveform",
+    "A",
+    "H",
+    "D",
+    "S",
+    "R",
+    "Uni",
+    "Det",
+    "Poly",
+    "Filter",
+    "F",
+    "Res",
+    "Phase",
+    "Vol",
+    "A",
+    "H",
+    "D",
+    "S",
+    "R",
+    "Amt",
+    "Width",
+    "Pan",
+    "Vol",
+    "Waveform",
+    "Tune",
+    "Vol",
+    "Waveform",
+    "Tune",
+    "Vol",
+    "Mod",
+    "Mod",
+    "Clipper",
+    "Gain",
+    "Mix",
+    "Compressor",
+    "Thresh",
+    "Ratio",
+    "Attack",
+    "Release",
+    "Knee",
+    "Makeup",
+    "Mix",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -37,6 +76,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     3, 3, 3, 4, 3, 2, 4, 4, 2, // Cutoff envelope / Amount / Width / Pan / Osc1 Vol
     4, 3, 2, 4, 3, 2, 4, 4, // Osc2 / Osc3
     4, 3, 4, // Distortion
+    4, 2, 4, 3, 3, 3, 3, 4, // Compressor
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -59,10 +99,10 @@ fn is_detent(index: usize, tick: u32) -> bool {
 fn knob_marks(index: usize) -> (&'static [u32], u32) {
     match index {
         // 時間: 0 / 10 / 100 / 1000 / 10000 ms。0と隣接する1 msは省く。
-        1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 401], 0),
+        1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 | 37 | 38 => (&[0, 101, 201, 301, 401], 0),
         4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
         6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
-        7 | 20 | 33 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
+        7 | 20 | 33 | 41 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
         8 => (&[0, 7, 15, 23, 31], 0),          // Polyphony: 1/8/16/24/32
         // Cutoff: −2〜+8 oct、0 centを強調。
         10 => (
@@ -80,6 +120,9 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         24 | 27 => (&[0, 120, 240, 360, 480], 240),                // Tune: −2〜+2 oct
         29 | 30 => (&[0, 50, 100, 150, 200], 0),                   // 位相変調: 0〜2回転、半回転刻み
         32 => (&[0, 120, 240, 360, 480], 0),                       // Gain: 0〜48 dB、12 dB刻み
+        35 => (&[0, 120, 240, 360, 480, 600], 420),
+        36 => (&[0, 10, 30, 70, 190], 30),
+        39 | 40 => (&[0, 60, 120, 180, 240], 0),
         _ => (&[], 0),
     }
 }
@@ -690,7 +733,7 @@ impl WindowHandler for Editor {
                 egui::FontId::proportional(24.0),
                 INK,
             );
-            let meter_x = title.right() - GAP - 254.0;
+            let meter_x = 941.0 / UI_SCALE - GAP * 2.0 - 254.0;
             let peak_db = self.state.borrow().peak_db;
             let peak_rect = egui::Rect::from_min_size(
                 egui::pos2(meter_x, title.center().y - 10.0),
@@ -801,6 +844,12 @@ impl WindowHandler for Editor {
                     &[12],
                     &[&[8][..], &[13][..], &[21][..]][..],
                     [master_x, GAP, 144.0, panel_height],
+                ),
+                (
+                    "Compressor",
+                    &[34],
+                    &[&[35, 36][..], &[37, 38][..], &[39, 40][..], &[41][..]][..],
+                    [master_x + 144.0 + GAP, GAP, filter_width, panel_height],
                 ),
             ];
             for (title, choices, rows, [x, y, width, height]) in groups {

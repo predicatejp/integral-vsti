@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use crate::compressor::Compressor;
 #[cfg(test)]
 use crate::distortion::LATENCY;
 use crate::distortion::{ClipperType, DistortionParameters};
@@ -39,6 +40,10 @@ pub struct SynthesizerState {
     unused_pending: bool,
     /// Dryは平均化を通さず、1サンプルの純遅延だけを掛ける。
     previous_dry: [f64; 2],
+    /// Dryの1サンプル遅延へ対応するMaster倍率。Off時の既存操作時刻を保つ。
+    previous_master_gain: f64,
+    /// 全Voiceの合成後へ適用する左右連動コンプレッサー。
+    compressor: Compressor,
     /// 現在のクリップ設定。線形Gainは設定変更時に計算する。
     distortion: DistortionParameters,
 }
@@ -68,6 +73,11 @@ impl Synthesizer {
                 started: false,
                 unused_pending: false,
                 previous_dry: [0.0; 2],
+                previous_master_gain: 1.0,
+                compressor: Compressor::new(
+                    parameters::compressor(&parameters::defaults()),
+                    44100.0,
+                ),
                 distortion: parameters::distortion(&parameters::defaults()),
             }),
         }
@@ -75,6 +85,9 @@ impl Synthesizer {
 
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         self.state.sample_rate = sample_rate;
+        self.state
+            .compressor
+            .set_parameters(parameters::compressor(&self.state.parameters), sample_rate);
     }
 
     pub fn parameters(&self) -> [f64; parameters::COUNT] {
@@ -239,6 +252,11 @@ impl Synthesizer {
                 voice.set_resonance(resonance_q);
             }
         }
+        if values[34..] != previous[34..] {
+            self.state
+                .compressor
+                .set_parameters(parameters::compressor(&values), self.state.sample_rate);
+        }
         let clipper_changed = values[31] != previous[31];
         self.state.parameters = values;
         if clipper_changed && !self.state.started {
@@ -276,6 +294,8 @@ impl Synthesizer {
 
     pub fn stop(&mut self) {
         self.state.previous_dry = [0.0; 2];
+        self.state.previous_master_gain = self.state.master_gain;
+        self.state.compressor.reset();
         self.state.started = false;
         self.state.used_voices = 0;
         self.state.unused_pending = true;
@@ -310,7 +330,6 @@ impl Synthesizer {
         }
         self.state.started = true;
         let clipper = self.state.processing;
-        let gain = self.state.master_gain;
         output.fill([0.0; 2]);
         if clipper == ClipperType::None {
             for chunk in output.chunks_mut(32) {
@@ -329,8 +348,8 @@ impl Synthesizer {
                 }
             }
             for out in output {
-                let current = out.map(|v| v * gain);
-                *out = std::mem::replace(&mut self.state.previous_dry, current);
+                let dry = std::mem::replace(&mut self.state.previous_dry, *out);
+                *out = self.finish_sample(dry, [0.0; 2], 0.0, 1.0);
             }
         } else {
             for chunk in output.chunks_mut(32) {
@@ -356,11 +375,8 @@ impl Synthesizer {
                     }
                 }
                 for (out, dry) in chunk.iter_mut().zip(&dry) {
-                    let dry =
-                        std::mem::replace(&mut self.state.previous_dry, dry.map(|v| v * gain));
-                    *out = std::array::from_fn(|ch| {
-                        dry[ch] * (1.0 - distortion.mix) + (out[ch] * gain) * distortion.mix
-                    });
+                    let dry = std::mem::replace(&mut self.state.previous_dry, *dry);
+                    *out = self.finish_sample(dry, *out, distortion.mix, 1.0);
                 }
             }
         }
@@ -382,7 +398,7 @@ impl Synthesizer {
         let mut dry = [0.0; 2];
         let mut wet = [0.0; 2];
         if clipper == ClipperType::None {
-            dry = self.mix_sample();
+            dry = self.mix_voice_sample();
         } else {
             let mut distortion = self.state.distortion;
             distortion.clipper = clipper;
@@ -398,8 +414,6 @@ impl Synthesizer {
                     wet[ch] += output[ch];
                 }
             }
-            dry = dry.map(|x| x * self.state.master_gain);
-            wet = wet.map(|x| x * self.state.master_gain);
         }
         let dry = std::mem::replace(&mut self.state.previous_dry, dry);
         let remaining = self.state.transition;
@@ -416,7 +430,23 @@ impl Synthesizer {
             self.state.distortion.mix
         };
         // Dryをフェードやフィルタへ通さず、ホストレートで最後に混合する。
-        std::array::from_fn(|ch| dry[ch] * (1.0 - mix) + wet[ch] * mix * gain)
+        self.finish_sample(dry, wet, mix, gain)
+    }
+
+    /// Off時は従来のMaster適用時刻と演算順序を保つ。On時は合成→Compressor→Master。
+    fn finish_sample(&mut self, dry: [f64; 2], wet: [f64; 2], mix: f64, fade: f64) -> [f64; 2] {
+        let gain = self.state.master_gain;
+        let previous_gain = std::mem::replace(&mut self.state.previous_master_gain, gain);
+        if self.state.parameters[34] == 0.0 {
+            return std::array::from_fn(|ch| {
+                (dry[ch] * previous_gain) * (1.0 - mix) + (wet[ch] * gain) * mix * fade
+            });
+        }
+        let input = std::array::from_fn(|ch| dry[ch] * (1.0 - mix) + wet[ch] * mix * fade);
+        self.state
+            .compressor
+            .process_sample(input)
+            .map(|sample| sample * gain)
     }
 
     /// 未使用枠の遅延停止を消化し、後続ノートと同時刻の停止として残さない。
@@ -436,8 +466,8 @@ impl Synthesizer {
         self.state.unused_pending = false;
     }
 
-    /// フィルタまでのVoice出力を加算しMasterを適用する。
-    fn mix_sample(&mut self) -> [f64; 2] {
+    /// フィルタまでのVoice出力を加算する。
+    fn mix_voice_sample(&mut self) -> [f64; 2] {
         let mut sum = [0.0; 2];
         for voice in &mut self.state.voices[..self.state.used_voices] {
             let sample = voice.generate_sample(
@@ -448,7 +478,13 @@ impl Synthesizer {
             sum[0] += sample[0];
             sum[1] += sample[1];
         }
-        sum.map(|sample| sample * self.state.master_gain)
+        sum
+    }
+
+    #[cfg(test)]
+    fn mix_sample(&mut self) -> [f64; 2] {
+        self.mix_voice_sample()
+            .map(|sample| sample * self.state.master_gain)
     }
 }
 
@@ -469,6 +505,47 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn compressor_processes_the_stereo_sum_before_master_and_keeps_block_state() {
+        for rate in [44100.0, 48000.0, 96000.0] {
+            let mut values = parameters::sine_preset();
+            values[8] = parameters::to_normalized(8, 3.0);
+            values[13] = parameters::to_normalized(13, -12.0);
+            values[34] = 1.0;
+            values[37] = parameters::to_normalized(37, 1.0);
+            let mut actual = Synthesizer::new();
+            actual.set_sample_rate(rate);
+            actual.set_parameters(values);
+            let mut source = actual.clone();
+            let mut source_values = values;
+            source_values[13] = parameters::to_normalized(13, 0.0);
+            source_values[34] = 0.0;
+            source.set_parameters(source_values);
+            let mut compressor = Compressor::new(parameters::compressor(&values), rate);
+            for (id, pitch) in [48, 60, 67].into_iter().enumerate() {
+                actual.note_on(note(id as i32, 0, pitch), 0.0, 1.0);
+                source.note_on(note(id as i32, 0, pitch), 0.0, 1.0);
+            }
+            let mut scalar = actual.clone();
+            for length in [1, 7, 32, 257, 511] {
+                let mut output = vec![[0.0; 2]; length];
+                actual.generate_samples(&mut output);
+                for sample in output {
+                    let expected = compressor
+                        .process_sample(source.generate_sample())
+                        .map(|x| x * 10.0_f64.powf(-12.0 / 20.0));
+                    assert_eq!(sample, scalar.generate_sample());
+                    for ch in 0..2 {
+                        assert!((sample[ch] - expected[ch]).abs() < 1e-12);
+                    }
+                }
+            }
+            actual.stop();
+            actual.generate_samples(&mut [[0.0; 2]; 33]);
+            assert_eq!(actual.generate_sample(), [0.0; 2]);
+        }
     }
 
     #[test]
