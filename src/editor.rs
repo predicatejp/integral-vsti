@@ -28,7 +28,8 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix",
+    "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix", "Phaser", "Center", "Depth",
+    "Rate", "Feed", "Mix",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -37,6 +38,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     3, 3, 3, 4, 3, 2, 4, 4, 2, // Cutoff envelope / Amount / Width / Pan / Osc1 Vol
     4, 3, 2, 4, 3, 2, 4, 4, // Osc2 / Osc3
     4, 3, 4, // Distortion
+    4, 3, 4, 3, 6, 8, // Phaser
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -80,6 +82,11 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         24 | 27 => (&[0, 120, 240, 360, 480], 240),                // Tune: −2〜+2 oct
         29 | 30 => (&[0, 50, 100, 150, 200], 0),                   // 位相変調: 0〜2回転、半回転刻み
         32 => (&[0, 120, 240, 360, 480], 0),                       // Gain: 0〜48 dB、12 dB刻み
+        35 => (&[0, 75, 150, 250, 325, 400], 250),
+        36 => (&[0, 60, 120, 180, 240], 120),
+        37 => (&[0, 5, 45, 95, 195, 495], 45),
+        38 => (&[0, 45, 95, 145, 190], 95),
+        39 => (&[0, 25, 50, 75, 100], 50),
         _ => (&[], 0),
     }
 }
@@ -332,7 +339,7 @@ impl Editor {
         let center = rect.center();
         let painter = ui.painter().clone();
         // 実単位に沿った目盛り。中点を持つパラメーターの円弧はゼロから伸ばす。
-        let zero = if matches!(index, 19 | 21 | 24 | 27) {
+        let zero = if matches!(index, 19 | 21 | 24 | 27 | 38) {
             0.5
         } else {
             0.0
@@ -801,6 +808,12 @@ impl WindowHandler for Editor {
                     &[12],
                     &[&[8][..], &[13][..], &[21][..]][..],
                     [master_x, GAP, 144.0, panel_height],
+                ),
+                (
+                    "Phaser",
+                    &[34],
+                    &[&[35][..], &[36][..], &[37][..], &[38][..], &[39][..]][..],
+                    [master_x + 144.0 + GAP, GAP, 240.0, panel_height],
                 ),
             ];
             for (title, choices, rows, [x, y, width, height]) in groups {

@@ -4,6 +4,8 @@
 #![allow(dead_code)] // ABI・保存処理など、計測対象以外の既存定義も読み込む。
 #[path = "../src/abi.rs"]
 mod abi;
+#[path = "../src/phaser.rs"]
+mod phaser;
 #[path = "../src/distortion.rs"]
 mod distortion;
 #[path = "../src/envelope.rs"]
@@ -67,6 +69,7 @@ const BASE: [f64; parameters::COUNT] = [
     0.,
     0.,
     100.,
+    0.0, 1000.0, 1200.0, 0.5, 50.0, 50.0, // Phaser
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),
