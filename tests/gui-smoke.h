@@ -35,7 +35,7 @@ struct NativeParent {
         cls.hInstance = GetModuleHandleW(nullptr);
         cls.lpszClassName = L"SampleVstiGuiTest";
         RegisterClassW(&cls);
-        // 1024×768の画面でも、検証するクライアント領域全体を画面内に置く。
+        // 検証するクライアント領域全体を画面内に置く。
         window = CreateWindowExW(0, cls.lpszClassName, L"VST3 GUI test", WS_POPUP,
                                  0, 0, 960, 700, nullptr, nullptr, cls.hInstance, nullptr);
         assert(window); ShowWindow(window, SW_SHOW);
@@ -303,7 +303,7 @@ public:
         assert(!GuiReentry::insideDraw);
 #endif
         assert(std::this_thread::get_id() == uiThread);
-        assert(id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert((id >= 0x52560000 && id < 0x52560005) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -332,7 +332,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 941 && rect.getHeight() == 672);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1277 && rect.getHeight() == 672);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -345,7 +345,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 941);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1277);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -441,13 +441,14 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
-    std::array<std::pair<int, int>, 34> controls {{
+    std::array<std::pair<int, int>, 39> controls {{
         {212, 30}, {328, 82}, {392, 82}, {456, 82}, {520, 82}, {584, 82},
         {48, 97}, {112, 97}, {704, 196}, {564, 170}, {349, 222}, {456, 222},
         {704, 118}, {704, 310}, {328, 310}, {392, 310}, {456, 310}, {520, 310},
         {584, 310}, {563, 222}, {176, 97}, {704, 424}, {240, 97},
         {212, 199}, {59, 266}, {144, 266}, {212, 369}, {59, 435}, {144, 435}, {229, 266}, {229, 435},
-        {564, 398}, {376, 450}, {536, 450}
+        {564, 398}, {376, 450}, {536, 450},
+        {984, 30}, {856, 175}, {984, 175}, {856, 357}, {984, 357}
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
@@ -467,7 +468,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(941, 672); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(1277, 672); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         if (cycle == 0) {
@@ -497,7 +498,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
             auto meter = [&](int count) {
                 for (int i = 0; i < 32; ++i) {
-                    if (parent.pixel(uiPixel(517 + i * 8), uiPixel(32)) != (i < count ? lit : unlit)) return false;
+                    if (parent.pixel(uiPixel(797 + i * 8), uiPixel(32)) != (i < count ? lit : unlit)) return false;
                 }
                 return true;
             };
@@ -508,7 +509,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             for (int i = 0; i < 16; ++i) assert(processor->process(audio) == kResultOk);
             waitFor([&] {
                 assert(processor->process(audio) == kResultOk);
-                return parent.pixel(uiPixel(600), uiPixel(20)) == lit && parent.pixel(uiPixel(766), uiPixel(20)) == over;
+                return parent.pixel(uiPixel(880), uiPixel(20)) == lit && parent.pixel(uiPixel(1046), uiPixel(20)) == over;
             }, "peak at +12 dBFS: green below zero, red above");
             parent.screenshot("target/gui-voices.ppm");
             audio.inputEvents = &events;
@@ -524,7 +525,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return meter(3); }, "voices before stop");
             assert(processor->setProcessing(false) == kResultOk);
             waitFor([&] { return meter(0); }, "voices after stop");
-            waitFor([&] { return parent.pixel(uiPixel(517), uiPixel(20)) == unlit; }, "peak decays to silence");
+            waitFor([&] { return parent.pixel(uiPixel(797), uiPixel(20)) == unlit; }, "peak decays to silence");
             assert(component->setActive(false) == kResultOk);
             assert(component->setState(&original) == kResultOk);
         }
@@ -560,10 +561,14 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             choose(31, item);
             assert(handler.editedId == 0x43545950 && handler.value == item / 2.0);
         }
-        // 全28ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
+        for (int item : {1, 0}) {
+            choose(34, item);
+            assert(handler.value == item);
+        }
+        // 全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());
-        for (int i = 1; i < 34; ++i) {
-            if (i == 9 || i == 12 || i == 23 || i == 26 || i == 31) continue;
+        for (int i = 1; i < 39; ++i) {
+            if (i == 9 || i == 12 || i == 23 || i == 26 || i == 31 || i == 34) continue;
             ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
             pump(); assert(handler.sequence.empty());
@@ -578,7 +583,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0}));
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(logicalX - 112, 0, 560);
+            const int overlayX = std::clamp(logicalX - 112, 0, 840);
             const int overlayY = std::clamp(logicalY - 91, 0, 500);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
@@ -605,7 +610,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return handler.sequence.size() == 2; }, "knob integer tick");
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
-            const double plain = time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
+            const double plain = i == 35 ? .1 * std::pow(100., 1./200.) : i == 36 ? 500. * std::pow(40., 1./300.) : i == 37 ? 51. : i == 38 ? 1. : time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
                                  i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -59.9 : (i == 24 || i == 27) ? -2390.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : (i == 29 || i == 30 || i == 33) ? 1.0 : i == 32 ? .1 : .01;
             assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
             assert(parent.pointerAt(x, y));

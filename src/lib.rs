@@ -21,6 +21,7 @@ mod oscillator;
 mod parameters;
 mod plugin;
 mod random;
+mod reverb;
 mod synth;
 mod voice;
 mod volume;
