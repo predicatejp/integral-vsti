@@ -6,6 +6,8 @@
 mod abi;
 #[path = "../src/distortion.rs"]
 mod distortion;
+#[path = "../src/eq.rs"]
+mod eq;
 #[path = "../src/envelope.rs"]
 mod envelope;
 #[path = "../src/filter.rs"]
@@ -67,6 +69,14 @@ const BASE: [f64; parameters::COUNT] = [
     0.,
     0.,
     100.,
+    0.0,
+    250.0,
+    0.0,
+    1000.0,
+    0.0,
+    1.0,
+    4000.0,
+    0.0,
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),

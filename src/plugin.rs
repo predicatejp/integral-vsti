@@ -765,7 +765,9 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
         return INVALID_ARGUMENT;
     }
     // SAFETY: setupProcessingは非アクティブ状態で呼ばれ、processと競合しない。
-    unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) };
+    if !unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) } {
+        return FALSE;
+    }
     plugin
         .max_samples
         .store(setup.max_samples_per_block, Ordering::Relaxed);
