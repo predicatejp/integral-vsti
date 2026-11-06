@@ -14,6 +14,7 @@ mod distortion;
 mod editor;
 mod envelope;
 mod filter;
+mod flanger;
 mod float_mode;
 mod gui;
 mod host;

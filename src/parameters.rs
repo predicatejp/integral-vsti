@@ -11,7 +11,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 34;
+pub const COUNT: usize = 40;
 /// Osc1・Osc2・Osc3のVolume設定位置。
 pub const OSCILLATOR_VOLUMES: [usize; 3] = [22, 25, 28];
 
@@ -88,34 +88,40 @@ pub const IDS: [u32; COUNT] = [
     0x44454359,
     0x53555354,
     0x52454c53,
-    0x554e4953, // UNIS
-    0x4454554e, // DTUN
-    0x504f4c59, // POLY
-    0x46545950, // FTYP
-    0x46435554, // FCUT
-    0x46524553, // FRES
-    0x50484153, // PHAS
-    0x4d564f4c, // MVOL
-    0x43415454, // CATT
-    0x43484c44, // CHLD
-    0x43444543, // CDEC
-    0x43535553, // CSUS
-    0x4352454c, // CREL
-    0x43414d54, // CAMT
-    0x57494454, // WIDT
-    0x4d50414e, // MPAN
-    0x4f31564c, // O1VL
-    0x4f325746, // O2WF
-    0x4f32544e, // O2TN
-    0x4f32564c, // O2VL
-    0x4f335746, // O3WF
-    0x4f33544e, // O3TN
-    0x4f33564c, // O3VL
-    0x4f32464d, // O2FM
-    0x4f33464d, // O3FM
-    0x43545950, // CTYP
-    0x43474149, // CGAI
-    0x434d4958, // CMIX
+    0x554e4953,  // UNIS
+    0x4454554e,  // DTUN
+    0x504f4c59,  // POLY
+    0x46545950,  // FTYP
+    0x46435554,  // FCUT
+    0x46524553,  // FRES
+    0x50484153,  // PHAS
+    0x4d564f4c,  // MVOL
+    0x43415454,  // CATT
+    0x43484c44,  // CHLD
+    0x43444543,  // CDEC
+    0x43535553,  // CSUS
+    0x4352454c,  // CREL
+    0x43414d54,  // CAMT
+    0x57494454,  // WIDT
+    0x4d50414e,  // MPAN
+    0x4f31564c,  // O1VL
+    0x4f325746,  // O2WF
+    0x4f32544e,  // O2TN
+    0x4f32564c,  // O2VL
+    0x4f335746,  // O3WF
+    0x4f33544e,  // O3TN
+    0x4f33564c,  // O3VL
+    0x4f32464d,  // O2FM
+    0x4f33464d,  // O3FM
+    0x43545950,  // CTYP
+    0x43474149,  // CGAI
+    0x434d4958,  // CMIX
+    0x464c_0000, // Flanger On/Off
+    0x464c_0001, // Flanger Time
+    0x464c_0002, // Flanger Depth
+    0x464c_0003, // Flanger Rate
+    0x464c_0004, // Flanger Feedback
+    0x464c_0005, // Flanger Mix
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -152,6 +158,12 @@ pub const NAMES: [&str; COUNT] = [
     "Clipper type",
     "Gain",
     "Mix",
+    "Flanger",
+    "Flanger Time",
+    "Flanger Depth",
+    "Flanger Rate",
+    "Flanger Feedback",
+    "Flanger Mix",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -160,6 +172,7 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         9 => &FILTER_NAMES,
         12 => &PHASE_NAMES,
         31 => &CLIPPER_NAMES,
+        34 => &["Off", "On"],
         _ => &[],
     }
 }
@@ -178,6 +191,11 @@ pub fn max_tick(index: usize) -> u32 {
             13 | 22 | 25 | 28 => 720,
             24 | 27 | 32 => 480,
             11 => 950,
+            34 => 1,
+            35 => 90,
+            36 => 95,
+            37 => 495,
+            38 => 190,
             _ => 100,
         }
     }
@@ -195,7 +213,9 @@ pub fn unit(index: usize) -> &'static str {
     } else {
         match index {
             13 | 22 | 25 | 28 | 32 => "dB",
-            20 | 21 | 29 | 30 | 33 => "%",
+            20 | 21 | 29 | 30 | 33 | 38 | 39 => "%",
+            35 | 36 => "ms",
+            37 => "Hz",
             7 | 10 | 19 | 24 | 27 => "cent",
             _ => "",
         }
@@ -214,7 +234,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
@@ -236,6 +256,11 @@ pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
             6 | 8 => f64::from(tick) + 1.0,
             7 | 9 | 20 | 29 | 30 | 31 | 33 => f64::from(tick),
             32 => f64::from(tick) / 10.0,
+            34 | 39 => f64::from(tick),
+            35 => 1.0 + f64::from(tick) / 10.0,
+            36 => f64::from(tick) / 100.0,
+            37 => 0.05 + f64::from(tick) / 100.0,
+            38 => f64::from(tick) - 95.0,
             21 => f64::from(tick) - 100.0,
             10 => f64::from(tick) * 10.0 - 2400.0,
             11 => 0.5 + f64::from(tick) / 100.0,
@@ -259,7 +284,12 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     match index {
         4 | 17 => return normalized,
         6 => return (normalized * 7.0).floor().min(6.0) + 1.0,
-        7 | 20 | 33 => return normalized * 100.0,
+        7 | 20 | 33 | 39 => return normalized * 100.0,
+        34 => return if normalized < 0.5 { 0.0 } else { 1.0 },
+        35 => return 1.0 + normalized * 9.0,
+        36 => return normalized * 0.95,
+        37 => return 0.05 + normalized * 4.95,
+        38 => return normalized * 190.0 - 95.0,
         32 => return normalized * 48.0,
         29 | 30 => return normalized * 200.0,
         21 => return normalized * 200.0 - 100.0,
@@ -296,7 +326,12 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     match index {
         4 | 17 => return plain,
         6 => return (plain.clamp(1.0, 7.0).round() - 1.0) / 6.0,
-        7 | 20 | 33 => return plain / 100.0,
+        7 | 20 | 33 | 39 => return plain / 100.0,
+        34 => return plain.clamp(0.0, 1.0).round(),
+        35 => return (plain - 1.0) / 9.0,
+        36 => return plain / 0.95,
+        37 => return (plain - 0.05) / 4.95,
+        38 => return (plain + 95.0) / 190.0,
         32 => return plain / 48.0,
         29 | 30 => return plain / 200.0,
         21 => return (plain + 100.0) / 200.0,
@@ -326,7 +361,12 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         4 | 17 => (0.0..=1.0).contains(&plain),
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
-        7 | 20 | 33 => (0.0..=100.0).contains(&plain),
+        38 => (-95.0..=95.0).contains(&plain),
+        7 | 20 | 33 | 39 => (0.0..=100.0).contains(&plain),
+        34 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
+        35 => (1.0..=10.0).contains(&plain),
+        36 => (0.0..=0.95).contains(&plain),
+        37 => (0.05..=5.0).contains(&plain),
         29 | 30 => (0.0..=200.0).contains(&plain),
         21 => (-100.0..=100.0).contains(&plain),
         8 => (1.0..=32.0).contains(&plain) && plain.fract() == 0.0,
@@ -345,7 +385,7 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
     } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(index, 6 | 8 | 9 | 12 | 31) {
+    } else if matches!(index, 6 | 8 | 9 | 12 | 31 | 34) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -392,9 +432,26 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         0.0,               // Clipper: None
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
+        0.0,               // Flanger: Off
+        2.5,               // Time: 2.5 ms
+        0.5,               // Depth: 0.5 ms
+        0.25,              // Rate: 0.25 Hz
+        50.0,              // Feedback: 50%
+        50.0,              // Mix: 50%
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
+pub fn flanger(values: &[f64; COUNT]) -> crate::flanger::FlangerParameters {
+    crate::flanger::FlangerParameters {
+        enabled: values[34] == 1.0,
+        time_ms: to_plain(35, values[35]),
+        depth_ms: to_plain(36, values[36]),
+        rate_hz: to_plain(37, values[37]),
+        feedback: to_plain(38, values[38]) / 100.0,
+        mix: values[39],
+    }
+}
+
 pub fn distortion(values: &[f64; COUNT]) -> DistortionParameters {
     DistortionParameters {
         clipper: CLIPPER_TYPES[to_plain(31, values[31]) as usize],
@@ -604,9 +661,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v17: 固定276バイト。波形番号u32と、その他の実単位f64を保持する。
+// v21: 固定324バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x11\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x15\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -886,12 +943,12 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18] {
+                for version in (0..=STATE_HEADER[4] + 1).filter(|v| *v != STATE_HEADER[4]) {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                (*stream).bytes[4] = 16;
+                (*stream).bytes[4] = STATE_HEADER[4];
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
                     (6, 0.0_f64),
@@ -955,6 +1012,20 @@ mod tests {
                     (33, -0.1),
                     (33, 100.1),
                     (33, f64::INFINITY),
+                    (34, 0.5),
+                    (34, 2.0),
+                    (35, f64::NAN),
+                    (36, f64::INFINITY),
+                    (35, 0.9),
+                    (35, 10.1),
+                    (36, -0.01),
+                    (36, 0.96),
+                    (37, 0.049),
+                    (37, 5.01),
+                    (38, -95.1),
+                    (38, 95.1),
+                    (39, -0.1),
+                    (39, 100.1),
                 ] {
                     let offset = 12 + (index - 1) * 8;
                     let original: [u8; 8] =

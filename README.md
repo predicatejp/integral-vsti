@@ -15,8 +15,8 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
-| サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
-| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・Mod、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / Mixを公開。eguiでも操作可能 |
+| サンプルレート | 44.1 kHz以上の有限値、Flanger履歴は最大16 MiB。範囲外はVST3の`setupProcessing`で拒否 |
+| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・Mod、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / Mix、Flanger / Time / Depth / Rate / Feedback / Mixを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | 1サンプル。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
@@ -343,8 +343,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v17は276バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mixを各f64。little endian）です。
-読み込みは現行形式v17のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v21は324バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/Flanger/Flanger Time/Flanger Depth/Flanger Rate/Flanger Feedback/Flanger Mixを各f64。little endian）です。
+読み込みは現行形式v21のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -353,7 +353,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定34個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定40個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -367,15 +367,41 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
 | Osc2/3 Waveform / Tune / Volume / Mod | Sine / 0 cent / −∞ dB / 0% |
 | Clipper / Gain / Mix | None / 0 dB / 100% |
+| Flanger / Time / Depth / Rate / Feedback / Mix | Off / 2.5 ms / 0.5 ms / 0.25 Hz / 50% / 50% |
 
 ノートオン・オフで即時に発音・消音し、最大ベロシティ時の実効値は片チャンネル当たり0.5です。
 選択すると全設定を読み直し、同じ「Sine」の再選択でも編集した値を元に戻します。
 ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
 音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
 連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
-編集内容は実際の34設定として保存し、復元時にも編集後の値を保持します。
+編集内容は実際の40設定として保存し、復元時にも編集後の値を保持します。
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
+
+## Flanger
+
+全VoiceのDistortion出力を合成し、Master Volume前で短い遅延とフィードバックを処理します。
+
+| パラメーター | 範囲・初期値 | ParamID |
+| --- | --- | --- |
+| Flanger | Off（初期値）/ On | `0x464c0000` |
+| Time | 1〜10 ms、0.1 ms刻み、初期値2.5 ms | `0x464c0001` |
+| Depth | 0〜0.95 ms、0.01 ms刻み、初期値0.5 ms | `0x464c0002` |
+| Rate | 0.05〜5 Hz、0.01 Hz刻み、初期値0.25 Hz | `0x464c0003` |
+| Feedback | −95〜95%、1%刻み、初期値50% | `0x464c0004` |
+| Mix | 0〜100%、1%刻み、初期値50% | `0x464c0005` |
+
+左右共通のf64 MCF LFOで遅延をTime ± Depthに動かし、隣接sampleを線形補間します。
+遅延出力にFeedbackを掛けて各チャンネルの入力へ戻します。Mixは原音と遅延出力の線形混合です。
+Timeを動かすと読出し位置が移動し、音高も変化します。Rate変更でもLFO位相を保ちます。
+On/Offは変更点で切り替え、他の5設定はホストの変更点間を線形補間します。
+On/Off・処理停止・sample rate変更で履歴を破棄します。初期設定とSineはOffです。
+ノート終了後も残った遅延音を処理します。
+
+履歴はsetup時だけ確保し、最大1,048,576 stereo f64 frames（16 MiB）とします。
+`ceil(Fs × 0.01095) + 2`を次の2の累乗へ切り上げた長さが上限を超える場合や確保失敗時は、
+VST3の`setupProcessing`で拒否します。44.1 / 48 / 96 / 192 kHzで利用できます。
+GUIは既存パネルの右にFlangerグループを追加します。
 
 ## ディストーション
 
@@ -438,7 +464,7 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは941×672物理ピクセルで固定です。標準フォントは21.6px、見出しは28.8pxです。
+サイズは1239×672物理ピクセルで固定です。標準フォントは21.6px、見出しは28.8pxです。
 `python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中・発音中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`、`target/gui-voices.png`へ保存します。
 Windowsでは、描画中に再描画と編集配送タイマーを意図的に再入させ、描画の延期と、描画終了後の編集通知を検証します。
 画面作成・描画・破棄と作成失敗時に、ホストのOpenGLコンテキストと描画先が復元されることも検証します。
@@ -745,6 +771,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
 - `src/distortion.rs`: フィルタ後のプリゲイン・クリップ・1次／2次ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
+- `src/flanger.rs`: 全Voice加算後のフィードバック付き短時間遅延、f64 MCF LFOと線形補間。
 - `src/synth.rs`: Voiceの循環割り当て・加算出力と、共通の定位係数・マスター音量の管理。
 - `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilter → Distortionの処理パイプライン。
 - `src/float_mode.rs`: 音声処理中の非正規化数処理モードの保存・切り替え・復元。
