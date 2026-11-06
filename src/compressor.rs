@@ -54,9 +54,10 @@ impl Compressor {
                 reduction_db: 0.0,
                 coefficients: [parameters.attack_ms, parameters.release_ms]
                     .map(|ms| coefficient(ms, sample_rate)),
-                makeup_gain: 10.0_f64.powf(parameters.makeup_db / 20.0),
-                lower_gain: 10.0_f64
-                    .powf((parameters.threshold_db - parameters.knee_db * 0.5) / 20.0),
+                makeup_gain: (parameters.makeup_db * (std::f64::consts::LOG2_10 / 20.0)).exp2(),
+                lower_gain: ((parameters.threshold_db - parameters.knee_db * 0.5)
+                    * (std::f64::consts::LOG2_10 / 20.0))
+                    .exp2(),
             },
         }
     }
@@ -70,11 +71,13 @@ impl Compressor {
             self.state.coefficients[1] = coefficient(parameters.release_ms, sample_rate);
         }
         if parameters.makeup_db != old.makeup_db {
-            self.state.makeup_gain = 10.0_f64.powf(parameters.makeup_db / 20.0);
+            self.state.makeup_gain =
+                (parameters.makeup_db * (std::f64::consts::LOG2_10 / 20.0)).exp2();
         }
         if parameters.threshold_db != old.threshold_db || parameters.knee_db != old.knee_db {
-            self.state.lower_gain =
-                10.0_f64.powf((parameters.threshold_db - parameters.knee_db * 0.5) / 20.0);
+            self.state.lower_gain = ((parameters.threshold_db - parameters.knee_db * 0.5)
+                * (std::f64::consts::LOG2_10 / 20.0))
+                .exp2();
         }
         if parameters.enabled != old.enabled {
             self.reset();
@@ -96,7 +99,7 @@ impl Compressor {
         let target = if peak <= self.state.lower_gain {
             0.0
         } else {
-            let over = 20.0 * peak.log10() - p.threshold_db;
+            let over = (20.0 * std::f64::consts::LOG10_E) * peak.ln() - p.threshold_db;
             let curve = if p.knee_db > 0.0 && over < p.knee_db * 0.5 {
                 (over + p.knee_db * 0.5).powi(2) / (2.0 * p.knee_db)
             } else {
@@ -106,7 +109,8 @@ impl Compressor {
         };
         let coefficient = self.state.coefficients[usize::from(target <= self.state.reduction_db)];
         self.state.reduction_db = target + coefficient * (self.state.reduction_db - target);
-        let gain = 10.0_f64.powf(-self.state.reduction_db / 20.0) * self.state.makeup_gain;
+        let gain = (-self.state.reduction_db * (std::f64::consts::LOG2_10 / 20.0)).exp2()
+            * self.state.makeup_gain;
         let mixed_gain = (1.0 - p.mix) + gain * p.mix;
         input.map(|sample| sample * mixed_gain)
     }
@@ -116,7 +120,7 @@ fn coefficient(ms: f64, sample_rate: f64) -> f64 {
     if ms == 0.0 {
         0.0
     } else {
-        (-1000.0 / (ms * sample_rate)).exp()
+        (-1000.0 * std::f64::consts::LOG2_E / (ms * sample_rate)).exp2()
     }
 }
 
