@@ -12,6 +12,8 @@ mod envelope;
 mod filter;
 #[path = "../src/float_mode.rs"]
 mod float_mode;
+#[path = "../src/limiter.rs"]
+mod limiter;
 #[path = "../src/oscillator.rs"]
 mod oscillator;
 #[path = "../src/parameters.rs"]
@@ -67,6 +69,10 @@ const BASE: [f64; parameters::COUNT] = [
     0.,
     0.,
     100.,
+    0.,
+    -1.,
+    100.,
+    0.,
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),

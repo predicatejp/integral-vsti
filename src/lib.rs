@@ -17,6 +17,7 @@ mod filter;
 mod float_mode;
 mod gui;
 mod host;
+mod limiter;
 mod oscillator;
 mod parameters;
 mod plugin;

@@ -9,8 +9,8 @@ class LatencyReference {
     size_t position = 0;
     bool absolute;
 public:
-    explicit LatencyReference(IAudioProcessor* p, bool abs = false)
-        : processor(p), history(p->getLatencySamples()), absolute(abs) { assert(history.size() == 1); }
+    explicit LatencyReference(IAudioProcessor* p, bool abs = false, uint32 alreadyDelayed = 0)
+        : processor(p), history(p->getLatencySamples() - alreadyDelayed), absolute(abs) { assert(p->getLatencySamples() == 241); }
     void reset() { std::fill(history.begin(), history.end(), std::array<double, 2>{}); position = 0; }
     std::array<double, 2> next(double left, double right) {
         const auto result = history[position];

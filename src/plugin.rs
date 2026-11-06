@@ -737,7 +737,7 @@ unsafe extern "system" fn can_process_sample_size(_: This, size: i32) -> TResult
 }
 
 unsafe extern "system" fn latency_samples(_: This) -> u32 {
-    crate::distortion::LATENCY as u32
+    (crate::distortion::LATENCY + crate::limiter::LATENCY) as u32
 }
 
 unsafe extern "system" fn zero(_: This) -> u32 {
@@ -1120,6 +1120,7 @@ mod meter_tests {
                 0.0,
                 1.0,
             );
+            synth.generate_samples(&mut [[0.0; 2]; crate::limiter::LATENCY]);
             let mut left = [0.0_f64; 64];
             let mut right = [0.0_f64; 64];
             let mut channels = [left.as_mut_ptr().cast(), right.as_mut_ptr().cast()];
@@ -1135,11 +1136,16 @@ mod meter_tests {
             data.outputs = &mut bus;
             assert_eq!(process(component, &mut data), OK);
             assert!(left.iter().all(|&v| v.abs() < 1e-15));
-            let expected = right.iter().fold(0.0_f64, |p, v| p.max(v.abs())) as f32;
+            let mut expected = right.iter().fold(0.0_f64, |p, v| p.max(v.abs())) as f32;
             assert!(expected > 0.1 && expected < 0.3);
             values[13] = parameters::to_normalized(13, f64::NEG_INFINITY);
             plugin.processor_parameters.store(values);
             assert_eq!(process(component, &mut data), OK);
+            expected = expected.max(right.iter().fold(0.0_f64, |p, v| p.max(v.abs())) as f32);
+            for _ in 0..crate::limiter::LATENCY.div_ceil(64) {
+                assert_eq!(process(component, &mut data), OK);
+                expected = expected.max(right.iter().fold(0.0_f64, |p, v| p.max(v.abs())) as f32);
+            }
             data.num_samples = 0;
             assert_eq!(process(component, &mut data), OK);
             assert_eq!(
@@ -1150,7 +1156,9 @@ mod meter_tests {
             assert_eq!(process(component, &mut data), OK);
             assert_eq!(plugin.output_peak.load(Ordering::Relaxed), 0);
             plugin.processor_parameters.store(parameters::sine_preset());
-            assert_eq!(process(component, &mut data), OK);
+            for _ in 0..=crate::limiter::LATENCY.div_ceil(64) {
+                assert_eq!(process(component, &mut data), OK);
+            }
             assert!(plugin.output_peak.load(Ordering::Relaxed) > 0);
             assert_eq!(set_processing(component, 0), OK);
             assert_eq!(plugin.output_peak.load(Ordering::Relaxed), 0);

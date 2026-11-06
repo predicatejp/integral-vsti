@@ -12,6 +12,8 @@ mod envelope;
 mod filter;
 #[path = "../src/float_mode.rs"]
 mod float_mode;
+#[path = "../src/limiter.rs"]
+mod limiter;
 #[path = "../src/oscillator.rs"]
 mod oscillator;
 #[path = "../src/parameters.rs"]

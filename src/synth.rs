@@ -1,8 +1,9 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use crate::limiter::Limiter;
 #[cfg(test)]
-use crate::distortion::LATENCY;
+const LATENCY: usize = crate::distortion::LATENCY + crate::limiter::LATENCY;
 use crate::distortion::{ClipperType, DistortionParameters};
 use crate::envelope::DEFAULT_ENVELOPE;
 use crate::oscillator::{PanningGains, panning_gains};
@@ -39,6 +40,10 @@ pub struct SynthesizerState {
     unused_pending: bool,
     /// Dryは平均化を通さず、1サンプルの純遅延だけを掛ける。
     previous_dry: [f64; 2],
+    /// Dryの1サンプル遅延へ対応するMaster倍率。Off時の既存操作時刻を保つ。
+    previous_master_gain: f64,
+    /// 全Voiceの合成後へ適用する左右連動リミッター。
+    limiter: Limiter,
     /// 現在のクリップ設定。線形Gainは設定変更時に計算する。
     distortion: DistortionParameters,
 }
@@ -68,6 +73,8 @@ impl Synthesizer {
                 started: false,
                 unused_pending: false,
                 previous_dry: [0.0; 2],
+                previous_master_gain: 1.0,
+                limiter: Limiter::new(parameters::limiter(&parameters::defaults()), 44100.0),
                 distortion: parameters::distortion(&parameters::defaults()),
             }),
         }
@@ -75,6 +82,9 @@ impl Synthesizer {
 
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         self.state.sample_rate = sample_rate;
+        self.state
+            .limiter
+            .set_parameters(parameters::limiter(&self.state.parameters), sample_rate);
     }
 
     pub fn parameters(&self) -> [f64; parameters::COUNT] {
@@ -239,6 +249,11 @@ impl Synthesizer {
                 voice.set_resonance(resonance_q);
             }
         }
+        if values[34..] != previous[34..] {
+            self.state
+                .limiter
+                .set_parameters(parameters::limiter(&values), self.state.sample_rate);
+        }
         let clipper_changed = values[31] != previous[31];
         self.state.parameters = values;
         if clipper_changed && !self.state.started {
@@ -276,6 +291,8 @@ impl Synthesizer {
 
     pub fn stop(&mut self) {
         self.state.previous_dry = [0.0; 2];
+        self.state.previous_master_gain = self.state.master_gain;
+        self.state.limiter.reset();
         self.state.started = false;
         self.state.used_voices = 0;
         self.state.unused_pending = true;
@@ -310,7 +327,6 @@ impl Synthesizer {
         }
         self.state.started = true;
         let clipper = self.state.processing;
-        let gain = self.state.master_gain;
         output.fill([0.0; 2]);
         if clipper == ClipperType::None {
             for chunk in output.chunks_mut(32) {
@@ -329,8 +345,8 @@ impl Synthesizer {
                 }
             }
             for out in output {
-                let current = out.map(|v| v * gain);
-                *out = std::mem::replace(&mut self.state.previous_dry, current);
+                let dry = std::mem::replace(&mut self.state.previous_dry, *out);
+                *out = self.finish_sample(dry, [0.0; 2], 0.0, 1.0);
             }
         } else {
             for chunk in output.chunks_mut(32) {
@@ -356,11 +372,8 @@ impl Synthesizer {
                     }
                 }
                 for (out, dry) in chunk.iter_mut().zip(&dry) {
-                    let dry =
-                        std::mem::replace(&mut self.state.previous_dry, dry.map(|v| v * gain));
-                    *out = std::array::from_fn(|ch| {
-                        dry[ch] * (1.0 - distortion.mix) + (out[ch] * gain) * distortion.mix
-                    });
+                    let dry = std::mem::replace(&mut self.state.previous_dry, *dry);
+                    *out = self.finish_sample(dry, *out, distortion.mix, 1.0);
                 }
             }
         }
@@ -382,7 +395,7 @@ impl Synthesizer {
         let mut dry = [0.0; 2];
         let mut wet = [0.0; 2];
         if clipper == ClipperType::None {
-            dry = self.mix_sample();
+            dry = self.mix_voice_sample();
         } else {
             let mut distortion = self.state.distortion;
             distortion.clipper = clipper;
@@ -398,8 +411,6 @@ impl Synthesizer {
                     wet[ch] += output[ch];
                 }
             }
-            dry = dry.map(|x| x * self.state.master_gain);
-            wet = wet.map(|x| x * self.state.master_gain);
         }
         let dry = std::mem::replace(&mut self.state.previous_dry, dry);
         let remaining = self.state.transition;
@@ -416,7 +427,23 @@ impl Synthesizer {
             self.state.distortion.mix
         };
         // Dryをフェードやフィルタへ通さず、ホストレートで最後に混合する。
-        std::array::from_fn(|ch| dry[ch] * (1.0 - mix) + wet[ch] * mix * gain)
+        self.finish_sample(dry, wet, mix, gain)
+    }
+
+    /// Offは従来のMaster適用時刻を保った信号を純遅延する。
+    fn finish_sample(&mut self, dry: [f64; 2], wet: [f64; 2], mix: f64, fade: f64) -> [f64; 2] {
+        let gain = self.state.master_gain;
+        let previous_gain = std::mem::replace(&mut self.state.previous_master_gain, gain);
+        let bypass = std::array::from_fn(|ch| {
+            (dry[ch] * previous_gain) * (1.0 - mix) + (wet[ch] * gain) * mix * fade
+        });
+        let input = std::array::from_fn(|ch| dry[ch] * (1.0 - mix) + wet[ch] * mix * fade);
+        let output = self.state.limiter.process_sample(input, bypass);
+        if self.state.parameters[34] == 0.0 {
+            output
+        } else {
+            output.map(|sample| sample * gain)
+        }
     }
 
     /// 未使用枠の遅延停止を消化し、後続ノートと同時刻の停止として残さない。
@@ -436,8 +463,8 @@ impl Synthesizer {
         self.state.unused_pending = false;
     }
 
-    /// フィルタまでのVoice出力を加算しMasterを適用する。
-    fn mix_sample(&mut self) -> [f64; 2] {
+    /// フィルタまでのVoice出力を加算する。
+    fn mix_voice_sample(&mut self) -> [f64; 2] {
         let mut sum = [0.0; 2];
         for voice in &mut self.state.voices[..self.state.used_voices] {
             let sample = voice.generate_sample(
@@ -448,7 +475,13 @@ impl Synthesizer {
             sum[0] += sample[0];
             sum[1] += sample[1];
         }
-        sum.map(|sample| sample * self.state.master_gain)
+        sum
+    }
+
+    #[cfg(test)]
+    fn mix_sample(&mut self) -> [f64; 2] {
+        self.mix_voice_sample()
+            .map(|sample| sample * self.state.master_gain)
     }
 }
 
@@ -469,6 +502,44 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn limiter_bounds_the_sum_before_master_and_matches_variable_blocks() {
+        for rate in [44100.0, 48000.0, 96000.0] {
+            let mut values = parameters::sine_preset();
+            values[8] = parameters::to_normalized(8, 4.0);
+            values[34] = 1.0;
+            values[37] = parameters::to_normalized(37, 12.0);
+            let mut actual = Synthesizer::new();
+            actual.set_sample_rate(rate);
+            actual.set_parameters(values);
+            for (id, pitch) in [48, 55, 60, 67].into_iter().enumerate() {
+                actual.note_on(note(id as i32, 0, pitch), 0.0, 1.0);
+            }
+            let mut scalar = actual.clone();
+            for ceiling in [-1.0, -12.0, -3.0] {
+                values[35] = parameters::to_normalized(35, ceiling);
+                actual.set_parameters(values);
+                scalar.set_parameters(values);
+                for length in [1, 7, 32, 257, 511] {
+                    let mut output = vec![[0.0; 2]; length];
+                    actual.generate_samples(&mut output);
+                    for sample in output {
+                        assert_eq!(sample, scalar.generate_sample());
+                        assert!(
+                            sample
+                                .into_iter()
+                                .all(|x| x.abs() <= 10.0_f64.powf(ceiling / 20.0) + 1e-10)
+                        );
+                    }
+                }
+            }
+            actual.stop();
+            for _ in 0..LATENCY + 1 {
+                assert_eq!(actual.generate_sample(), [0.0; 2]);
+            }
+        }
     }
 
     #[test]
@@ -513,7 +584,7 @@ mod tests {
                 let next = note(2, 0, 69);
                 assert!(synth.note_on(next, 0.0, 1.0));
                 synth.note_off(next);
-                let mut output = [[0.0; 2]; 64];
+                let mut output = [[0.0; 2]; 64 + crate::limiter::LATENCY];
                 synth.generate_samples(&mut output);
                 let peak = output.iter().flatten().fold(0.0_f64, |p, v| p.max(v.abs()));
                 let advanced = matches!(advance, 2 | 3 | 5);
@@ -1374,6 +1445,8 @@ mod distortion_tests {
             let mut bypass = p;
             bypass[31] = 0.0;
             dry.set_parameters(bypass);
+            let mut mix_history =
+                std::collections::VecDeque::from(vec![0.0; crate::limiter::LATENCY]);
             for n in 0..500 {
                 // Gainの段差・ランプ、Mixの急変。Mixは遅延前の値を使わない。
                 p[32] = (n % 71) as f64 / 70.0;
@@ -1389,8 +1462,11 @@ mod distortion_tests {
                 let dry_sample = dry.generate_sample();
                 let wet_sample = wet.generate_sample();
                 let actual = mixed.generate_sample();
+                mix_history.push_back(mix);
+                let delayed_mix = mix_history.pop_front().unwrap();
                 for ch in 0..2 {
-                    let expected = dry_sample[ch] * (1.0 - mix) + wet_sample[ch] * mix;
+                    let expected =
+                        dry_sample[ch] * (1.0 - delayed_mix) + wet_sample[ch] * delayed_mix;
                     assert_eq!(actual[ch], expected);
                     assert!(actual[ch].is_finite());
                 }
@@ -1462,7 +1538,7 @@ mod distortion_tests {
                 s.note_on(note, 0.0, 1.0);
                 synth.note_on(note, 0.0, 1.0);
             }
-            for n in 0..220 {
+            for n in 0..220 + crate::limiter::LATENCY {
                 if n == 80 {
                     let note = Note {
                         id: 1,
@@ -1505,10 +1581,10 @@ mod distortion_tests {
                 }
                 p[31] = parameters::to_normalized(31, target);
                 synth.set_parameters(p);
-                for n in 0..66 {
+                for n in 0..66 + crate::limiter::LATENCY {
                     let out = synth.generate_sample();
                     assert!(out.into_iter().all(f64::is_finite));
-                    if (32..34).contains(&n) {
+                    if (32 + crate::limiter::LATENCY..34 + crate::limiter::LATENCY).contains(&n) {
                         assert_eq!(out, [0.0; 2]);
                     }
                     assert_eq!(synth.active_voice_count(), 1);
