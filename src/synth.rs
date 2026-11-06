@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use crate::delay::{Delay, DelayParameters};
 #[cfg(test)]
 use crate::distortion::LATENCY;
 use crate::distortion::{ClipperType, DistortionParameters};
@@ -39,6 +40,10 @@ pub struct SynthesizerState {
     unused_pending: bool,
     /// Dryは平均化を通さず、1サンプルの純遅延だけを掛ける。
     previous_dry: [f64; 2],
+    /// Bypass時に既存Dry経路の音量更新時刻を保つ。
+    previous_master_gain: f64,
+    /// 全Voiceの合成後、Master直前の共通Delay。
+    delay: Delay,
     /// 現在のクリップ設定。線形Gainは設定変更時に計算する。
     distortion: DistortionParameters,
 }
@@ -68,13 +73,23 @@ impl Synthesizer {
                 started: false,
                 unused_pending: false,
                 previous_dry: [0.0; 2],
+                previous_master_gain: 1.0,
+                delay: Delay::new(),
                 distortion: parameters::distortion(&parameters::defaults()),
             }),
         }
     }
 
-    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+    pub fn set_sample_rate(&mut self, sample_rate: f64) -> bool {
+        if !self.state.delay.prepare(sample_rate) {
+            return false;
+        }
         self.state.sample_rate = sample_rate;
+        true
+    }
+
+    pub fn set_tempo(&mut self, bpm: f64) {
+        self.state.delay.set_tempo(bpm);
     }
 
     pub fn parameters(&self) -> [f64; parameters::COUNT] {
@@ -85,6 +100,16 @@ impl Synthesizer {
     pub fn set_parameters(&mut self, values: [f64; parameters::COUNT]) -> bool {
         if values == self.state.parameters {
             return false;
+        }
+        if values[34..] != self.state.parameters[34..] {
+            self.state.delay.set_parameters(DelayParameters {
+                mode: parameters::to_plain(34, values[34]) as u32,
+                time_ms: parameters::to_plain(35, values[35]),
+                division: parameters::to_plain(36, values[36]) as usize,
+                feedback: parameters::to_plain(37, values[37]) * 0.01,
+                mix: parameters::to_plain(38, values[38]) * 0.01,
+                ping_pong: parameters::to_plain(39, values[39]) == 1.0,
+            });
         }
         if values[13] != self.state.parameters[13] {
             self.state.master_gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
@@ -276,6 +301,8 @@ impl Synthesizer {
 
     pub fn stop(&mut self) {
         self.state.previous_dry = [0.0; 2];
+        self.state.previous_master_gain = self.state.master_gain;
+        self.state.delay.reset();
         self.state.started = false;
         self.state.used_voices = 0;
         self.state.unused_pending = true;
@@ -310,7 +337,6 @@ impl Synthesizer {
         }
         self.state.started = true;
         let clipper = self.state.processing;
-        let gain = self.state.master_gain;
         output.fill([0.0; 2]);
         if clipper == ClipperType::None {
             for chunk in output.chunks_mut(32) {
@@ -329,8 +355,7 @@ impl Synthesizer {
                 }
             }
             for out in output {
-                let current = out.map(|v| v * gain);
-                *out = std::mem::replace(&mut self.state.previous_dry, current);
+                *out = self.finish_sample(*out, [0.0; 2], 0.0, 1.0);
             }
         } else {
             for chunk in output.chunks_mut(32) {
@@ -356,11 +381,7 @@ impl Synthesizer {
                     }
                 }
                 for (out, dry) in chunk.iter_mut().zip(&dry) {
-                    let dry =
-                        std::mem::replace(&mut self.state.previous_dry, dry.map(|v| v * gain));
-                    *out = std::array::from_fn(|ch| {
-                        dry[ch] * (1.0 - distortion.mix) + (out[ch] * gain) * distortion.mix
-                    });
+                    *out = self.finish_sample(*dry, *out, distortion.mix, 1.0);
                 }
             }
         }
@@ -382,7 +403,7 @@ impl Synthesizer {
         let mut dry = [0.0; 2];
         let mut wet = [0.0; 2];
         if clipper == ClipperType::None {
-            dry = self.mix_sample();
+            dry = self.mix_voice_sample();
         } else {
             let mut distortion = self.state.distortion;
             distortion.clipper = clipper;
@@ -398,10 +419,7 @@ impl Synthesizer {
                     wet[ch] += output[ch];
                 }
             }
-            dry = dry.map(|x| x * self.state.master_gain);
-            wet = wet.map(|x| x * self.state.master_gain);
         }
-        let dry = std::mem::replace(&mut self.state.previous_dry, dry);
         let remaining = self.state.transition;
         let gain = match remaining {
             0 => 1.0,
@@ -416,7 +434,26 @@ impl Synthesizer {
             self.state.distortion.mix
         };
         // Dryをフェードやフィルタへ通さず、ホストレートで最後に混合する。
-        std::array::from_fn(|ch| dry[ch] * (1.0 - mix) + wet[ch] * mix * gain)
+        self.finish_sample(dry, wet, mix, gain)
+    }
+
+    fn finish_sample(&mut self, dry: [f64; 2], wet: [f64; 2], mix: f64, fade: f64) -> [f64; 2] {
+        let dry = std::mem::replace(&mut self.state.previous_dry, dry);
+        let previous_gain =
+            std::mem::replace(&mut self.state.previous_master_gain, self.state.master_gain);
+        if self.state.delay.enabled() {
+            let signal = std::array::from_fn(|ch| dry[ch] * (1.0 - mix) + wet[ch] * mix * fade);
+            self.state
+                .delay
+                .process_sample(signal)
+                .map(|x| x * self.state.master_gain)
+        } else {
+            // 既存Bypassの演算順序とDry 1sample前のMaster倍率を維持する。
+            std::array::from_fn(|ch| {
+                (dry[ch] * previous_gain) * (1.0 - mix)
+                    + (wet[ch] * self.state.master_gain) * mix * fade
+            })
+        }
     }
 
     /// 未使用枠の遅延停止を消化し、後続ノートと同時刻の停止として残さない。
@@ -436,8 +473,8 @@ impl Synthesizer {
         self.state.unused_pending = false;
     }
 
-    /// フィルタまでのVoice出力を加算しMasterを適用する。
-    fn mix_sample(&mut self) -> [f64; 2] {
+    /// フィルタまでのVoice出力を加算する。
+    fn mix_voice_sample(&mut self) -> [f64; 2] {
         let mut sum = [0.0; 2];
         for voice in &mut self.state.voices[..self.state.used_voices] {
             let sample = voice.generate_sample(
@@ -448,7 +485,7 @@ impl Synthesizer {
             sum[0] += sample[0];
             sum[1] += sample[1];
         }
-        sum.map(|sample| sample * self.state.master_gain)
+        sum
     }
 }
 
@@ -469,6 +506,13 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    impl Synthesizer {
+        // Voice合成のテスト参照。Distortion/追加effectの履歴を進めずMaster倍率だけを適用する。
+        pub(super) fn mix_sample(&mut self) -> [f64; 2] {
+            self.mix_voice_sample().map(|x| x * self.state.master_gain)
+        }
     }
 
     #[test]
@@ -500,7 +544,7 @@ mod tests {
                     }
                     3 => synth.generate_samples(&mut [[0.0; 2]; 64]),
                     4 | 5 => {
-                        synth.set_sample_rate(f64::NAN);
+                        synth.state.sample_rate = f64::NAN;
                         synth.generate_samples(&mut [[0.0; 2]; 64]);
                         assert!(synth.state.unused_pending);
                         synth.set_sample_rate(48000.0);
@@ -1270,7 +1314,7 @@ mod tests {
     fn retrigger_release_and_stop_preserve_amplitude_and_phase() {
         let mut synth = unfiltered();
         let mut phase = 0.0;
-        synth.set_sample_rate(1000.0); // 1サンプル=1ms。
+        synth.state.sample_rate = 1000.0; // 1サンプル=1ms。
         synth.state.voices[0].set_oscillator(0, Waveform::Sine, 1.0, 1.0);
         synth.note_on(note(1, 0, 69), 0.0, 1.0);
         for i in 0..5 {
@@ -1305,7 +1349,7 @@ mod tests {
     fn missing_note_ids_match_channel_and_pitch_and_invalid_notes_are_ignored() {
         let mut synth = unfiltered();
         let mut phase = 0.0;
-        synth.set_sample_rate(1000.0);
+        synth.state.sample_rate = 1000.0;
         synth.state.voices[0].set_oscillator(0, Waveform::Sine, 1.0, 1.0);
         synth.note_on(note(-1, 2, 69), 0.0, 1.0);
         for i in 0..5 {

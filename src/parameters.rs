@@ -11,7 +11,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 34;
+pub const COUNT: usize = 40;
 /// Osc1・Osc2・Osc3のVolume設定位置。
 pub const OSCILLATOR_VOLUMES: [usize; 3] = [22, 25, 28];
 
@@ -116,6 +116,12 @@ pub const IDS: [u32; COUNT] = [
     0x43545950, // CTYP
     0x43474149, // CGAI
     0x434d4958, // CMIX
+    0x444c0000,
+    0x444c0001,
+    0x444c0002,
+    0x444c0003,
+    0x444c0004,
+    0x444c0005,
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -152,6 +158,12 @@ pub const NAMES: [&str; COUNT] = [
     "Clipper type",
     "Gain",
     "Mix",
+    "Delay Mode",
+    "Delay Time",
+    "Delay Beat",
+    "Delay Feedback",
+    "Delay Mix",
+    "Delay Routing",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -160,6 +172,11 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         9 => &FILTER_NAMES,
         12 => &PHASE_NAMES,
         31 => &CLIPPER_NAMES,
+        34 => &["Off", "Free", "Sync"],
+        36 => &[
+            "1/16", "1/8 T", "1/8", "1/8 D", "1/4 T", "1/4", "1/4 D", "1/2", "1/1",
+        ],
+        39 => &["Stereo", "Ping-pong"],
         _ => &[],
     }
 }
@@ -178,6 +195,11 @@ pub fn max_tick(index: usize) -> u32 {
             13 | 22 | 25 | 28 => 720,
             24 | 27 | 32 => 480,
             11 => 950,
+            34 => 2,
+            35 => 390,
+            36 => 8,
+            37 => 95,
+            39 => 1,
             _ => 100,
         }
     }
@@ -195,7 +217,8 @@ pub fn unit(index: usize) -> &'static str {
     } else {
         match index {
             13 | 22 | 25 | 28 | 32 => "dB",
-            20 | 21 | 29 | 30 | 33 => "%",
+            20 | 21 | 29 | 30 | 33 | 37 | 38 => "%",
+            35 => "ms",
             7 | 10 | 19 | 24 | 27 => "cent",
             _ => "",
         }
@@ -214,7 +237,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 35 | 36 | 39 | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
@@ -236,6 +259,8 @@ pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
             6 | 8 => f64::from(tick) + 1.0,
             7 | 9 | 20 | 29 | 30 | 31 | 33 => f64::from(tick),
             32 => f64::from(tick) / 10.0,
+            34 | 36 | 37 | 38 | 39 => f64::from(tick),
+            35 => 8000.0_f64.powf(f64::from(tick) / 390.0),
             21 => f64::from(tick) - 100.0,
             10 => f64::from(tick) * 10.0 - 2400.0,
             11 => 0.5 + f64::from(tick) / 100.0,
@@ -258,6 +283,12 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     }
     match index {
         4 | 17 => return normalized,
+        34 => return (normalized * 3.0).floor().min(2.0),
+        35 => return 8000.0_f64.powf(normalized),
+        36 => return (normalized * 9.0).floor().min(8.0),
+        37 => return normalized * 95.0,
+        38 => return normalized * 100.0,
+        39 => return (normalized * 2.0).floor().min(1.0),
         6 => return (normalized * 7.0).floor().min(6.0) + 1.0,
         7 | 20 | 33 => return normalized * 100.0,
         32 => return normalized * 48.0,
@@ -295,6 +326,12 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     }
     match index {
         4 | 17 => return plain,
+        34 => return plain.round() / 2.0,
+        35 => return plain.ln() / 8000.0_f64.ln(),
+        36 => return plain.round() / 8.0,
+        37 => return plain / 95.0,
+        38 => return plain / 100.0,
+        39 => return plain.round(),
         6 => return (plain.clamp(1.0, 7.0).round() - 1.0) / 6.0,
         7 | 20 | 33 => return plain / 100.0,
         32 => return plain / 48.0,
@@ -325,6 +362,12 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
     match index {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         4 | 17 => (0.0..=1.0).contains(&plain),
+        34 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
+        35 => (1.0..=8000.0).contains(&plain),
+        36 => (0.0..=8.0).contains(&plain) && plain.fract() == 0.0,
+        37 => (0.0..=95.0).contains(&plain),
+        38 => (0.0..=100.0).contains(&plain),
+        39 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
         7 | 20 | 33 => (0.0..=100.0).contains(&plain),
         29 | 30 => (0.0..=200.0).contains(&plain),
@@ -345,7 +388,7 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
     } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(index, 6 | 8 | 9 | 12 | 31) {
+    } else if matches!(index, 6 | 8 | 9 | 12 | 31 | 34 | 36 | 39) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -392,6 +435,12 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         0.0,               // Clipper: None
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
+        0.0,
+        250.0,
+        2.0,
+        35.0,
+        25.0,
+        0.0,
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -606,7 +655,7 @@ impl<'a> ParameterPoints<'a> {
 
 // v17: 固定276バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x11\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x12\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -886,7 +935,7 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18] {
+                for version in (0..=255).filter(|&v| v != STATE_HEADER[4]) {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));

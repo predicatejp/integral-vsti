@@ -28,7 +28,8 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix",
+    "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix", "Mode", "Time", "Beat",
+    "Feed", "Mix", "Route",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -37,6 +38,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     3, 3, 3, 4, 3, 2, 4, 4, 2, // Cutoff envelope / Amount / Width / Pan / Osc1 Vol
     4, 3, 2, 4, 3, 2, 4, 4, // Osc2 / Osc3
     4, 3, 4, // Distortion
+    4, 3, 4, 4, 4, 4,
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -801,6 +803,24 @@ impl WindowHandler for Editor {
                     &[12],
                     &[&[8][..], &[13][..], &[21][..]][..],
                     [master_x, GAP, 144.0, panel_height],
+                ),
+                (
+                    "Delay",
+                    &[34],
+                    &[&[35][..], &[37, 38][..]][..],
+                    [784.0, GAP, 240.0, panel_height - 160.0],
+                ),
+                (
+                    "Beat",
+                    &[36],
+                    &[],
+                    [784.0, GAP + panel_height - 152.0, 240.0, 72.0],
+                ),
+                (
+                    "Route",
+                    &[39],
+                    &[],
+                    [784.0, GAP + panel_height - 72.0, 240.0, 72.0],
                 ),
             ];
             for (title, choices, rows, [x, y, width, height]) in groups {

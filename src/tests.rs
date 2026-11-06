@@ -33,6 +33,10 @@ fn x86_64_layout() {
     assert_eq!(size_of::<AudioBusBuffers>(), 24);
     assert_eq!(offset_of!(AudioBusBuffers, silence_flags), 8);
     assert_eq!(offset_of!(AudioBusBuffers, channel_buffers), 16);
+    assert_eq!(size_of::<ProcessContext>(), 112);
+    assert_eq!(align_of::<ProcessContext>(), 8);
+    assert_eq!(offset_of!(ProcessContext, tempo), 72);
+    assert_eq!(offset_of!(ProcessContext, samples_to_next_clock), 104);
     assert_eq!(size_of::<ProcessData>(), 80);
     assert_eq!(align_of::<ProcessData>(), 8);
     assert_eq!(offset_of!(ProcessData, inputs), 24);
@@ -648,11 +652,11 @@ fn editor_owns_controller_and_has_fixed_size() {
             bottom: 0,
         };
         assert_eq!((vt.get_size)(view, &mut rect), OK);
-        assert_eq!((rect.right, rect.bottom), (941, 672));
+        assert_eq!((rect.right, rect.bottom), (1239, 672));
         rect.right = 800;
         assert_eq!((vt.on_size)(view, &rect), FALSE);
         assert_eq!((vt.check_size_constraint)(view, &mut rect), OK);
-        assert_eq!((rect.right, rect.bottom), (941, 672));
+        assert_eq!((rect.right, rect.bottom), (1239, 672));
         assert_eq!((vt.on_size)(view, &rect), OK);
         assert_eq!((vt.removed)(view), OK);
         assert_eq!((vt.unknown.release)(view), 0);

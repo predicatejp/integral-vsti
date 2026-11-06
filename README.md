@@ -5,6 +5,34 @@ RustでVST3のAPI・ABIを直接実装する、簡易ソフトウェア音源で
 VST3パラメーターからサイン波・三角波・矩形波・ノコギリ波・ホワイトノイズを選択できます。
 VST3用のバインディングやC/C++ラッパーは使用しません。GUIにはeguiを使用します。
 
+## Delay試作
+
+全Voiceの合成後、Master Volumeの前に共通ステレオDelayを配置します。
+右側の専用パネルで、次の6項目を操作できます。初期音色と内蔵SineではOffです。
+
+| パラメータ | 値・初期値 |
+| --- | --- |
+| Mode | Off / Free / Sync、初期Off |
+| Time | Free時の1〜8000 ms、初期250 ms、GUIは整数390 tickの対数軸 |
+| Beat | 1/16、1/8 T、1/8、1/8 D、1/4 T、1/4、1/4 D、1/2、1/1、初期1/8 |
+| Feedback | 0〜95%、初期35%、GUI 1%刻み |
+| Mix | 原音0〜処理音100%、初期25%、GUI 1%刻み |
+| Route | Stereo / Ping-pong、初期Stereo |
+
+SyncはVST3の`IProcessContextRequirements::kNeedTempo`を通知し、有効な
+`ProcessContext.tempo`から`60 × 四分音符単位の音価 / BPM`秒を計算します。
+Tは三連、Dは付点です。BPM取得前は120、欠測・不正値では最後の有効BPMを保持します。
+時間は1サンプル〜8秒へ制限し、Time・Beat・Modeは変更点で切り替えます。
+時間変更は50 msの2読出し位置間クロスフェードとし、その途中の変更は最新目標を保持して
+次のクロスフェードへ引き継ぎます。フィードバック内も線形混合します。
+テンポは各処理ブロックの値を使い、曲位置のシーク・ループ・再生停止ではDelay履歴を継続します。
+音声処理停止とOffへの変更は履歴を無効化します。Feedback・MixはVST3の連続補間を使います。
+
+リングはsetup時に確保し、処理中の確保を行いません。容量上限64 MiBで確保できない
+サンプルレートは`setupProcessing`で拒否します。44.1〜384 kHzで8秒分を確保できます。
+GUIは1239×672 px。40音色パラメータとProgramの計41項目を公開・保存します。
+試作の性能比較と試聴ZIPは[Wiki](https://github.com/predicatejp/sample-vsti/wiki/Effect-Prototypes-2026-11-06)にまとめます。
+
 ## 現在の対応範囲
 
 | 項目 | 内容 |
@@ -343,8 +371,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v17は276バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mixを各f64。little endian）です。
-読み込みは現行形式v17のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v18は324バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/Delay Mode/Delay Time/Delay Beat/Delay Feedback/Delay Mix/Delay Routingを各f64。little endian）です。
+読み込みは現行形式v18のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -438,7 +466,7 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは941×672物理ピクセルで固定です。標準フォントは21.6px、見出しは28.8pxです。
+サイズは1239×672物理ピクセルで固定です。標準フォントは21.6px、見出しは28.8pxです。
 `python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中・発音中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`、`target/gui-voices.png`へ保存します。
 Windowsでは、描画中に再描画と編集配送タイマーを意図的に再入させ、描画の延期と、描画終了後の編集通知を検証します。
 画面作成・描画・破棄と作成失敗時に、ホストのOpenGLコンテキストと描画先が復元されることも検証します。
@@ -744,6 +772,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した5波形オシレータ。
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
+- `src/delay.rs`: 共通ステレオDelay、2読出し位置の時間切替とBPM同期。
 - `src/distortion.rs`: フィルタ後のプリゲイン・クリップ・1次／2次ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
 - `src/synth.rs`: Voiceの循環割り当て・加算出力と、共通の定位係数・マスター音量の管理。
 - `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilter → Distortionの処理パイプライン。

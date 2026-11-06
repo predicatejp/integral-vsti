@@ -102,7 +102,7 @@ static PROCESSOR: ProcessorVTable = ProcessorVTable {
 };
 static CONTEXT_REQUIREMENTS: ContextRequirementsVTable = ContextRequirementsVTable {
     unknown: UNKNOWN,
-    get_process_context_requirements: zero,
+    get_process_context_requirements: context_requirements,
 };
 // eguiとホストのパラメーター操作が同じVST3パラメーターを扱う。
 static CONTROLLER: ControllerVTable = ControllerVTable {
@@ -740,10 +740,6 @@ unsafe extern "system" fn latency_samples(_: This) -> u32 {
     crate::distortion::LATENCY as u32
 }
 
-unsafe extern "system" fn zero(_: This) -> u32 {
-    0
-}
-
 unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetup) -> TResult {
     if setup.is_null() {
         return INVALID_ARGUMENT;
@@ -765,7 +761,9 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
         return INVALID_ARGUMENT;
     }
     // SAFETY: setupProcessingは非アクティブ状態で呼ばれ、processと競合しない。
-    unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) };
+    if !unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) } {
+        return INVALID_ARGUMENT;
+    }
     plugin
         .max_samples
         .store(setup.max_samples_per_block, Ordering::Relaxed);
@@ -773,6 +771,10 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
         .sample_size
         .store(setup.symbolic_sample_size, Ordering::Relaxed);
     OK
+}
+
+unsafe extern "system" fn context_requirements(_: This) -> u32 {
+    NEED_TEMPO
 }
 
 unsafe extern "system" fn get_tail_samples(_: This) -> u32 {
@@ -866,6 +868,14 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     // ライフサイクル呼び出しをホストが直列化する。ホストからの再入processは許されない。
     // synthの参照・ホストのイベントやバッファのポインターを呼び出し後へ保持しない。
     let synth = unsafe { &mut *plugin.synth.get() };
+    if !data.process_context.is_null() {
+        // SAFETY: VST3のProcessContextはホストがprocess呼出し中保持する。
+        // 借用を持ち越さず、有効性フラグとBPM値を検証して内部値だけ更新する。
+        let context = unsafe { &*data.process_context.cast::<ProcessContext>() };
+        if context.state & TEMPO_VALID != 0 {
+            synth.set_tempo(context.tempo);
+        }
+    }
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
     // SAFETY: 音色設定とProgramのカーソルはこのprocess中だけホストのキューを借用する。
@@ -1157,6 +1167,102 @@ mod meter_tests {
             assert_eq!(set_active(component, 0), OK);
             assert_eq!(terminate(component), OK);
             assert_eq!(release(component), 0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod delay_context_tests {
+    use super::*;
+
+    #[test]
+    fn tempo_flags_missing_context_and_transport_stop_preserve_delay() {
+        // SAFETY: 全ABIを直列実行し、Context/出力の寿命を各process呼出しまで保持する。
+        unsafe {
+            let mut component = ptr::null_mut();
+            assert_eq!(create(&COMPONENT_IID, &mut component), OK);
+            assert_eq!(initialize(component, component), OK);
+            let setup = ProcessSetup {
+                process_mode: 0,
+                symbolic_sample_size: SAMPLE64,
+                max_samples_per_block: 64,
+                sample_rate: 48000.0,
+            };
+            assert_eq!(setup_processing(component, &setup), OK);
+            assert_eq!(activate_bus(component, AUDIO, OUTPUT, 0, 1), OK);
+            assert_eq!(set_active(component, 1), OK);
+            assert_eq!(set_processing(component, 1), OK);
+            let plugin = instance(component);
+            let mut values = parameters::sine_preset();
+            values[34] = 1.0; // Sync
+            values[36] = parameters::to_normalized(36, 0.0); // 1/16
+            values[37] = 0.0;
+            values[38] = 1.0;
+            plugin.processor_parameters.store(values);
+            let synth = &mut *plugin.synth.get();
+            synth.set_parameters(values);
+            synth.note_on(
+                Note {
+                    id: 1,
+                    channel: 0,
+                    pitch: 69,
+                },
+                0.0,
+                1.0,
+            );
+            let mut left = [0.0_f64; 64];
+            let mut right = [0.0_f64; 64];
+            let mut channels = [left.as_mut_ptr().cast(), right.as_mut_ptr().cast()];
+            let mut bus = AudioBusBuffers {
+                num_channels: 2,
+                silence_flags: 0,
+                channel_buffers: channels.as_mut_ptr(),
+            };
+            // Playingなしでも同期値を受理し、ライブ演奏とDelay尾部を処理する。
+            let mut contexts = [
+                ProcessContext {
+                    state: TEMPO_VALID,
+                    tempo: 150.0,
+                    ..Default::default()
+                },
+                ProcessContext {
+                    state: 0,
+                    tempo: 30.0,
+                    ..Default::default()
+                },
+            ];
+            let mut data: ProcessData = std::mem::zeroed();
+            data.symbolic_sample_size = SAMPLE64;
+            data.num_samples = 64;
+            data.num_outputs = 1;
+            data.outputs = &mut bus;
+            data.process_context = (&raw mut contexts[0]).cast();
+            for block in 0..80 {
+                if block == 1 {
+                    data.process_context = (&raw mut contexts[1]).cast();
+                }
+                if block == 2 {
+                    data.process_context = ptr::null_mut();
+                }
+                assert_eq!(process(component, &mut data), OK);
+                for (offset, &sample) in left.iter().enumerate() {
+                    let n = block * 64 + offset;
+                    let expected = if n <= 4801 {
+                        0.0
+                    } else {
+                        std::f64::consts::FRAC_1_SQRT_2
+                            * (std::f64::consts::TAU * 440.0 * (n - 4801) as f64 / 48000.0).sin()
+                    };
+                    assert!(
+                        (sample - expected).abs() < 3e-7,
+                        "sample={n}: {sample} != {expected}"
+                    );
+                }
+            }
+            assert_eq!(set_processing(component, 0), OK);
+            assert_eq!(set_active(component, 0), OK);
+            assert_eq!(terminate(component), OK);
+            release(component);
         }
     }
 }

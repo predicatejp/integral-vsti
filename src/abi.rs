@@ -477,6 +477,43 @@ pub struct AudioBusBuffers {
     pub channel_buffers: *mut *mut c_void,
 }
 
+/// VST3 ivstprocesscontext.h。ホストが各process呼出し中だけ所有する時間情報。
+#[repr(C)]
+#[derive(Default)]
+pub struct ProcessContext {
+    pub state: u32,
+    pub sample_rate: f64,
+    pub project_time_samples: i64,
+    pub system_time: i64,
+    pub continuous_time_samples: i64,
+    pub project_time_music: f64,
+    pub bar_position_music: f64,
+    pub cycle_start_music: f64,
+    pub cycle_end_music: f64,
+    pub tempo: f64,
+    pub time_sig_numerator: i32,
+    pub time_sig_denominator: i32,
+    pub chord: Chord,
+    pub smpte_offset_subframes: i32,
+    pub frame_rate: FrameRate,
+    pub samples_to_next_clock: i32,
+}
+#[repr(C)]
+#[derive(Default)]
+pub struct Chord {
+    pub key_note: u8,
+    pub root_note: u8,
+    pub chord_mask: i16,
+}
+#[repr(C)]
+#[derive(Default)]
+pub struct FrameRate {
+    pub frames_per_second: u32,
+    pub flags: u32,
+}
+pub const TEMPO_VALID: u32 = 1 << 10;
+pub const NEED_TEMPO: u32 = 1 << 6;
+
 #[repr(C)]
 pub struct ProcessData {
     /// 処理モード。0はリアルタイム、1はプリフェッチ、2はオフライン。
