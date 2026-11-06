@@ -653,7 +653,7 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v17: 固定276バイト。波形番号u32と、その他の実単位f64を保持する。
+// v18: 固定324バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
 const STATE_HEADER: [u8; 8] = *b"SVST\x12\0\0\0";
 
@@ -940,9 +940,27 @@ mod tests {
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
-                (*stream).bytes[4] = 16;
+                (*stream).bytes[4] = STATE_HEADER[4];
                 // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
                 for (index, bad) in [
+                    (34, -1.0),
+                    (34, 3.0),
+                    (34, 1.5),
+                    (35, 0.0),
+                    (35, 8000.1),
+                    (35, f64::NAN),
+                    (36, -1.0),
+                    (36, 9.0),
+                    (36, 1.5),
+                    (37, -0.1),
+                    (37, 95.1),
+                    (37, f64::INFINITY),
+                    (38, -0.1),
+                    (38, 100.1),
+                    (38, f64::NAN),
+                    (39, -1.0),
+                    (39, 2.0),
+                    (39, 0.5),
                     (6, 0.0_f64),
                     (6, 8.0),
                     (6, 2.5),

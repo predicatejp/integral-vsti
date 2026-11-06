@@ -153,7 +153,7 @@ pub struct ProcessorVTable {
 pub struct ContextRequirementsVTable {
     /// FUnknownの共通メソッド。派生インターフェースでもvtableの先頭に配置する。
     pub unknown: UnknownVTable,
-    /// 必要とするProcessContext情報のビットマスク。本実装は要求なしの0を返す。
+    /// 必要とするProcessContext情報のビットマスク。DelayのBPM同期用にkNeedTempoを返す。
     pub get_process_context_requirements: unsafe extern "system" fn(This) -> u32,
 }
 
@@ -538,7 +538,7 @@ pub struct ProcessData {
     pub input_events: This,
     /// ホストへ返すIEventList。null可。本実装ではイベントを出力しない。
     pub output_events: This,
-    /// ホストの再生位置・テンポ等のProcessContext。null可。本実装では参照しない。
+    /// ホストの再生位置・テンポ等のProcessContext。null可。有効なtempoだけをDelayへ渡す。
     pub process_context: This,
 }
 
