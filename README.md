@@ -15,7 +15,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | 音声入力・出力 | 入力なし、ステレオ出力1バス |
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
-| サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
+| サンプルレート | 44.1 kHz以上の有限値。Reverbの履歴上限を超える値はVST3の`setupProcessing`で拒否 |
 | ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・Mod、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / MixとReverb Enable/Decay/Damping/Size/Mixを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | 1サンプル。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
@@ -461,6 +461,8 @@ Windowsはbaseviewの子ウィンドウのタイマー、LinuxはVST3のIRunLoop
 ## Reverb試作
 
 8本のFDN（Householder）を全Voice加算後・Master前へ追加する試作です。ReverbはOff/On、Decayは0.1〜10秒、Dampingは500〜20,000 Hz、Sizeは50〜200%、Mixは0〜100%。既定はOff、2秒、6,000 Hz、100%、25%です。Sizeの変更とOff/On切替では尾部をリセットします。Dampingは帰還1極LPFの設計値で、全帯域のT60を指定するものではありません。
+
+履歴はsetup時に最大Sizeの長さを確保します。各線262,144サンプル・8線合計16 MiBを上限とし、確保できないレートは`setupProcessing`で拒否します。44.1〜384 kHzはこの範囲に収まります。
 
 追加設定はVST3の変更キューと状態保存へ接続し、内蔵SineではOffに戻ります。EnableとSizeは変更点で切り替え、他の追加値はVST3の正規化空間で線形補間します。GUIはDecayを200tickの対数軸、Dampingを300tickの対数軸、Sizeを1%、Mixを1%刻みで操作します。ParamIDは`0x52560000`〜`0x52560004`です。
 

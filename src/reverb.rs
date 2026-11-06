@@ -54,6 +54,9 @@ pub struct Reverb {
 }
 
 impl Reverb {
+    /// 8本のf64履歴を合計16 MiB以内に制限する。
+    const MAX_LINE_SAMPLES: usize = 1 << 18;
+
     pub fn new(sample_rate: f64, parameters: ReverbParameters) -> Self {
         let mut result = Self {
             state: ReverbState {
@@ -74,13 +77,16 @@ impl Reverb {
 
     /// setupProcessing専用。確保不能なら以前の設定を維持する。
     pub fn prepare(&mut self, sample_rate: f64) -> bool {
+        if !sample_rate.is_finite() || sample_rate < 44100. {
+            return false;
+        }
         if self.state.sample_rate == sample_rate {
             return true;
         }
         let mut lines = std::array::from_fn(|_| Vec::new());
         for (line, base) in lines.iter_mut().zip(LENGTHS) {
             let length = (base as f64 * sample_rate / 48000. * 2.).ceil();
-            if !length.is_finite() || length < 1. || length > (isize::MAX as usize / 64) as f64 {
+            if !length.is_finite() || length > Self::MAX_LINE_SAMPLES as f64 {
                 return false;
             }
             let length = length as usize;
@@ -232,5 +238,32 @@ mod tests {
         p.mix = 0.;
         reverb.set_parameters(p);
         assert_eq!(reverb.process_sample([0.25, -0.5]), [0.25, -0.5]);
+    }
+
+    #[test]
+    fn preparation_bounds_resources_and_keeps_state_on_failure() {
+        let mut reverb = Reverb::new(48000., settings());
+        reverb.process_sample([1., -1.]);
+        let pointers = reverb.state.lines.each_ref().map(|v| v.as_ptr());
+        let mut reference = reverb.clone();
+        for rate in [0., 44099., f64::NAN, f64::INFINITY, 1e9, f64::MAX] {
+            assert!(!reverb.prepare(rate));
+            assert_eq!(reverb.state.sample_rate, 48000.);
+            assert_eq!(pointers, reverb.state.lines.each_ref().map(|v| v.as_ptr()));
+        }
+        for _ in 0..10000 {
+            assert_eq!(
+                reverb.process_sample([0.; 2]),
+                reference.process_sample([0.; 2])
+            );
+        }
+        assert!(reverb.prepare(384000.));
+        let bytes = reverb
+            .state
+            .lines
+            .iter()
+            .map(|v| v.len() * 8)
+            .sum::<usize>();
+        assert!(bytes <= 16 * 1024 * 1024);
     }
 }
