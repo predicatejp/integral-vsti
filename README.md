@@ -390,7 +390,7 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 NoneはGainとMixを含めてバイパスします。Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`で処理します。
 Gainの線形倍率は`10^(dB/20)`です。Mixは0%でフィルタ出力の原音、100%で処理音になり、その間を線形混合します。Gain・Mixのオートメーションは正規化値を線形補間し、Clipper typeは変更点で切り替えます。
 
-ディストーションはホストレートの2階ADAAで処理します。各Voiceのフィルタ出力へGain・Clipperを適用し、全Voiceを加算してMaster Volumeを掛けます。
+ディストーションはホストレートの2階ADAAで処理します。各Voiceのフィルタ出力へGain・Clipperを適用し、全Voiceを加算します。
 Dryはフィルタ出力を加算して1サンプルの純遅延を通し、出力時点のMixでWetと混合してLimiter、Masterへ渡します。LimiterがOffの場合は従来のMaster適用時刻を保ちます。
 Clipper=NoneではDryだけを出力し、クリップ・ADAAを省きます。Distortion単体の遅延は1サンプルで、Limiterを含むホストへの申告は241サンプルです。
 
