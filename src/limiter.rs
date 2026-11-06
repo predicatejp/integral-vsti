@@ -6,6 +6,8 @@
 /// 48 kHzで5 ms。Offも同じサンプル数だけ遅らせる。
 pub const LATENCY: usize = 240;
 const WINDOW: usize = LATENCY + 1;
+// 検出窓は241サンプルのまま、queueの添字だけをmaskで折り返す。
+const QUEUE: usize = WINDOW.next_power_of_two();
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct LimiterParameters {
@@ -31,9 +33,9 @@ struct LimiterState {
     /// 音声遅延の次の読出し・書込み位置。
     delay_position: usize,
     /// 減少順の最大値queue。各値は一度だけ追加・削除される。
-    peaks: [f64; WINDOW],
+    peaks: [f64; QUEUE],
     /// 各peakの入力sample番号。
-    indices: [u64; WINDOW],
+    indices: [u64; QUEUE],
     /// queue先頭と有効要素数。
     head: usize,
     length: usize,
@@ -45,8 +47,9 @@ struct LimiterState {
     mean: [f64; WINDOW],
     sum: f64,
     mean_position: usize,
-    /// 操作値変更時だけ計算する線形上限・増幅率・release残留係数。
-    ceiling: f64,
+    /// 平均窓の総和と比較する線形上限（Ceiling × WINDOW）。
+    ceiling_sum: f64,
+    /// 操作値変更時だけ計算する増幅率・release残留係数。
     input_gain: f64,
     release: f64,
 }
@@ -66,8 +69,8 @@ impl Limiter {
                 dry: [[0.0; 2]; LATENCY],
                 wet: [[0.0; 2]; LATENCY],
                 delay_position: 0,
-                peaks: [0.0; WINDOW],
-                indices: [0; WINDOW],
+                peaks: [0.0; QUEUE],
+                indices: [0; QUEUE],
                 head: 0,
                 length: 0,
                 frame: 0,
@@ -75,8 +78,9 @@ impl Limiter {
                 mean: [0.0; WINDOW],
                 sum: 0.0,
                 mean_position: 0,
-                ceiling: 10.0_f64.powf(parameters.ceiling_db / 20.0),
-                input_gain: 10.0_f64.powf(parameters.input_gain_db / 20.0),
+                ceiling_sum: (parameters.ceiling_db * (std::f64::consts::LOG2_10 / 20.0)).exp2()
+                    * WINDOW as f64,
+                input_gain: (parameters.input_gain_db * (std::f64::consts::LOG2_10 / 20.0)).exp2(),
                 release: coefficient(parameters.release_ms, sample_rate),
             },
         }
@@ -85,10 +89,12 @@ impl Limiter {
     pub fn set_parameters(&mut self, parameters: LimiterParameters, sample_rate: f64) {
         let old = self.state.parameters;
         if parameters.ceiling_db != old.ceiling_db {
-            self.state.ceiling = 10.0_f64.powf(parameters.ceiling_db / 20.0);
+            self.state.ceiling_sum =
+                (parameters.ceiling_db * (std::f64::consts::LOG2_10 / 20.0)).exp2() * WINDOW as f64;
         }
         if parameters.input_gain_db != old.input_gain_db {
-            self.state.input_gain = 10.0_f64.powf(parameters.input_gain_db / 20.0);
+            self.state.input_gain =
+                (parameters.input_gain_db * (std::f64::consts::LOG2_10 / 20.0)).exp2();
         }
         if parameters.release_ms != old.release_ms || sample_rate != self.state.sample_rate {
             self.state.release = coefficient(parameters.release_ms, sample_rate);
@@ -116,7 +122,11 @@ impl Limiter {
         let input = input.map(|x| x * self.state.input_gain);
         let dry = std::mem::replace(&mut self.state.dry[self.state.delay_position], bypass);
         let wet = std::mem::replace(&mut self.state.wet[self.state.delay_position], input);
-        self.state.delay_position = (self.state.delay_position + 1) % LATENCY;
+        self.state.delay_position = if self.state.delay_position + 1 == LATENCY {
+            0
+        } else {
+            self.state.delay_position + 1
+        };
         let peak = input[0].abs().max(input[1].abs());
         if self.state.length > 0
             && self
@@ -125,17 +135,17 @@ impl Limiter {
                 .wrapping_sub(self.state.indices[self.state.head])
                 > LATENCY as u64
         {
-            self.state.head = (self.state.head + 1) % WINDOW;
+            self.state.head = (self.state.head + 1) & (QUEUE - 1);
             self.state.length -= 1;
         }
         while self.state.length > 0 {
-            let tail = (self.state.head + self.state.length - 1) % WINDOW;
+            let tail = (self.state.head + self.state.length - 1) & (QUEUE - 1);
             if self.state.peaks[tail] > peak {
                 break;
             }
             self.state.length -= 1;
         }
-        let tail = (self.state.head + self.state.length) % WINDOW;
+        let tail = (self.state.head + self.state.length) & (QUEUE - 1);
         self.state.peaks[tail] = peak;
         self.state.indices[tail] = self.state.frame;
         self.state.length += 1;
@@ -148,11 +158,15 @@ impl Limiter {
             self.state.envelope,
         );
         self.state.sum += self.state.envelope - old;
-        self.state.mean_position = (self.state.mean_position + 1) % WINDOW;
-        // 各窓が出力時刻のpeakを含むため、平均後もその振幅以上になる。
-        let envelope = self.state.sum / WINDOW as f64;
-        let gain = if envelope > self.state.ceiling {
-            self.state.ceiling / envelope
+        self.state.mean_position = if self.state.mean_position + 1 == WINDOW {
+            0
+        } else {
+            self.state.mean_position + 1
+        };
+        // 各窓が出力時刻のpeakを含む。比較と除算を総和の単位に揃える。
+        let sum = self.state.sum;
+        let gain = if sum > self.state.ceiling_sum {
+            self.state.ceiling_sum / sum
         } else {
             1.0
         };
@@ -168,7 +182,7 @@ fn coefficient(ms: f64, rate: f64) -> f64 {
     if ms == 0.0 {
         0.0
     } else {
-        (-1000.0 / (ms * rate)).exp()
+        (-1000.0 * std::f64::consts::LOG2_E / (ms * rate)).exp2()
     }
 }
 
