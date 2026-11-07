@@ -310,7 +310,13 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     if tick <= 1.0 {
         tick
     } else {
-        10.0_f64.powf((tick - 1.0) / 100.0).min(10000.0)
+        if matches!(index, 37 | 38) {
+            (((tick - 1.0) / 100.0) * std::f64::consts::LOG2_10)
+                .exp2()
+                .min(10000.0)
+        } else {
+            10.0_f64.powf((tick - 1.0) / 100.0).min(10000.0)
+        }
     }
 }
 pub fn to_normalized(index: usize, plain: f64) -> f64 {
@@ -888,6 +894,9 @@ mod tests {
                 assert!(
                     to_plain(index, normalized) == plain
                         || (to_plain(index, normalized) - plain).abs() < 2e-12
+                        // 追加FX時間はexp2換算の数ulpを相対誤差でも検証する。
+                        || (matches!(index, 37 | 38)
+                            && (to_plain(index, normalized) - plain).abs() <= plain.abs() * 2e-15)
                 );
                 assert_eq!((normalized * f64::from(max)).round() as u32, tick);
                 if choices(index).is_empty() {
