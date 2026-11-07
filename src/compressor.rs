@@ -106,6 +106,7 @@ impl Compressor {
         };
         let coefficient = self.state.coefficients[usize::from(target <= self.state.reduction_db)];
         self.state.reduction_db = target + coefficient * (self.state.reduction_db - target);
+        // 無音でもrelease履歴を進め、DAZ後の符号付き0を返す。
         if peak == 0.0 {
             return input.map(|sample| sample * 0.0);
         }
