@@ -108,6 +108,8 @@ const CHOICE_HEIGHT: f32 = 28.0;
 const TITLE_BAR_HEIGHT: f32 = 36.0;
 /// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
 const KNOB_CELL: egui::Vec2 = egui::vec2(64.0, 80.0);
+/// 円盤・ガイド・目盛り・指針の描画倍率。
+const KNOB_SCALE: f32 = 0.9;
 
 /// 1論理ポイント当たりの物理px。描画とポインター座標の換算に共用する。
 const UI_SCALE: f32 = 1.2;
@@ -343,44 +345,53 @@ impl Editor {
         } else {
             0.0
         };
-        let guide_stroke = egui::Stroke::new(2.0, LINE);
+        let guide_stroke = egui::Stroke::new(2.0 * KNOB_SCALE, LINE);
         let (marks, reference) = knob_marks(index);
         for &mark in marks {
             let d = direction(mark as f32 / parameters::max_tick(index) as f32);
             let major = mark == reference || mark == 0 || mark == parameters::max_tick(index);
             painter.line_segment(
                 [
-                    center + d * 26.0,
-                    center + d * if major { 32.0 } else { 30.0 },
+                    center + d * (26.0 * KNOB_SCALE),
+                    center + d * (if major { 32.0 } else { 30.0 } * KNOB_SCALE),
                 ],
                 if major {
                     guide_stroke
                 } else {
-                    egui::Stroke::new(1.0, LINE)
+                    egui::Stroke::new(KNOB_SCALE, LINE)
                 },
             );
         }
         let arc = |from: f32, to: f32| {
             (0..=32)
-                .map(|k| center + direction(from + (to - from) * k as f32 / 32.0) * 26.0)
+                .map(|k| {
+                    center + direction(from + (to - from) * k as f32 / 32.0) * (26.0 * KNOB_SCALE)
+                })
                 .collect::<Vec<_>>()
         };
         painter.add(egui::Shape::line(arc(0.0, 1.0), guide_stroke));
         painter.add(egui::Shape::line(
             arc(zero, position),
-            egui::Stroke::new(3.0, ACCENT),
+            egui::Stroke::new(3.0 * KNOB_SCALE, ACCENT),
         ));
-        painter.circle_filled(center + egui::vec2(0.0, 1.5), 22.0, LINE);
+        painter.circle_filled(
+            center + egui::vec2(0.0, 1.5 * KNOB_SCALE),
+            22.0 * KNOB_SCALE,
+            LINE,
+        );
         painter.circle(
             center,
-            22.0,
+            22.0 * KNOB_SCALE,
             egui::Color32::WHITE,
-            egui::Stroke::new(1.0, if drag.is_some() { ACCENT } else { LINE }),
+            egui::Stroke::new(KNOB_SCALE, if drag.is_some() { ACCENT } else { LINE }),
         );
         let d = direction(position);
         painter.line_segment(
-            [center + d * 10.0, center + d * 18.0],
-            egui::Stroke::new(3.0, ACCENT),
+            [
+                center + d * (10.0 * KNOB_SCALE),
+                center + d * (18.0 * KNOB_SCALE),
+            ],
+            egui::Stroke::new(3.0 * KNOB_SCALE, ACCENT),
         );
         painter.text(
             egui::pos2(center.x, area.top() + 68.0),
@@ -540,7 +551,15 @@ impl Editor {
                 0.0
             };
         let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
-        let painter = ui.painter().clone();
+        let opacity = if choices.iter().any(|&index| {
+            matches!(index, 9 | 31 | 34) && parameters::to_tick(index, selected[index]) == 0
+        }) {
+            0.5
+        } else {
+            1.0
+        };
+        let mut painter = ui.painter().clone();
+        painter.multiply_opacity(opacity);
         painter.rect_filled(rect, 8.0, PANEL);
         painter.rect_stroke(
             rect,
@@ -597,6 +616,7 @@ impl Editor {
                 );
                 left += width;
                 ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                    ui.multiply_opacity(opacity);
                     self.knob(ui, index, selected[index], width);
                 });
             }

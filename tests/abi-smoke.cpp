@@ -806,7 +806,7 @@ void checkFilter(IComponent* component, IAudioProcessor* processor, IEditControl
         const double normalized = controller->plainParamToNormalized(filterIds[1], cents);
         assert(std::abs(controller->normalizedParamToPlain(filterIds[1], normalized) - cents) < 2e-12);
     }
-    const std::array<std::u16string, 7> names {u"None", u"LowPass1", u"LowPass2", u"HighPass1", u"HighPass2", u"BandPass1", u"BandPass2"};
+    const std::array<std::u16string, 7> names {u"Off", u"LowPass1", u"LowPass2", u"HighPass1", u"HighPass2", u"BandPass1", u"BandPass2"};
     configureEnvelope(processor, true);
     ProcessSetup setup {kRealtime, precision, 16, 48000.0};
     assert(processor->setupProcessing(setup) == kResultOk);
@@ -898,7 +898,7 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
         assert(info.stepCount == (i == 0 ? 2 : 0));
         assert(controller->normalizedParamToPlain(info.id, info.defaultNormalizedValue) == (i == 2 ? 100 : 0));
     }
-    const std::array<std::u16string, 3> names {u"None", u"Soft", u"Hard"};
+    const std::array<std::u16string, 3> names {u"Off", u"Soft", u"Hard"};
     for (int type = 0; type < 3; ++type) {
         String128 text; double parsed = -1;
         assert(controller->getParamStringByValue(ids[0], type / 2.0, text) == kResultOk && std::u16string(text) == names[type]);
