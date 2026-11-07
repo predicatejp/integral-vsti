@@ -16,7 +16,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
 | サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
-| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・Mod、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / Mixを公開。eguiでも操作可能 |
+| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・Mod、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / MixとEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | 1サンプル。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
@@ -343,8 +343,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v17は276バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mixを各f64。little endian）です。
-読み込みは現行形式v17のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v23は340バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainを各f64。little endian）です。
+読み込みは現行形式v23のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -353,7 +353,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定34個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定42個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -405,7 +405,7 @@ Gain・Mixはホストから届いた変更点間をホストレートで補間�
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左にOsc1/2/3を縦に並べ、中央上段にAmp、中央にカットオフAHDSRを統合したFilter、その下にDistortion、右にMasterを配置します。AmpのAHDSRは横一列です。WaveformとFilterのドロップダウンはタイトルの右に置きます。DistortionのGain・Mixはグループ内に均等配置します。Masterは172.8px幅とし、Phaseラベルと選択欄を左揃えで上下にまとめ、その下にPoly・Vol・Panを縦に並べます。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左にOsc1/2/3を縦に並べ、中央上段にAmp、中央にカットオフAHDSRを統合したFilter、その下にDistortion、右上にEQ、その下にMasterを配置します。AmpのAHDSRは横一列です。WaveformとFilterのドロップダウンはタイトルの右に置きます。DistortionのGain・Mixはグループ内に均等配置します。EQとMasterは249.6px幅に揃えます。EQはLow・Mid・Highの順に3行で配置し、MasterはPhaseラベルと選択欄を横に並べ、その下にPoly・Vol・Panを横一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 タイトルバーの発音数インジケータの上に、同じ幅の出力ピークメータを表示します。Master音量適用後の左右最大サンプルピークを−60〜＋12 dBFSで表示します。0 dBFSまでの部分は明るい緑、0 dBFSを超えた部分は明るい赤とし、0 dBFSの境界線を示します。描画間のピークを保持し、未点灯部分は白に近い色にします。表示は48 dB/秒で減衰します。
 
@@ -413,7 +413,7 @@ Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune
 ノブは行内を均等割りします。ノブ行は80px高、外周・グループ間・枠内の左右余白は8pxで統一します。各列の下端を揃え、見出しの下に残る高さは上余白・行間・下余白へ均等配分します。見出し行とドロップダウンは28px高です。
 ノブは直径52.8pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
 Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
-ノブを左ボタンで押し、上へ動かすと増加、下へ動かすと減少します。1tickに必要な移動量は、Cutoff・Resonance・Cutoff Amount・各Volが2物理px、時間（A/H/D/R）・Tune・Distortion Gainが3物理px、その他が4物理pxです。Uniは32物理px、Polyは8物理pxです。全範囲の移動量が約1200pxに近づくよう、段階数の多いノブほど少ない移動量を割り当てています。1tick未満の移動量は次の操作へ持ち越します。吸着中は0〜80物理pxの内部位置を保持します。小さい値側から進入したら0、大きい値側から進入したら80、吸着点からドラッグを開始したら40に初期化します。増加方向で80へ到達すると大きい側、減少方向で0へ到達すると小さい側へ抜けます。進入直後に方向を戻すと、その側へすぐ抜けます。最大・最小値は通常動作です。吸着対象はCutoff・Tune・Cutoff Amountの1200 cent刻み、Master・Osc1/2/3のVolの6 dB刻み、Panの中央だけです。上下どちらにも適用し、大きな移動でも途中の吸着値で必要な距離を消費します。
+ノブを左ボタンで押し、上へ動かすと増加、下へ動かすと減少します。1tickに必要な移動量は、Cutoff・Resonance・Cutoff Amount・各Volが2物理px、時間（A/H/D/R）・Tune・Distortion Gainが3物理px、その他が4物理pxです。Uniは32物理px、Polyは8物理pxです。全範囲の移動量が約1200pxに近づくよう、段階数の多いノブほど少ない移動量を割り当てています。1tick未満の移動量は次の操作へ持ち越します。吸着中は0〜80物理pxの内部位置を保持します。小さい値側から進入したら0、大きい値側から進入したら80、吸着点からドラッグを開始したら40に初期化します。増加方向で80へ到達すると大きい側、減少方向で0へ到達すると小さい側へ抜けます。進入直後に方向を戻すと、その側へすぐ抜けます。最大・最小値は通常動作です。吸着対象はCutoff・Tune・Cutoff Amountの1200 cent刻み、Master・Osc1/2/3のVolの6 dB刻み、Panの中央、およびEQ Low/Mid/High Gainの6 dB刻みです。上下どちらにも適用し、大きな移動でも途中の吸着値で必要な距離を消費します。
 目盛り位置は`src/editor.rs`の`knob_marks`でノブごとに整数tickとして定義します。目盛りは円弧ガイドから直接伸ばし、基準点と両端はガイドと同じ色・2px幅の長い線で示します。
 
 | ノブ | 目盛りの値 | 強調する基準点 |
@@ -427,6 +427,7 @@ Waveform・Filter・Phaseはドロップダウンで選択します。リスト�
 | Res | Q = 0.5 / 1 / 2 / 4 / 6 / 8 / 10 | Q = 1 |
 | Vol | −∞と−54〜+12 dBの6 dB刻み | 0 dB |
 | Gain | 0〜48 dB、12 dB刻み | 0 dB |
+| EQ Low G / Mid G / High G | −18〜+18 dBの6 dB刻み | 0 dB |
 | Pan | −100 / −50 / 0 / 50 / 100 % | 中央 |
 | Mod | 0 / 50 / 100 / 150 / 200 % | 0 % |
 
@@ -438,7 +439,7 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは941×672物理ピクセルで固定です。標準フォントは21.6px、見出しは28.8pxです。
+サイズは1018×672物理ピクセルで固定です。EQとMasterを右列にまとめています。標準フォントは21.6px、見出しは28.8pxです。
 `python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中・発音中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`、`target/gui-voices.png`へ保存します。
 Windowsでは、描画中に再描画と編集配送タイマーを意図的に再入させ、描画の延期と、描画終了後の編集通知を検証します。
 画面作成・描画・破棄と作成失敗時に、ホストのOpenGLコンテキストと描画先が復元されることも検証します。
@@ -457,6 +458,12 @@ GUIの操作はUI専用の32件キューからホストのUIスレッドへ配�
 DSPへの適用は従来どおりホストの変更キュー経由です。ホストからの値更新や状態復元は表示へ反映し、編集通知を送り返しません。
 Windowsはbaseviewの子ウィンドウのタイマー、LinuxはVST3のIRunLoopから編集を配送します。
 画面を閉じるとタイマーと描画資源を解放し、音声処理は継続します。
+
+## EQ試作
+
+3帯域EQを全Voice加算後・Master前へ追加する試作です。Low shelf → Peak → High shelfをTPT SVFで処理します。各帯域のFrequencyは20〜20,000 Hz、Gainは−18〜+18 dB、Mid Qは0.1〜10です。棚型の傾斜は固定。既定はOff、250/1,000/4,000 Hz、全Gain=0 dB、Q=1です。Off/On切替では履歴をリセットします。
+
+追加設定はVST3の変更キューと状態保存へ接続し、内蔵SineではOffに戻ります。Enableは変更点で切り替え、他の追加値はVST3の正規化空間で線形補間します。GUIはFrequencyを300tickの対数軸、Gainを0.1 dB、Qを200tickの対数軸で操作します。Gainは−12・−6・0・+6・+12 dBで、共通の80物理pxの吸着区間を使います。端点の±18 dBは通常操作です。Mid帯域のQは「Mid Q」と表示します。ParamIDは`0x45510000`〜`0x45510007`です。
 
 ## ビルド
 
@@ -745,6 +752,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
 - `src/distortion.rs`: フィルタ後のプリゲイン・クリップ・1次／2次ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
+- `src/eq.rs`: TPT SVFによるLow shelf・Peak・High shelfの3帯域EQ。
 - `src/synth.rs`: Voiceの循環割り当て・加算出力と、共通の定位係数・マスター音量の管理。
 - `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilter → Distortionの処理パイプライン。
 - `src/float_mode.rs`: 音声処理中の非正規化数処理モードの保存・切り替え・復元。

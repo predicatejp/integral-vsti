@@ -6,6 +6,8 @@
 mod abi;
 #[path = "../src/distortion.rs"]
 mod distortion;
+#[path = "../src/eq.rs"]
+mod eq;
 #[path = "../src/envelope.rs"]
 mod envelope;
 #[path = "../src/filter.rs"]

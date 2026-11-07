@@ -28,7 +28,8 @@ use std::{
 const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
-    "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix",
+    "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix", "Enable", "Low F", "Low G",
+    "Mid F", "Mid G", "Mid Q", "High F", "High G",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -37,6 +38,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     3, 3, 3, 4, 3, 2, 4, 4, 2, // Cutoff envelope / Amount / Width / Pan / Osc1 Vol
     4, 3, 2, 4, 3, 2, 4, 4, // Osc2 / Osc3
     4, 3, 4, // Distortion
+    4, 4, 4, 4, 4, 4, 4, 4, // eq
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -50,6 +52,7 @@ fn is_detent(index: usize, tick: u32) -> bool {
     match index {
         10 | 19 | 24 | 27 => tick.is_multiple_of(120), // Cutoff / Amount / Tune: 1200 cent
         13 | 22 | 25 | 28 => tick.is_multiple_of(60),  // Volume: 6 dB
+        36 | 38 | 41 => tick.is_multiple_of(60),       // EQ Gain: 6 dB
         21 => tick == 100,                             // Pan: 中央
         _ => false,
     }
@@ -80,6 +83,9 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         24 | 27 => (&[0, 120, 240, 360, 480], 240),                // Tune: −2〜+2 oct
         29 | 30 => (&[0, 50, 100, 150, 200], 0),                   // 位相変調: 0〜2回転、半回転刻み
         32 => (&[0, 120, 240, 360, 480], 0),                       // Gain: 0〜48 dB、12 dB刻み
+        35 | 37 | 40 => (&[0, 100, 200, 300], 100),
+        36 | 38 | 41 => (&[0, 60, 120, 180, 240, 300, 360], 180),
+        39 => (&[0, 50, 100, 150, 200], 100),
         _ => (&[], 0),
     }
 }
@@ -332,7 +338,7 @@ impl Editor {
         let center = rect.center();
         let painter = ui.painter().clone();
         // 実単位に沿った目盛り。中点を持つパラメーターの円弧はゼロから伸ばす。
-        let zero = if matches!(index, 19 | 21 | 24 | 27) {
+        let zero = if matches!(index, 19 | 21 | 24 | 27 | 36 | 38 | 41) {
             0.5
         } else {
             0.0
@@ -520,11 +526,7 @@ impl Editor {
         selected: &[f64; parameters::COUNT],
     ) {
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
-        let phase_height = if choices == [12] {
-            18.0 + GAP + CHOICE_HEIGHT
-        } else {
-            0.0
-        };
+        let phase_height = if choices == [12] { CHOICE_HEIGHT } else { 0.0 };
         let content_rows = rows.len() + usize::from(phase_height > 0.0);
         let row_gap =
             (height - GAP - HEADER_HEIGHT - phase_height - KNOB_CELL.y * rows.len() as f32)
@@ -560,17 +562,17 @@ impl Editor {
         );
         for &index in choices {
             let choice = if index == 12 {
-                let label = rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT + row_gap);
+                let top = rect.top() + GAP + HEADER_HEIGHT + row_gap;
                 painter.text(
-                    label,
-                    egui::Align2::LEFT_TOP,
+                    egui::pos2(rect.left() + GAP, top + CHOICE_HEIGHT / 2.0),
+                    egui::Align2::LEFT_CENTER,
                     "Phase",
                     egui::FontId::proportional(18.0),
                     MUTED,
                 );
                 egui::Rect::from_min_size(
-                    label + egui::vec2(0.0, 18.0 + GAP),
-                    egui::vec2(rect.width() - GAP * 2.0, CHOICE_HEIGHT),
+                    egui::pos2(rect.right() - GAP - 130.0, top),
+                    egui::vec2(130.0, CHOICE_HEIGHT),
                 )
             } else {
                 egui::Rect::from_min_size(
@@ -739,6 +741,8 @@ impl WindowHandler for Editor {
             let oscillator_height = (panel_height - GAP * 2.0) / 3.0;
             let center_x = GAP + oscillator_width + GAP;
             let master_x = center_x + filter_width + GAP;
+            let master_width = GAP * 2.0 + KNOB_CELL.x * 3.0;
+            let eq_height = filter_height + KNOB_CELL.y + GAP;
             let groups = [
                 (
                     "Osc1",
@@ -797,10 +801,21 @@ impl WindowHandler for Editor {
                     ],
                 ),
                 (
+                    "EQ",
+                    &[34],
+                    &[&[35, 36][..], &[37, 38, 39][..], &[40, 41][..]][..],
+                    [master_x, GAP, master_width, eq_height],
+                ),
+                (
                     "Master",
                     &[12],
-                    &[&[8][..], &[13][..], &[21][..]][..],
-                    [master_x, GAP, 144.0, panel_height],
+                    &[&[8, 13, 21][..]][..],
+                    [
+                        master_x,
+                        GAP + eq_height + GAP,
+                        master_width,
+                        panel_height - eq_height - GAP,
+                    ],
                 ),
             ];
             for (title, choices, rows, [x, y, width, height]) in groups {
@@ -1032,7 +1047,7 @@ mod tests {
     }
 
     #[test]
-    fn detents_are_limited_to_pitch_volume_and_centers() {
+    fn detents_are_limited_to_pitch_volume_eq_gain_and_centers() {
         for index in 0..parameters::COUNT {
             for tick in 0..=parameters::max_tick(index) {
                 let targets: &[u32] = match index {
@@ -1041,6 +1056,7 @@ mod tests {
                     13 | 22 | 25 | 28 => &[60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660],
                     19 => &[120, 240, 360, 480, 600, 720, 840],
                     21 => &[100],
+                    36 | 38 | 41 => &[60, 120, 180, 240, 300],
                     _ => &[],
                 };
                 if is_detent(index, tick) {
@@ -1085,7 +1101,7 @@ mod tests {
             );
         }
         assert_eq!(move_tick(21, 99, 0.0, -88.0), (102, 0.0));
-        for index in [10, 13, 19, 21, 24] {
+        for index in [10, 13, 19, 21, 24, 36, 38, 41] {
             for dy in [-700.0_f32, 700.0] {
                 let tick = parameters::max_tick(index) / 2;
                 let initial = if is_detent(index, tick) { 40.0 } else { 0.0 };

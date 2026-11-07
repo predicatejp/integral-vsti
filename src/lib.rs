@@ -13,6 +13,7 @@ mod abi;
 mod distortion;
 mod editor;
 mod envelope;
+mod eq;
 mod filter;
 mod float_mode;
 mod gui;
