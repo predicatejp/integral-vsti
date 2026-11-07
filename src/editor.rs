@@ -525,11 +525,7 @@ impl Editor {
         selected: &[f64; parameters::COUNT],
     ) {
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
-        let phase_height = if choices == [12] {
-            18.0 + GAP + CHOICE_HEIGHT
-        } else {
-            0.0
-        };
+        let phase_height = if choices == [12] { CHOICE_HEIGHT } else { 0.0 };
         let content_rows = rows.len() + usize::from(phase_height > 0.0);
         let row_gap =
             (height - GAP - HEADER_HEIGHT - phase_height - KNOB_CELL.y * rows.len() as f32)
@@ -565,17 +561,17 @@ impl Editor {
         );
         for &index in choices {
             let choice = if index == 12 {
-                let label = rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT + row_gap);
+                let top = rect.top() + GAP + HEADER_HEIGHT + row_gap;
                 painter.text(
-                    label,
-                    egui::Align2::LEFT_TOP,
+                    egui::pos2(rect.left() + GAP, top + CHOICE_HEIGHT / 2.0),
+                    egui::Align2::LEFT_CENTER,
                     "Phase",
                     egui::FontId::proportional(18.0),
                     MUTED,
                 );
                 egui::Rect::from_min_size(
-                    label + egui::vec2(0.0, 18.0 + GAP),
-                    egui::vec2(rect.width() - GAP * 2.0, CHOICE_HEIGHT),
+                    egui::pos2(rect.right() - GAP - 130.0, top),
+                    egui::vec2(130.0, CHOICE_HEIGHT),
                 )
             } else {
                 egui::Rect::from_min_size(
@@ -744,6 +740,8 @@ impl WindowHandler for Editor {
             let oscillator_height = (panel_height - GAP * 2.0) / 3.0;
             let center_x = GAP + oscillator_width + GAP;
             let master_x = center_x + filter_width + GAP;
+            let master_width = GAP * 2.0 + KNOB_CELL.x * 3.0;
+            let eq_height = filter_height + KNOB_CELL.y + GAP;
             let groups = [
                 (
                     "Osc1",
@@ -802,16 +800,21 @@ impl WindowHandler for Editor {
                     ],
                 ),
                 (
-                    "Master",
-                    &[12],
-                    &[&[8][..], &[13][..], &[21][..]][..],
-                    [master_x, GAP, 144.0, panel_height],
-                ),
-                (
                     "EQ",
                     &[34],
                     &[&[35, 36][..], &[37, 38, 39][..], &[40, 41][..]][..],
-                    [master_x + 144.0 + GAP, GAP, oscillator_width, panel_height],
+                    [master_x, GAP, master_width, eq_height],
+                ),
+                (
+                    "Master",
+                    &[12],
+                    &[&[8, 13, 21][..]][..],
+                    [
+                        master_x,
+                        GAP + eq_height + GAP,
+                        master_width,
+                        panel_height - eq_height - GAP,
+                    ],
                 ),
             ];
             for (title, choices, rows, [x, y, width, height]) in groups {
