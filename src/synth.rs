@@ -11,6 +11,8 @@ use crate::parameters;
 use crate::voice::{Note, Voice};
 
 #[cfg_attr(test, derive(Clone))]
+// エフェクトのサイズ変更で共通状態の配置が動かないよう、宣言順を固定する。
+#[repr(C)]
 pub struct SynthesizerState {
     /// 最大32枠を初期化時に確保し、音声処理中は確保・解放しない。
     voices: [Voice; 32],
@@ -42,10 +44,10 @@ pub struct SynthesizerState {
     previous_dry: [f64; 2],
     /// Dryの1サンプル遅延へ対応するMaster倍率。Off時の既存操作時刻を保つ。
     previous_master_gain: f64,
-    /// 全Voiceの合成後へ適用する左右連動コンプレッサー。
-    compressor: Compressor,
     /// 現在のクリップ設定。線形Gainは設定変更時に計算する。
     distortion: DistortionParameters,
+    /// 全Voiceの合成後へ適用する左右連動コンプレッサー。
+    compressor: Compressor,
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
