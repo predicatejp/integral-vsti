@@ -29,7 +29,7 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
     "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix", "Enable", "Low F", "Low G",
-    "Mid F", "Mid G", "Q", "High F", "High G",
+    "Mid F", "Mid G", "Mid Q", "High F", "High G",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -52,6 +52,7 @@ fn is_detent(index: usize, tick: u32) -> bool {
     match index {
         10 | 19 | 24 | 27 => tick.is_multiple_of(120), // Cutoff / Amount / Tune: 1200 cent
         13 | 22 | 25 | 28 => tick.is_multiple_of(60),  // Volume: 6 dB
+        36 | 38 | 41 => tick.is_multiple_of(60),       // EQ Gain: 6 dB
         21 => tick == 100,                             // Pan: 中央
         _ => false,
     }
@@ -1046,7 +1047,7 @@ mod tests {
     }
 
     #[test]
-    fn detents_are_limited_to_pitch_volume_and_centers() {
+    fn detents_are_limited_to_pitch_volume_eq_gain_and_centers() {
         for index in 0..parameters::COUNT {
             for tick in 0..=parameters::max_tick(index) {
                 let targets: &[u32] = match index {
@@ -1055,6 +1056,7 @@ mod tests {
                     13 | 22 | 25 | 28 => &[60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660],
                     19 => &[120, 240, 360, 480, 600, 720, 840],
                     21 => &[100],
+                    36 | 38 | 41 => &[60, 120, 180, 240, 300],
                     _ => &[],
                 };
                 if is_detent(index, tick) {
@@ -1099,7 +1101,7 @@ mod tests {
             );
         }
         assert_eq!(move_tick(21, 99, 0.0, -88.0), (102, 0.0));
-        for index in [10, 13, 19, 21, 24] {
+        for index in [10, 13, 19, 21, 24, 36, 38, 41] {
             for dy in [-700.0_f32, 700.0] {
                 let tick = parameters::max_tick(index) / 2;
                 let initial = if is_detent(index, tick) { 40.0 } else { 0.0 };
