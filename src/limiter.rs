@@ -35,12 +35,12 @@ struct LimiterState {
     /// 減少順の最大値queue。各値は一度だけ追加・削除される。
     peaks: [f64; QUEUE],
     /// 各peakの入力sample番号。
-    indices: [u64; QUEUE],
+    indices: [u32; QUEUE],
     /// queue先頭と有効要素数。
     head: usize,
     length: usize,
     /// 現在の入力sample番号。差はwrapping_subで比較する。
-    frame: u64,
+    frame: u32,
     /// 即時上昇・一次releaseの包絡。
     envelope: f64,
     /// 矩形平均の履歴・総和・次の交換位置。
@@ -133,7 +133,7 @@ impl Limiter {
                 .state
                 .frame
                 .wrapping_sub(self.state.indices[self.state.head])
-                > LATENCY as u64
+                > LATENCY as u32
         {
             self.state.head = (self.state.head + 1) & (QUEUE - 1);
             self.state.length -= 1;
@@ -233,6 +233,35 @@ mod tests {
             limiter.reset();
             for _ in 0..LATENCY * 2 {
                 assert_eq!(limiter.process_sample([0.0; 2], [0.0; 2]), [0.0; 2]);
+            }
+        }
+    }
+
+    #[test]
+    fn sample_number_wrap_preserves_the_detection_window() {
+        let mut p = parameters();
+        p.release_ms = 0.0;
+        for pattern in 0..3 {
+            let mut reference = Limiter::new(p, 48000.0);
+            let mut wrapped = reference.clone();
+            wrapped.state.frame = u32::MAX - LATENCY as u32;
+            for n in 0..WINDOW * 8 {
+                let x = match pattern {
+                    0 => 2.0 - (n % WINDOW) as f64 / WINDOW as f64,
+                    1 => (n % WINDOW) as f64 / WINDOW as f64,
+                    _ => {
+                        if n % WINDOW == 0 {
+                            2.0
+                        } else {
+                            0.0
+                        }
+                    }
+                };
+                let input = [x, -0.5 * x];
+                assert_eq!(
+                    wrapped.process_sample(input, input).map(f64::to_bits),
+                    reference.process_sample(input, input).map(f64::to_bits),
+                );
             }
         }
     }
