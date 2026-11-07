@@ -54,10 +54,9 @@ impl Compressor {
                 reduction_db: 0.0,
                 coefficients: [parameters.attack_ms, parameters.release_ms]
                     .map(|ms| coefficient(ms, sample_rate)),
-                makeup_gain: (parameters.makeup_db * (std::f64::consts::LOG2_10 / 20.0)).exp2(),
-                lower_gain: ((parameters.threshold_db - parameters.knee_db * 0.5)
-                    * (std::f64::consts::LOG2_10 / 20.0))
-                    .exp2(),
+                makeup_gain: 10.0_f64.powf(parameters.makeup_db / 20.0),
+                lower_gain: 10.0_f64
+                    .powf((parameters.threshold_db - parameters.knee_db * 0.5) / 20.0),
             },
         }
     }
@@ -71,13 +70,11 @@ impl Compressor {
             self.state.coefficients[1] = coefficient(parameters.release_ms, sample_rate);
         }
         if parameters.makeup_db != old.makeup_db {
-            self.state.makeup_gain =
-                (parameters.makeup_db * (std::f64::consts::LOG2_10 / 20.0)).exp2();
+            self.state.makeup_gain = 10.0_f64.powf(parameters.makeup_db / 20.0);
         }
         if parameters.threshold_db != old.threshold_db || parameters.knee_db != old.knee_db {
-            self.state.lower_gain = ((parameters.threshold_db - parameters.knee_db * 0.5)
-                * (std::f64::consts::LOG2_10 / 20.0))
-                .exp2();
+            self.state.lower_gain =
+                10.0_f64.powf((parameters.threshold_db - parameters.knee_db * 0.5) / 20.0);
         }
         if parameters.enabled != old.enabled {
             self.reset();
@@ -99,7 +96,7 @@ impl Compressor {
         let target = if peak <= self.state.lower_gain {
             0.0
         } else {
-            let over = (20.0 * std::f64::consts::LOG10_E) * peak.ln() - p.threshold_db;
+            let over = 20.0 * peak.log10() - p.threshold_db;
             let curve = if p.knee_db > 0.0 && over < p.knee_db * 0.5 {
                 (over + p.knee_db * 0.5).powi(2) / (2.0 * p.knee_db)
             } else {
@@ -109,6 +106,9 @@ impl Compressor {
         };
         let coefficient = self.state.coefficients[usize::from(target <= self.state.reduction_db)];
         self.state.reduction_db = target + coefficient * (self.state.reduction_db - target);
+        if peak == 0.0 {
+            return input.map(|sample| sample * 0.0);
+        }
         let gain = (-self.state.reduction_db * (std::f64::consts::LOG2_10 / 20.0)).exp2()
             * self.state.makeup_gain;
         let mixed_gain = (1.0 - p.mix) + gain * p.mix;
@@ -120,7 +120,7 @@ fn coefficient(ms: f64, sample_rate: f64) -> f64 {
     if ms == 0.0 {
         0.0
     } else {
-        (-1000.0 * std::f64::consts::LOG2_E / (ms * sample_rate)).exp2()
+        (-1000.0 / (ms * sample_rate)).exp()
     }
 }
 
@@ -138,6 +138,36 @@ mod tests {
             knee_db: 0.0,
             makeup_db: 0.0,
             mix: 1.0,
+        }
+    }
+
+    #[test]
+    fn silent_output_preserves_release_and_signed_zero() {
+        let _mode = crate::float_mode::FloatMode::flush_subnormals();
+        let mut p = parameters();
+        p.release_ms = 100.0;
+        let mut silent = Compressor::new(p, 48000.0);
+        silent.process_sample([1.0; 2]);
+        let mut quiet = silent.clone();
+        let subnormal = std::hint::black_box(f64::from_bits(1));
+        for n in 0..256 {
+            let input = if n % 2 == 0 {
+                [-0.0, 0.0]
+            } else {
+                [-subnormal, subnormal]
+            };
+            assert_eq!(
+                silent.process_sample(input).map(f64::to_bits),
+                [-0.0, 0.0].map(f64::to_bits),
+            );
+            quiet.process_sample([f64::MIN_POSITIVE; 2]);
+        }
+        // 閾値以下で再発音し、attackでrelease履歴を上書きせず比較する。
+        for _ in 0..256 {
+            let input = [0.01, -0.005];
+            let expected = quiet.process_sample(input);
+            assert_ne!(expected[0], 0.0);
+            assert_eq!(silent.process_sample(input), expected);
         }
     }
 
