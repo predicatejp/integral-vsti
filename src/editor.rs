@@ -537,8 +537,13 @@ impl Editor {
         selected: &[f64; parameters::COUNT],
     ) {
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
+        let choice_label_height = if choices == [12] {
+            CHOICE_HEIGHT + GAP
+        } else {
+            0.0
+        };
         let choice_height = if matches!(choices, [12] | [31]) {
-            CHOICE_HEIGHT
+            CHOICE_HEIGHT + choice_label_height
         } else {
             0.0
         };
@@ -594,17 +599,25 @@ impl Editor {
             );
         }
         for (row, knobs) in rows.iter().enumerate() {
+            let row_top = body_y + row as f32 * (row_height + row_gap);
+            if row > 0 && row_header_height > 0.0 {
+                painter.hline(
+                    rect.left() + GAP..=rect.right() - GAP,
+                    rect.top() + row_top - row_gap * 0.5,
+                    egui::Stroke::new(1.0, LINE),
+                );
+            }
             let width = (rect.width() - GAP * 2.0) / knobs.len() as f32;
             let mut left = GAP;
             for &index in *knobs {
                 let area = egui::Rect::from_min_size(
-                    rect.min
-                        + egui::vec2(
-                            left,
-                            body_y + row as f32 * (row_height + row_gap) + row_header_height,
-                        ),
+                    rect.min + egui::vec2(left, row_top + row_header_height),
                     egui::vec2(width, KNOB_CELL.y),
                 );
+                // EQのMid・Highの手前で帯域を区切る。
+                if matches!(index, 37 | 40) {
+                    painter.vline(area.left(), area.y_range(), egui::Stroke::new(1.0, LINE));
+                }
                 left += width;
                 ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
                     self.knob(ui, index, selected[index], width);
@@ -615,13 +628,14 @@ impl Editor {
             let top = if row_header_height > 0.0 {
                 rect.top() + body_y + row as f32 * (row_height + row_gap)
             } else if choice_height > 0.0 {
-                rect.top() + GAP + HEADER_HEIGHT + row_gap
+                rect.top() + GAP + HEADER_HEIGHT + row_gap + choice_label_height
             } else {
                 rect.top() + GAP + (HEADER_HEIGHT - CHOICE_HEIGHT) / 2.0
             };
+            let width = (rect.width() - GAP * 2.0).min(130.0);
             egui::Rect::from_min_size(
-                egui::pos2(rect.right() - GAP - 130.0, top),
-                egui::vec2(130.0, CHOICE_HEIGHT),
+                egui::pos2(rect.right() - GAP - width, top),
+                egui::vec2(width, CHOICE_HEIGHT),
             )
         };
         for (row, &index) in choices.iter().enumerate() {
@@ -634,7 +648,10 @@ impl Editor {
                 _ => continue,
             };
             painter.text(
-                egui::pos2(rect.left() + GAP, choice_rect(row).center().y),
+                egui::pos2(
+                    rect.left() + GAP,
+                    choice_rect(row).center().y - choice_label_height,
+                ),
                 egui::Align2::LEFT_CENTER,
                 label,
                 egui::FontId::proportional(18.0),
@@ -794,6 +811,7 @@ impl WindowHandler for Editor {
             let effects_x = center_x + filter_width + GAP;
             let side_width = GAP * 2.0 + KNOB_CELL.x * 3.0;
             let master_x = effects_x + side_width + GAP;
+            let master_width = GAP * 2.0 + KNOB_CELL.x * 2.0;
             // AmpとFilterの上余白・行間・下余白を同じ長さに揃える。
             let center_gap =
                 (panel_height - GAP - 2.0 * (GAP + HEADER_HEIGHT) - KNOB_CELL.y * 3.0) / 5.0;
@@ -873,7 +891,7 @@ impl WindowHandler for Editor {
                     "Master",
                     &[12],
                     &[&[13][..], &[21][..], &[8][..]][..],
-                    [master_x, GAP, side_width, full_height],
+                    [master_x, GAP, master_width, full_height],
                 ),
             ];
             for (title, choices, rows, [x, y, width, height]) in groups {
