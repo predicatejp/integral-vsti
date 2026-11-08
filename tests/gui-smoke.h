@@ -332,7 +332,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1018 && rect.getHeight() == 672);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1277 && rect.getHeight() == 672);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -345,7 +345,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1018);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1277);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -442,13 +442,13 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
     std::array<std::pair<int, int>, 42> controls {{
-        {212, 30}, {328, 82}, {392, 82}, {456, 82}, {520, 82}, {584, 82},
-        {48, 97}, {112, 97}, {672, 445}, {564, 170}, {349, 222}, {456, 222},
-        {767, 387}, {736, 445}, {328, 310}, {392, 310}, {456, 310}, {520, 310},
-        {584, 310}, {563, 222}, {176, 97}, {800, 445}, {240, 97},
-        {212, 199}, {59, 266}, {144, 266}, {212, 369}, {59, 435}, {144, 435}, {229, 266}, {229, 435},
-        {564, 398}, {376, 450}, {536, 450},
-        {767, 30}, {688, 82}, {784, 82}, {672, 170}, {736, 170}, {800, 170}, {688, 258}, {784, 258}
+        {212, 87}, {328, 110}, {392, 110}, {456, 110}, {520, 110}, {584, 110},
+        {48, 139}, {112, 139}, {888, 445}, {564, 226}, {349, 306}, {456, 306},
+        {983, 387}, {952, 445}, {328, 422}, {392, 422}, {456, 422}, {520, 422},
+        {584, 422}, {563, 306}, {176, 139}, {1016, 445}, {240, 139},
+        {212, 232}, {59, 284}, {144, 284}, {212, 377}, {59, 429}, {144, 429}, {229, 284}, {229, 429},
+        {767, 66}, {688, 118}, {784, 118},
+        {983, 30}, {904, 82}, {1000, 82}, {888, 170}, {952, 170}, {1016, 170}, {904, 258}, {1000, 258}
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
@@ -468,7 +468,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(1018, 672); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(1277, 672); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         if (cycle == 0) {
@@ -498,7 +498,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
             auto meter = [&](int count) {
                 for (int i = 0; i < 32; ++i) {
-                    if (parent.pixel(uiPixel(580 + i * 8), uiPixel(32)) != (i < count ? lit : unlit)) return false;
+                    if (parent.pixel(uiPixel(797 + i * 8), uiPixel(32)) != (i < count ? lit : unlit)) return false;
                 }
                 return true;
             };
@@ -509,7 +509,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             for (int i = 0; i < 16; ++i) assert(processor->process(audio) == kResultOk);
             waitFor([&] {
                 assert(processor->process(audio) == kResultOk);
-                return parent.pixel(uiPixel(664), uiPixel(20)) == lit && parent.pixel(uiPixel(830), uiPixel(20)) == over;
+                return parent.pixel(uiPixel(880), uiPixel(20)) == lit && parent.pixel(uiPixel(1046), uiPixel(20)) == over;
             }, "peak at +12 dBFS: green below zero, red above");
             parent.screenshot("target/gui-voices.ppm");
             audio.inputEvents = &events;
@@ -525,7 +525,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return meter(3); }, "voices before stop");
             assert(processor->setProcessing(false) == kResultOk);
             waitFor([&] { return meter(0); }, "voices after stop");
-            waitFor([&] { return parent.pixel(uiPixel(580), uiPixel(20)) == unlit; }, "peak decays to silence");
+            waitFor([&] { return parent.pixel(uiPixel(797), uiPixel(20)) == unlit; }, "peak decays to silence");
             assert(component->setActive(false) == kResultOk);
             assert(component->setState(&original) == kResultOk);
         }
@@ -566,7 +566,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.value == item);
         }
         // Offでは完成したヘッダ・ノブを背景へ50%合成し、選択欄は通常の色を維持する。
-        for (const auto& check : std::array<std::array<int, 3>, 3>{{{9, 10, 298}, {31, 32, 298}, {34, 35, 642}}}) {
+        for (const auto& check : std::array<std::array<int, 3>, 3>{{{9, 10, 298}, {31, 32, 642}, {34, 35, 858}}}) {
             const auto [choiceIndex, knobIndex, headerX] = check;
             ParameterInfo info; assert(controller->getParameterInfo(choiceIndex, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
@@ -574,7 +574,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 const auto [choiceX, choiceY] = controls[choiceIndex];
                 const auto [knobX, knobY] = controls[knobIndex];
                 return std::array<uint32, 3>{
-                    parent.pixel(uiPixel(headerX), uiPixel(choiceY)),
+                    parent.pixel(uiPixel(headerX), uiPixel(choiceY - (choiceIndex == 31 ? 36 : 0))),
                     parent.pixel(uiPixel(knobX), uiPixel(knobY)),
                     parent.pixel(uiPixel(choiceX + 40), uiPixel(choiceY - 8))};
             };
@@ -615,7 +615,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0}));
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(logicalX - 112, 0, 624);
+            const int overlayX = std::clamp(logicalX - 112, 0, 840);
             const int overlayY = std::clamp(logicalY - 91, 0, 500);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);

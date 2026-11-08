@@ -537,16 +537,26 @@ impl Editor {
         selected: &[f64; parameters::COUNT],
     ) {
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
-        let phase_height = if choices == [12] { CHOICE_HEIGHT } else { 0.0 };
-        let content_rows = rows.len() + usize::from(phase_height > 0.0);
+        let choice_height = if matches!(choices, [12] | [31]) {
+            CHOICE_HEIGHT
+        } else {
+            0.0
+        };
+        let row_header_height = if choices.len() > 1 {
+            CHOICE_HEIGHT + GAP
+        } else {
+            0.0
+        };
+        let row_height = KNOB_CELL.y + row_header_height;
+        let content_rows = rows.len() + usize::from(choice_height > 0.0);
         let row_gap =
-            (height - GAP - HEADER_HEIGHT - phase_height - KNOB_CELL.y * rows.len() as f32)
+            (height - GAP - HEADER_HEIGHT - choice_height - row_height * rows.len() as f32)
                 / (content_rows + 1) as f32;
         let body_y = GAP
             + HEADER_HEIGHT
             + row_gap
-            + if phase_height > 0.0 {
-                phase_height + row_gap
+            + if choice_height > 0.0 {
+                choice_height + row_gap
             } else {
                 0.0
             };
@@ -579,7 +589,11 @@ impl Editor {
             let mut left = GAP;
             for &index in *knobs {
                 let area = egui::Rect::from_min_size(
-                    rect.min + egui::vec2(left, body_y + row as f32 * (KNOB_CELL.y + row_gap)),
+                    rect.min
+                        + egui::vec2(
+                            left,
+                            body_y + row as f32 * (row_height + row_gap) + row_header_height,
+                        ),
                     egui::vec2(width, KNOB_CELL.y),
                 );
                 left += width;
@@ -587,6 +601,36 @@ impl Editor {
                     self.knob(ui, index, selected[index], width);
                 });
             }
+        }
+        let choice_rect = |row: usize| {
+            let top = if row_header_height > 0.0 {
+                rect.top() + body_y + row as f32 * (row_height + row_gap)
+            } else if choice_height > 0.0 {
+                rect.top() + GAP + HEADER_HEIGHT + row_gap
+            } else {
+                rect.top() + GAP + (HEADER_HEIGHT - CHOICE_HEIGHT) / 2.0
+            };
+            egui::Rect::from_min_size(
+                egui::pos2(rect.right() - GAP - 130.0, top),
+                egui::vec2(130.0, CHOICE_HEIGHT),
+            )
+        };
+        for (row, &index) in choices.iter().enumerate() {
+            let label = match index {
+                0 => "Osc1",
+                23 => "Osc2",
+                26 => "Osc3",
+                12 => "Phase",
+                31 => "Type",
+                _ => continue,
+            };
+            painter.text(
+                egui::pos2(rect.left() + GAP, choice_rect(row).center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(18.0),
+                MUTED,
+            );
         }
         if off {
             // 一様な背景色を重ね、描画済みグループ全体を50%で合成する。
@@ -597,30 +641,8 @@ impl Editor {
                 ui.visuals().panel_fill.gamma_multiply(0.5),
             );
         }
-        for &index in choices {
-            let choice = if index == 12 {
-                let top = rect.top() + GAP + HEADER_HEIGHT + row_gap;
-                painter.text(
-                    egui::pos2(rect.left() + GAP, top + CHOICE_HEIGHT / 2.0),
-                    egui::Align2::LEFT_CENTER,
-                    "Phase",
-                    egui::FontId::proportional(18.0),
-                    MUTED,
-                );
-                egui::Rect::from_min_size(
-                    egui::pos2(rect.right() - GAP - 130.0, top),
-                    egui::vec2(130.0, CHOICE_HEIGHT),
-                )
-            } else {
-                egui::Rect::from_min_size(
-                    egui::pos2(
-                        rect.right() - GAP - 130.0,
-                        rect.top() + GAP + (HEADER_HEIGHT - CHOICE_HEIGHT) / 2.0,
-                    ),
-                    egui::vec2(130.0, CHOICE_HEIGHT),
-                )
-            };
-            ui.scope_builder(egui::UiBuilder::new().max_rect(choice), |ui| {
+        for (row, &index) in choices.iter().enumerate() {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(choice_rect(row)), |ui| {
                 self.choice(ui, index, selected[index]);
             });
         }
@@ -758,48 +780,34 @@ impl WindowHandler for Editor {
             }
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
             let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
-            let single_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
-            let filter_height = single_height + KNOB_CELL.y + GAP;
-            let panel_height = single_height * 2.0 + filter_height + GAP * 2.0;
-            let oscillator_height = (panel_height - GAP * 2.0) / 3.0;
+            let panel_height = 500.0;
             let center_x = GAP + oscillator_width + GAP;
-            let master_x = center_x + filter_width + GAP;
-            let master_width = GAP * 2.0 + KNOB_CELL.x * 3.0;
-            let eq_height = filter_height + KNOB_CELL.y + GAP;
+            let effects_x = center_x + filter_width + GAP;
+            let side_width = GAP * 2.0 + KNOB_CELL.x * 3.0;
+            let master_x = effects_x + side_width + GAP;
+            // AmpとFilterの上余白・行間・下余白を同じ長さに揃える。
+            let center_gap =
+                (panel_height - GAP - 2.0 * (GAP + HEADER_HEIGHT) - KNOB_CELL.y * 3.0) / 5.0;
+            let amp_height = GAP + HEADER_HEIGHT + KNOB_CELL.y + center_gap * 2.0;
+            let filter_height = panel_height - amp_height - GAP;
+            let effect_height = GAP * 4.0 + HEADER_HEIGHT + CHOICE_HEIGHT + KNOB_CELL.y;
+            let eq_height = GAP * 5.0 + HEADER_HEIGHT + KNOB_CELL.y * 3.0;
             let groups = [
                 (
-                    "Osc1",
-                    &[0_usize] as &[usize],
-                    &[&[6_usize, 7, 20, 22][..]][..],
-                    [GAP, GAP, oscillator_width, oscillator_height],
-                ),
-                (
-                    "Osc2",
-                    &[23],
-                    &[&[24, 25, 29][..]][..],
-                    [
-                        GAP,
-                        GAP + oscillator_height + GAP,
-                        oscillator_width,
-                        oscillator_height,
-                    ],
-                ),
-                (
-                    "Osc3",
-                    &[26],
-                    &[&[27, 28, 30][..]][..],
-                    [
-                        GAP,
-                        GAP + (oscillator_height + GAP) * 2.0,
-                        oscillator_width,
-                        oscillator_height,
-                    ],
+                    "Oscillator",
+                    &[0_usize, 23, 26] as &[usize],
+                    &[
+                        &[6_usize, 7, 20, 22][..],
+                        &[24, 25, 29][..],
+                        &[27, 28, 30][..],
+                    ][..],
+                    [GAP, GAP, oscillator_width, panel_height],
                 ),
                 (
                     "Amp",
                     &[],
                     &[&[1, 2, 3, 4, 5][..]][..],
-                    [center_x, GAP, filter_width, single_height],
+                    [center_x, GAP, filter_width, amp_height],
                 ),
                 (
                     "Filter",
@@ -807,7 +815,7 @@ impl WindowHandler for Editor {
                     &[&[10, 11, 19][..], &[14, 15, 16, 17, 18][..]][..],
                     [
                         center_x,
-                        GAP + single_height + GAP,
+                        GAP + amp_height + GAP,
                         filter_width,
                         filter_height,
                     ],
@@ -816,18 +824,13 @@ impl WindowHandler for Editor {
                     "Distortion",
                     &[31],
                     &[&[32, 33][..]][..],
-                    [
-                        center_x,
-                        GAP + single_height + filter_height + GAP * 2.0,
-                        filter_width,
-                        single_height,
-                    ],
+                    [effects_x, GAP, side_width, effect_height],
                 ),
                 (
                     "EQ",
                     &[34],
                     &[&[35, 36][..], &[37, 38, 39][..], &[40, 41][..]][..],
-                    [master_x, GAP, master_width, eq_height],
+                    [master_x, GAP, side_width, eq_height],
                 ),
                 (
                     "Master",
@@ -836,7 +839,7 @@ impl WindowHandler for Editor {
                     [
                         master_x,
                         GAP + eq_height + GAP,
-                        master_width,
+                        side_width,
                         panel_height - eq_height - GAP,
                     ],
                 ),
