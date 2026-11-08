@@ -780,7 +780,7 @@ impl WindowHandler for Editor {
             }
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
             let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
-            let panel_height = 500.0;
+            let panel_height = GAP * 8.0 + HEADER_HEIGHT * 4.0 + KNOB_CELL.y * 3.0;
             let center_x = GAP + oscillator_width + GAP;
             let effects_x = center_x + filter_width + GAP;
             let side_width = GAP * 2.0 + KNOB_CELL.x * 3.0;
@@ -791,7 +791,7 @@ impl WindowHandler for Editor {
             let amp_height = GAP + HEADER_HEIGHT + KNOB_CELL.y + center_gap * 2.0;
             let filter_height = panel_height - amp_height - GAP;
             let effect_height = GAP * 4.0 + HEADER_HEIGHT + CHOICE_HEIGHT + KNOB_CELL.y;
-            let eq_height = GAP * 5.0 + HEADER_HEIGHT + KNOB_CELL.y * 3.0;
+            let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
             let groups = [
                 (
                     "Oscillator",
@@ -829,19 +829,19 @@ impl WindowHandler for Editor {
                 (
                     "EQ",
                     &[34],
-                    &[&[35, 36][..], &[37, 38, 39][..], &[40, 41][..]][..],
-                    [master_x, GAP, side_width, eq_height],
+                    &[&[35, 36, 37, 38, 39, 40, 41][..]][..],
+                    [
+                        GAP,
+                        GAP + panel_height + GAP,
+                        master_x - GAP * 2.0,
+                        eq_height,
+                    ],
                 ),
                 (
                     "Master",
                     &[12],
                     &[&[8, 13, 21][..]][..],
-                    [
-                        master_x,
-                        GAP + eq_height + GAP,
-                        side_width,
-                        panel_height - eq_height - GAP,
-                    ],
+                    [master_x, GAP, side_width, effect_height],
                 ),
             ];
             for (title, choices, rows, [x, y, width, height]) in groups {

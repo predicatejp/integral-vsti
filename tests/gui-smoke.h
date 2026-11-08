@@ -332,7 +332,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1277 && rect.getHeight() == 672);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1277 && rect.getHeight() == 740);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -442,13 +442,13 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
     std::array<std::pair<int, int>, 42> controls {{
-        {212, 87}, {328, 110}, {392, 110}, {456, 110}, {520, 110}, {584, 110},
-        {48, 139}, {112, 139}, {888, 445}, {564, 226}, {349, 306}, {456, 306},
-        {983, 387}, {952, 445}, {328, 422}, {392, 422}, {456, 422}, {520, 422},
-        {584, 422}, {563, 306}, {176, 139}, {1016, 445}, {240, 139},
-        {212, 232}, {59, 284}, {144, 284}, {212, 377}, {59, 429}, {144, 429}, {229, 284}, {229, 429},
+        {212, 66}, {328, 93}, {392, 93}, {456, 93}, {520, 93}, {584, 93},
+        {48, 118}, {112, 118}, {888, 118}, {564, 192}, {349, 256}, {456, 256},
+        {983, 66}, {952, 118}, {328, 355}, {392, 355}, {456, 355}, {520, 355},
+        {584, 355}, {563, 256}, {176, 118}, {1016, 118}, {240, 118},
+        {212, 190}, {59, 242}, {144, 242}, {212, 314}, {59, 366}, {144, 366}, {229, 242}, {229, 366},
         {767, 66}, {688, 118}, {784, 118},
-        {983, 30}, {904, 82}, {1000, 82}, {888, 170}, {952, 170}, {1016, 170}, {904, 258}, {1000, 258}
+        {767, 454}, {74, 506}, {191, 506}, {307, 506}, {424, 506}, {541, 506}, {657, 506}, {774, 506}
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
@@ -456,8 +456,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         const auto [x, y] = controls[index];
         parent.click(uiPixel(x), uiPixel(y)); pump(); assert(handler.sequence.empty());
         parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
-        // 下段のOsc3は上側へ、それ以外は下側へ開く。
-        parent.click(uiPixel(x), uiPixel((index == 26 ? y - 154 : y + 34) + item * 30));
+        parent.click(uiPixel(x), uiPixel(y + 34 + item * 30));
         waitFor([&] { return handler.sequence.size() >= 3; }, "dropdown choice");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
@@ -468,7 +467,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(1277, 672); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(1277, 740); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         if (cycle == 0) {
@@ -566,7 +565,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.value == item);
         }
         // Offでは完成したヘッダ・ノブを背景へ50%合成し、選択欄は通常の色を維持する。
-        for (const auto& check : std::array<std::array<int, 3>, 3>{{{9, 10, 298}, {31, 32, 642}, {34, 35, 858}}}) {
+        for (const auto& check : std::array<std::array<int, 3>, 3>{{{9, 10, 298}, {31, 32, 642}, {34, 35, 18}}}) {
             const auto [choiceIndex, knobIndex, headerX] = check;
             ParameterInfo info; assert(controller->getParameterInfo(choiceIndex, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
@@ -616,7 +615,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
             const int overlayX = std::clamp(logicalX - 112, 0, 840);
-            const int overlayY = std::clamp(logicalY - 91, 0, 500);
+            const int overlayY = std::clamp(logicalY - 91, 0, 556);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
 #else
