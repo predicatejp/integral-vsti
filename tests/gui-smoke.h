@@ -565,7 +565,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             choose(34, item);
             assert(handler.value == item);
         }
-        // Offではヘッダとノブだけを薄くし、選択欄は通常の色を維持する。
+        // Offでは完成したヘッダ・ノブを背景へ50%合成し、選択欄は通常の色を維持する。
         for (const auto& check : std::array<std::array<int, 3>, 3>{{{9, 10, 298}, {31, 32, 298}, {34, 35, 642}}}) {
             const auto [choiceIndex, knobIndex, headerX] = check;
             ParameterInfo info; assert(controller->getParameterInfo(choiceIndex, info) == kResultOk);
@@ -584,7 +584,15 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             choose(choiceIndex, 1);
             parent.movePointer(4, 4); pump();
             const auto on = pixels();
-            assert(off[0] != on[0] && off[1] != on[1] && off[2] == on[2]);
+            const auto background = parent.pixel(4, 4);
+            for (int sample = 0; sample < 2; ++sample) {
+                for (int shift : {0, 8, 16}) {
+                    const int expected = (((on[sample] >> shift) & 0xff) + ((background >> shift) & 0xff) + 1) / 2;
+                    const int actual = (off[sample] >> shift) & 0xff;
+                    assert(std::abs(actual - expected) <= 2);
+                }
+            }
+            assert(off[2] == on[2]);
             choose(choiceIndex, 0);
             parent.movePointer(4, 4); pump();
             assert(pixels() == off);

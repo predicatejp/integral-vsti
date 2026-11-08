@@ -551,15 +551,10 @@ impl Editor {
                 0.0
             };
         let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
-        let opacity = if choices.iter().any(|&index| {
+        let off = choices.iter().any(|&index| {
             matches!(index, 9 | 31 | 34) && parameters::to_tick(index, selected[index]) == 0
-        }) {
-            0.5
-        } else {
-            1.0
-        };
-        let mut painter = ui.painter().clone();
-        painter.multiply_opacity(opacity);
+        });
+        let painter = ui.painter().clone();
         painter.rect_filled(rect, 8.0, PANEL);
         painter.rect_stroke(
             rect,
@@ -579,6 +574,29 @@ impl Editor {
             egui::FontId::proportional(24.0),
             INK,
         );
+        for (row, knobs) in rows.iter().enumerate() {
+            let width = (rect.width() - GAP * 2.0) / knobs.len() as f32;
+            let mut left = GAP;
+            for &index in *knobs {
+                let area = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(left, body_y + row as f32 * (KNOB_CELL.y + row_gap)),
+                    egui::vec2(width, KNOB_CELL.y),
+                );
+                left += width;
+                ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                    self.knob(ui, index, selected[index], width);
+                });
+            }
+        }
+        if off {
+            // 一様な背景色を重ね、描画済みグループ全体を50%で合成する。
+            // 個々の図形を透過すると、本来隠れるノブの影まで透けてしまう。
+            painter.rect_filled(
+                rect.expand(1.0),
+                0.0,
+                ui.visuals().panel_fill.gamma_multiply(0.5),
+            );
+        }
         for &index in choices {
             let choice = if index == 12 {
                 let top = rect.top() + GAP + HEADER_HEIGHT + row_gap;
@@ -605,21 +623,6 @@ impl Editor {
             ui.scope_builder(egui::UiBuilder::new().max_rect(choice), |ui| {
                 self.choice(ui, index, selected[index]);
             });
-        }
-        for (row, knobs) in rows.iter().enumerate() {
-            let width = (rect.width() - GAP * 2.0) / knobs.len() as f32;
-            let mut left = GAP;
-            for &index in *knobs {
-                let area = egui::Rect::from_min_size(
-                    rect.min + egui::vec2(left, body_y + row as f32 * (KNOB_CELL.y + row_gap)),
-                    egui::vec2(width, KNOB_CELL.y),
-                );
-                left += width;
-                ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                    ui.multiply_opacity(opacity);
-                    self.knob(ui, index, selected[index], width);
-                });
-            }
         }
     }
 
