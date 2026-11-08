@@ -584,6 +584,15 @@ impl Editor {
             egui::FontId::proportional(24.0),
             INK,
         );
+        if rows.is_empty() {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Empty",
+                egui::FontId::proportional(18.0),
+                MUTED,
+            );
+        }
         for (row, knobs) in rows.iter().enumerate() {
             let width = (rect.width() - GAP * 2.0) / knobs.len() as f32;
             let mut left = GAP;
@@ -790,8 +799,9 @@ impl WindowHandler for Editor {
                 (panel_height - GAP - 2.0 * (GAP + HEADER_HEIGHT) - KNOB_CELL.y * 3.0) / 5.0;
             let amp_height = GAP + HEADER_HEIGHT + KNOB_CELL.y + center_gap * 2.0;
             let filter_height = panel_height - amp_height - GAP;
-            let effect_height = GAP * 4.0 + HEADER_HEIGHT + CHOICE_HEIGHT + KNOB_CELL.y;
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
+            let full_height = panel_height + GAP + eq_height;
+            let effect_height = (full_height - GAP * 2.0) / 3.0;
             let groups = [
                 (
                     "Oscillator",
@@ -827,21 +837,43 @@ impl WindowHandler for Editor {
                     [effects_x, GAP, side_width, effect_height],
                 ),
                 (
+                    "Effect 2",
+                    &[],
+                    &[],
+                    [
+                        effects_x,
+                        GAP + effect_height + GAP,
+                        side_width,
+                        effect_height,
+                    ],
+                ),
+                (
+                    "Effect 3",
+                    &[],
+                    &[],
+                    [
+                        effects_x,
+                        GAP + (effect_height + GAP) * 2.0,
+                        side_width,
+                        effect_height,
+                    ],
+                ),
+                (
                     "EQ",
                     &[34],
                     &[&[35, 36, 37, 38, 39, 40, 41][..]][..],
                     [
                         GAP,
                         GAP + panel_height + GAP,
-                        master_x - GAP * 2.0,
+                        effects_x - GAP * 2.0,
                         eq_height,
                     ],
                 ),
                 (
                     "Master",
                     &[12],
-                    &[&[8, 13, 21][..]][..],
-                    [master_x, GAP, side_width, effect_height],
+                    &[&[13][..], &[21][..], &[8][..]][..],
+                    [master_x, GAP, side_width, full_height],
                 ),
             ];
             for (title, choices, rows, [x, y, width, height]) in groups {

@@ -443,12 +443,12 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
     std::array<std::pair<int, int>, 42> controls {{
         {212, 66}, {328, 93}, {392, 93}, {456, 93}, {520, 93}, {584, 93},
-        {48, 118}, {112, 118}, {888, 118}, {564, 192}, {349, 256}, {456, 256},
-        {983, 66}, {952, 118}, {328, 355}, {392, 355}, {456, 355}, {520, 355},
-        {584, 355}, {563, 256}, {176, 118}, {1016, 118}, {240, 118},
+        {48, 118}, {112, 118}, {952, 464}, {564, 192}, {349, 256}, {456, 256},
+        {983, 108}, {952, 203}, {328, 355}, {392, 355}, {456, 355}, {520, 355},
+        {584, 355}, {563, 256}, {176, 118}, {952, 333}, {240, 118},
         {212, 190}, {59, 242}, {144, 242}, {212, 314}, {59, 366}, {144, 366}, {229, 242}, {229, 366},
-        {767, 66}, {688, 118}, {784, 118},
-        {767, 454}, {74, 506}, {191, 506}, {307, 506}, {424, 506}, {541, 506}, {657, 506}, {774, 506}
+        {767, 70}, {688, 126}, {784, 126},
+        {551, 454}, {59, 506}, {145, 506}, {230, 506}, {316, 506}, {402, 506}, {487, 506}, {573, 506}
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
@@ -573,7 +573,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 const auto [choiceX, choiceY] = controls[choiceIndex];
                 const auto [knobX, knobY] = controls[knobIndex];
                 return std::array<uint32, 3>{
-                    parent.pixel(uiPixel(headerX), uiPixel(choiceY - (choiceIndex == 31 ? 36 : 0))),
+                    parent.pixel(uiPixel(headerX), uiPixel(choiceY - (choiceIndex == 31 ? 40 : 0))),
                     parent.pixel(uiPixel(knobX), uiPixel(knobY)),
                     parent.pixel(uiPixel(choiceX + 40), uiPixel(choiceY - 8))};
             };
