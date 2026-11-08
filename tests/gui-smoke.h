@@ -565,7 +565,39 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             choose(34, item);
             assert(handler.value == item);
         }
-        // 全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
+        // Offでは完成したヘッダ・ノブを背景へ50%合成し、選択欄は通常の色を維持する。
+        for (const auto& check : std::array<std::array<int, 3>, 3>{{{9, 10, 298}, {31, 32, 298}, {34, 35, 642}}}) {
+            const auto [choiceIndex, knobIndex, headerX] = check;
+            ParameterInfo info; assert(controller->getParameterInfo(choiceIndex, info) == kResultOk);
+            assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
+            auto pixels = [&] {
+                const auto [choiceX, choiceY] = controls[choiceIndex];
+                const auto [knobX, knobY] = controls[knobIndex];
+                return std::array<uint32, 3>{
+                    parent.pixel(uiPixel(headerX), uiPixel(choiceY)),
+                    parent.pixel(uiPixel(knobX), uiPixel(knobY)),
+                    parent.pixel(uiPixel(choiceX + 40), uiPixel(choiceY - 8))};
+            };
+            parent.movePointer(4, 4); pump();
+            const auto off = pixels();
+            assert(off[2] == parent.pixel(uiPixel(controls[0].first + 40), uiPixel(controls[0].second - 8)));
+            choose(choiceIndex, 1);
+            parent.movePointer(4, 4); pump();
+            const auto on = pixels();
+            const auto background = parent.pixel(4, 4);
+            for (int sample = 0; sample < 2; ++sample) {
+                for (int shift : {0, 8, 16}) {
+                    const int expected = (((on[sample] >> shift) & 0xff) + ((background >> shift) & 0xff) + 1) / 2;
+                    const int actual = (off[sample] >> shift) & 0xff;
+                    assert(std::abs(actual - expected) <= 2);
+                }
+            }
+            assert(off[2] == on[2]);
+            choose(choiceIndex, 0);
+            parent.movePointer(4, 4); pump();
+            assert(pixels() == off);
+        }
+        // Offのグループを含む全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());
         for (int i = 1; i < 42; ++i) {
             if (i == 9 || i == 12 || i == 23 || i == 26 || i == 31 || i == 34) continue;

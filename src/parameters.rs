@@ -44,7 +44,7 @@ pub fn sine_preset() -> [f64; COUNT] {
 
 pub const CLIPPER_TYPES: [ClipperType; 3] =
     [ClipperType::None, ClipperType::Soft, ClipperType::Hard];
-pub const CLIPPER_NAMES: [&str; 3] = ["None", "Soft", "Hard"];
+pub const CLIPPER_NAMES: [&str; 3] = ["Off", "Soft", "Hard"];
 
 pub const PHASE_MODES: [PhaseMode; 3] = [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random];
 pub const PHASE_NAMES: [&str; 3] = ["Keep", "Zero", "Random"];
@@ -71,7 +71,7 @@ pub const FILTER_TYPES: [FilterType; 7] = [
     FilterType::BandPass2,
 ];
 pub const FILTER_NAMES: [&str; 7] = [
-    "None",
+    "Off",
     "LowPass1",
     "LowPass2",
     "HighPass1",

@@ -114,7 +114,7 @@ Stateはデータ保持専用とし、所有コンポーネントのメソッド
 
 | パラメーター | 範囲 | 初期値 | ParamID |
 | --- | --- | --- | --- |
-| Filter | None / LowPass1 / LowPass2 / HighPass1 / HighPass2 / BandPass1 / BandPass2 | LowPass1 | `0x46545950` |
+| Filter | Off / LowPass1 / LowPass2 / HighPass1 / HighPass2 / BandPass1 / BandPass2 | LowPass1 | `0x46545950` |
 | Cutoff | ノート周波数から−2400〜9600 cent（−2〜＋8 oct） | ＋4800 cent（＋4 oct） | `0x46435554` |
 | Resonance | Q=0.5〜10 | 1 | `0x46524553` |
 
@@ -130,7 +130,7 @@ Voiceはノートの音程とtuningを含む周波数に `2^(cent/1200)` を乗�
 - `SvfState`はTPT SVF1段の状態を保持し、`Svf::process_sample`が`low / band / high`を同時に返します。外側の`Filter::process_sample`が`FilterState`を更新しながら出力選択・直列接続を行います。
 - LPF・HPFは1段で12 dB/oct、2段で24 dB/oct。BPFの両側はそれぞれ6／12 dB/oct、中心利得はQ／Q²です。
 - 周波数は有限値を受け取り、内部の係数計算時だけ20〜20,000 Hzにクランプします。対応サンプルレートは44.1 kHz以上なので、この範囲は常にNyquist未満です。
-- 設定変更やVoiceの再使用でも有効な段の履歴を保持します。未使用の2段目とNone時の両段は消去します。Noneでは入力値を検証せずそのまま返します。
+- 設定変更やVoiceの再使用でも有効な段の履歴を保持します。未使用の2段目とOff時の両段は消去します。Offでは入力値を検証せずそのまま返します。
 - Note Off後のフィルタ残響も処理します。処理停止・Voice数の減少による停止ではフィルタの履歴も消去します。音量補正・クリッピングは追加しません。
 
 Voiceはカットオフ用エンベロープを毎サンプル計算し、変調後のHzをフィルタへ渡します。
@@ -362,11 +362,11 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | Waveform / Phase | Sine / Keep |
 | Unison / Detune / Polyphony | 1 / 0 cent / 1 |
 | 音量AHDSR | A/H/D/R=0 ms、S=1 |
-| Filter / Cutoff / Resonance | None / +4800 cent / Q=1 |
+| Filter / Cutoff / Resonance | Off / +4800 cent / Q=1 |
 | カットオフAHDSR / Amount | A/H/D/R=0 ms、S=1 / 0 cent |
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
 | Osc2/3 Waveform / Tune / Volume / Mod | Sine / 0 cent / −∞ dB / 0% |
-| Clipper / Gain / Mix | None / 0 dB / 100% |
+| Clipper / Gain / Mix | Off / 0 dB / 100% |
 
 ノートオン・オフで即時に発音・消音し、最大ベロシティ時の実効値は片チャンネル当たり0.5です。
 選択すると全設定を読み直し、同じ「Sine」の再選択でも編集した値を元に戻します。
@@ -383,16 +383,16 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 
 | パラメーター | 範囲・初期値 | ParamID |
 | --- | --- | --- |
-| Clipper type | None（初期値）、Soft、Hard | `0x43545950` |
+| Clipper type | Off（初期値）、Soft、Hard | `0x43545950` |
 | Gain | 0〜+48 dB、0.1 dB刻み、初期値0 dB | `0x43474149` |
 | Mix | 0〜100%、1%刻み、初期値100% | `0x434d4958` |
 
-NoneはGainとMixを含めてバイパスします。Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`で処理します。
+OffはGainとMixを含めてバイパスします。Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`で処理します。
 Gainの線形倍率は`10^(dB/20)`です。Mixは0%でフィルタ出力の原音、100%で処理音になり、その間を線形混合します。Gain・Mixのオートメーションは正規化値を線形補間し、Clipper typeは変更点で切り替えます。
 
 ディストーションはホストレートの2階ADAAで処理します。各Voiceのフィルタ出力へGain・Clipperを適用し、全Voiceを加算してMaster Volumeを掛けます。
 Dryはフィルタ出力を加算してMaster Volumeと1サンプルの純遅延だけを適用し、出力時点のMixでWetと混合します。
-Clipper=NoneではDryだけを出力し、クリップ・ADAAを省きます。ホストへの申告遅延も常に1サンプルです。
+Clipper=OffではDryだけを出力し、クリップ・ADAAを省きます。ホストへの申告遅延も常に1サンプルです。
 
 ADAA2による平均化はWetの高域特性に影響します。Dryは平均化を通しません。
 Softの原始関数は1025点の共有テーブルから整合した多項式で求め、近接入力では差分の桁落ちを避ける式を使います。
@@ -411,10 +411,10 @@ Gain・Mixはホストから届いた変更点間をホストレートで補間�
 
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・Mod、Masterには共通Phase・Polyphony・Volume・Panを配置します。
 ノブは行内を均等割りします。ノブ行は80px高、外周・グループ間・枠内の左右余白は8pxで統一します。各列の下端を揃え、見出しの下に残る高さは上余白・行間・下余白へ均等配分します。見出し行とドロップダウンは28px高です。
-ノブは直径52.8pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
-Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
+ノブは直径47.52pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
+Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。機能を無効にする選択肢は「Off」に統一します。Filter・Distortion・EQがOffのときは選択リストを通常表示とし、枠・見出し・ノブとそのラベルを描画した後、グループ全体を画面背景と50%で合成します。Off中もノブは編集でき、操作中の値は通常のオーバーレイで表示します。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
 ノブを左ボタンで押し、上へ動かすと増加、下へ動かすと減少します。1tickに必要な移動量は、Cutoff・Resonance・Cutoff Amount・各Volが2物理px、時間（A/H/D/R）・Tune・Distortion Gainが3物理px、その他が4物理pxです。Uniは32物理px、Polyは8物理pxです。全範囲の移動量が約1200pxに近づくよう、段階数の多いノブほど少ない移動量を割り当てています。1tick未満の移動量は次の操作へ持ち越します。吸着中は0〜80物理pxの内部位置を保持します。小さい値側から進入したら0、大きい値側から進入したら80、吸着点からドラッグを開始したら40に初期化します。増加方向で80へ到達すると大きい側、減少方向で0へ到達すると小さい側へ抜けます。進入直後に方向を戻すと、その側へすぐ抜けます。最大・最小値は通常動作です。吸着対象はCutoff・Tune・Cutoff Amountの1200 cent刻み、Master・Osc1/2/3のVolの6 dB刻み、Panの中央、およびEQ Low/Mid/High Gainの6 dB刻みです。上下どちらにも適用し、大きな移動でも途中の吸着値で必要な距離を消費します。
-目盛り位置は`src/editor.rs`の`knob_marks`でノブごとに整数tickとして定義します。目盛りは円弧ガイドから直接伸ばし、基準点と両端はガイドと同じ色・2px幅の長い線で示します。
+目盛り位置は`src/editor.rs`の`knob_marks`でノブごとに整数tickとして定義します。目盛りは円弧ガイドから直接伸ばし、基準点と両端はガイドと同じ色・太さの長い線で示します。
 
 | ノブ | 目盛りの値 | 強調する基準点 |
 | --- | --- | --- |
