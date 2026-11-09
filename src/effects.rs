@@ -64,9 +64,6 @@ impl Effect {
     }
 
     fn process_sample(&mut self, input: [f64; 2]) -> [f64; 2] {
-        if !self.state.enabled {
-            return input;
-        }
         self.state.started = true;
         if self.state.transition == 0 && self.state.processing != self.state.parameters.clipper {
             self.state.transition = 66;
@@ -189,7 +186,9 @@ impl Effects {
 
     pub fn process_sample(&mut self, mut sample: [f64; 2]) -> [f64; 2] {
         for slot in &mut self.state.slots {
-            sample = slot.process_sample(sample);
+            if slot.state.enabled {
+                sample = slot.process_sample(sample);
+            }
         }
         self.delay_sample(sample)
     }
