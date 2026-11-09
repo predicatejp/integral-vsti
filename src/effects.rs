@@ -3,16 +3,26 @@
 
 //! Voice合成後、EQ前に置く3つの独立した直列エフェクタ。
 
+use crate::delay::{Delay, DelayParameters};
 use crate::distortion::{ClipperType, Distortion, DistortionParameters};
 use crate::parameters::{self, EFFECT_SLOTS};
 
 /// 各Distortionの1サンプル遅延を含む、系列全体の固定遅延。
 pub const LATENCY: usize = 3 * crate::distortion::LATENCY;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EffectType {
+    Off,
+    Distortion,
+    Delay,
+}
+
 #[cfg_attr(test, derive(Clone))]
 struct EffectState {
     /// Offではこのスロットをそのまま通過する。
-    enabled: bool,
+    kind: EffectType,
+    /// テンポ同期ディレイの設定と左右の履歴。
+    delay: Delay,
     /// このスロットだけの設定と左右独立のADAA履歴。
     parameters: DistortionParameters,
     distortion: Distortion,
@@ -32,10 +42,11 @@ struct Effect {
 }
 
 impl Effect {
-    fn new(parameters: DistortionParameters) -> Self {
+    fn new(parameters: DistortionParameters, delay_parameters: DelayParameters) -> Self {
         Self {
             state: EffectState {
-                enabled: false,
+                kind: EffectType::Off,
+                delay: Delay::new(delay_parameters),
                 parameters,
                 distortion: Distortion::new(),
                 processing: parameters.clipper,
@@ -46,10 +57,16 @@ impl Effect {
         }
     }
 
-    fn set_parameters(&mut self, enabled: bool, parameters: DistortionParameters) {
-        let changed = enabled != self.state.enabled;
+    fn set_parameters(
+        &mut self,
+        kind: EffectType,
+        parameters: DistortionParameters,
+        delay_parameters: DelayParameters,
+    ) {
+        let changed = kind != self.state.kind;
         self.state.parameters = parameters;
-        self.state.enabled = enabled;
+        self.state.kind = kind;
+        self.state.delay.set_parameters(delay_parameters);
         if changed || !self.state.started {
             self.reset();
         }
@@ -57,6 +74,7 @@ impl Effect {
 
     fn reset(&mut self) {
         self.state.distortion.reset();
+        self.state.delay.reset();
         self.state.previous_dry = [0.0; 2];
         self.state.processing = self.state.parameters.clipper;
         self.state.transition = 0;
@@ -91,8 +109,19 @@ impl Effect {
     }
 
     fn process_samples(&mut self, samples: &mut [[f64; 2]]) {
-        if !self.state.enabled || samples.is_empty() {
+        if samples.is_empty() {
             return;
+        }
+        match self.state.kind {
+            EffectType::Off => return,
+            EffectType::Delay => {
+                for sample in samples {
+                    *sample = self.state.delay.process_sample(*sample);
+                }
+                self.state.started = true;
+                return;
+            }
+            EffectType::Distortion => {}
         }
         if self.state.transition != 0 || self.state.processing != self.state.parameters.clipper {
             for sample in samples {
@@ -129,6 +158,8 @@ struct EffectsState {
     slots: [Effect; 3],
     /// 有効なDistortion数に応じて補う純遅延の長さ。
     padding: usize,
+    /// 最後に受信した有効なホストBPM。取得前は120。
+    tempo: f64,
     /// 全スロットOffでも全体を3サンプル遅らせるための固定領域。
     delay: [[f64; 2]; LATENCY],
 }
@@ -144,11 +175,44 @@ impl Effects {
         Self {
             state: EffectsState {
                 slots: std::array::from_fn(|slot| {
-                    Effect::new(parameters::distortion(&values, slot))
+                    Effect::new(
+                        parameters::distortion(&values, slot),
+                        parameters::delay(&values, slot),
+                    )
                 }),
                 padding: LATENCY,
+                tempo: 120.0,
                 delay: [[0.0; 2]; LATENCY],
             },
+        }
+    }
+
+    /// 全スロットのリングを停止中に準備する。全確保が成功してから置き換える。
+    pub fn prepare(&mut self, sample_rate: f64, values: &[f64; parameters::COUNT]) -> bool {
+        if self.state.slots[0].state.delay.prepared_for(sample_rate) {
+            self.reset();
+            return true;
+        }
+        let mut delays: [Delay; 3] =
+            std::array::from_fn(|slot| Delay::new(parameters::delay(values, slot)));
+        for delay in &mut delays {
+            if !delay.prepare(sample_rate) {
+                return false;
+            }
+            delay.set_tempo(self.state.tempo);
+        }
+        for (slot, delay) in self.state.slots.iter_mut().zip(delays) {
+            slot.state.delay = delay;
+        }
+        true
+    }
+
+    pub fn set_tempo(&mut self, tempo: f64) {
+        if tempo.is_finite() && tempo > 0.0 && tempo != self.state.tempo {
+            self.state.tempo = tempo;
+            for slot in &mut self.state.slots {
+                slot.state.delay.set_tempo(tempo);
+            }
         }
     }
 
@@ -159,9 +223,17 @@ impl Effects {
     ) {
         for (slot, indices) in EFFECT_SLOTS.into_iter().enumerate() {
             if indices.into_iter().any(|i| values[i] != previous[i]) {
+                // Delayだけの変更でDistortionのGain換算をやり直さない。
+                let distortion = if indices[1..4].iter().any(|&i| values[i] != previous[i]) {
+                    parameters::distortion(values, slot)
+                } else {
+                    self.state.slots[slot].state.parameters
+                };
                 self.state.slots[slot].set_parameters(
-                    values[indices[0]] != 0.0,
-                    parameters::distortion(values, slot),
+                    parameters::EFFECT_TYPES
+                        [parameters::to_plain(indices[0], values[indices[0]]) as usize],
+                    distortion,
+                    parameters::delay(values, slot),
                 );
             }
         }
@@ -169,7 +241,7 @@ impl Effects {
             .state
             .slots
             .iter()
-            .filter(|slot| !slot.state.enabled)
+            .filter(|slot| slot.state.kind != EffectType::Distortion)
             .count();
         if padding != self.state.padding {
             self.state.padding = padding;
@@ -186,9 +258,14 @@ impl Effects {
 
     pub fn process_sample(&mut self, mut sample: [f64; 2]) -> [f64; 2] {
         for slot in &mut self.state.slots {
-            if slot.state.enabled {
-                sample = slot.process_sample(sample);
-            }
+            sample = match slot.state.kind {
+                EffectType::Off => sample,
+                EffectType::Distortion => slot.process_sample(sample),
+                EffectType::Delay => {
+                    slot.state.started = true;
+                    slot.state.delay.process_sample(sample)
+                }
+            };
         }
         self.delay_sample(sample)
     }
@@ -217,8 +294,8 @@ mod tests {
 
     fn configured(mask: usize) -> ([f64; parameters::COUNT], Effects) {
         let mut values = parameters::defaults();
-        for (slot, [kind, clipper, gain, mix]) in EFFECT_SLOTS.into_iter().enumerate() {
-            values[kind] = f64::from(mask & (1 << slot) != 0);
+        for (slot, [kind, clipper, gain, mix, ..]) in EFFECT_SLOTS.into_iter().enumerate() {
+            values[kind] = if mask & (1 << slot) != 0 { 0.5 } else { 0.0 };
             values[clipper] = parameters::to_normalized(clipper, if slot == 1 { 2.0 } else { 1.0 });
             values[gain] = parameters::to_normalized(gain, 6.0 + slot as f64 * 9.0);
             values[mix] = 0.3 + slot as f64 * 0.2;
@@ -265,7 +342,7 @@ mod tests {
         for mask in 0..8 {
             let (mut p, mut effects) = configured(mask);
             let previous = p;
-            for [_, _, _, mix] in EFFECT_SLOTS {
+            for [_, _, _, mix, ..] in EFFECT_SLOTS {
                 p[mix] = 0.0;
             }
             effects.set_parameters(&p, &previous);
@@ -290,8 +367,8 @@ mod tests {
         let mut blocks = scalar.clone();
         for step in 0..24 {
             let previous = p;
-            let [kind, clipper, gain, mix] = EFFECT_SLOTS[step % 3];
-            p[kind] = if step % 4 == 0 { 0.0 } else { 1.0 };
+            let [kind, clipper, gain, mix, ..] = EFFECT_SLOTS[step % 3];
+            p[kind] = if step % 4 == 0 { 0.0 } else { 0.5 };
             p[clipper] = (step % 3) as f64 / 2.0;
             p[gain] = (step % 7) as f64 / 6.0;
             p[mix] = (step % 5) as f64 / 4.0;
@@ -304,6 +381,45 @@ mod tests {
             let expected: Vec<_> = samples.iter().map(|&x| scalar.process_sample(x)).collect();
             blocks.process_samples(&mut samples);
             assert_eq!(samples, expected, "step={step}");
+        }
+    }
+
+    #[test]
+    fn delay_slots_match_scalar_across_tempo_kind_and_mix_changes() {
+        let (mut p, mut scalar) = configured(7);
+        assert!(scalar.prepare(48000.0, &p));
+        let mut blocks = scalar.clone();
+        for step in 0..30 {
+            let previous = p;
+            let [kind, _, _, _, beat, feedback, mix] = EFFECT_SLOTS[step % 3];
+            p[kind] = ((step / 3) % 3) as f64 / 2.0;
+            p[beat] = (step % 10) as f64 / 9.0;
+            p[feedback] = (step % 6) as f64 / 5.0;
+            p[mix] = (step % 5) as f64 / 4.0;
+            for effects in [&mut scalar, &mut blocks] {
+                effects.set_parameters(&p, &previous);
+                effects.set_tempo(120.0 + step as f64 * 2.0);
+            }
+            let mut samples: Vec<_> = (0..1024)
+                .map(|n| [(n as f64 * 0.17).sin(), (n as f64 * 0.19).cos()])
+                .collect();
+            let expected: Vec<_> = samples.iter().map(|&x| scalar.process_sample(x)).collect();
+            blocks.process_samples(&mut samples);
+            assert_eq!(samples, expected);
+        }
+        let previous = p;
+        for [kind, ..] in EFFECT_SLOTS {
+            p[kind] = 0.0;
+        }
+        scalar.set_parameters(&p, &previous);
+        scalar.process_samples(&mut [[0.0; 2]; 32]);
+        let previous = p;
+        for [kind, ..] in EFFECT_SLOTS {
+            p[kind] = 1.0;
+        }
+        scalar.set_parameters(&p, &previous);
+        for _ in 0..24000 {
+            assert_eq!(scalar.process_sample([0.0; 2]), [0.0; 2]);
         }
     }
 
@@ -332,11 +448,16 @@ mod tests {
             gain: 4.0,
             mix: 0.0,
         };
-        let mut effect = Effect::new(p);
-        effect.set_parameters(true, p);
+        let delay_parameters = parameters::delay(&parameters::defaults(), 0);
+        let mut effect = Effect::new(p, delay_parameters);
+        effect.set_parameters(EffectType::Distortion, p, delay_parameters);
         let mut dry = [0.0; 2];
         for clipper in [ClipperType::Soft, ClipperType::Hard, ClipperType::None] {
-            effect.set_parameters(true, DistortionParameters { clipper, ..p });
+            effect.set_parameters(
+                EffectType::Distortion,
+                DistortionParameters { clipper, ..p },
+                delay_parameters,
+            );
             for n in 0..100 {
                 let input = [n as f64 / 100.0, -(n as f64) / 100.0];
                 assert_eq!(effect.process_sample(input), dry);

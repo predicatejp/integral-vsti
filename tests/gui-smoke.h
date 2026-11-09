@@ -303,7 +303,7 @@ public:
         assert(!GuiReentry::insideDraw);
 #endif
         assert(std::this_thread::get_id() == uiThread);
-        assert((id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463154 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert((id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463142 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -441,7 +441,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
-    std::array<std::pair<int, int>, 51> controls {{
+    std::array<std::pair<int, int>, 60> controls {{
         {212, 66}, {328, 93}, {392, 93}, {456, 93}, {520, 93}, {584, 93},
         {48, 118}, {112, 118}, {920, 471}, {564, 192}, {349, 256}, {456, 256},
         {920, 137}, {920, 224}, {328, 355}, {392, 355}, {456, 355}, {520, 355},
@@ -449,7 +449,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {212, 190}, {59, 242}, {144, 242}, {212, 314}, {59, 366}, {144, 366}, {229, 242}, {229, 366},
         {767, 70}, {688, 126}, {784, 126},
         {551, 454}, {59, 506}, {145, 506}, {230, 506}, {316, 506}, {402, 506}, {487, 506}, {573, 506},
-        {780, 30}, {780, 218}, {780, 406}, {780, 258}, {688, 314}, {784, 314}, {780, 446}, {688, 502}, {784, 502}
+        {780, 30}, {780, 218}, {780, 406}, {780, 258}, {688, 314}, {784, 314}, {780, 446}, {688, 502}, {784, 502},
+        {767, 70}, {688, 126}, {784, 126}, {767, 258}, {688, 314}, {784, 314}, {767, 446}, {688, 502}, {784, 502}
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
@@ -568,18 +569,32 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         for (int index : {43, 44}) { choose(index, 1); choose(index, 0); }
         for (int index : {45, 48}) { choose(index, 2); choose(index, 0); choose(index, 1); }
+        choose(42, 2);
+        for (int item : {0, 9, 3}) {
+            choose(51, item);
+            assert(handler.editedId == 0x45463142 && handler.value == item / 9.0);
+        }
+        parent.screenshot("target/gui-delay.ppm");
+        // ホストが種類を切り替えた場合、非表示になるFeedbackのドラッグを終了する。
+        parent.movePointer(uiPixel(688), uiPixel(170)); pump(); parent.knobButton(true);
+        waitFor([&] { return handler.sequence == (std::vector<int>{0}); }, "delay drag begin");
+        assert(controller->setParamNormalized(0x45463154, .5) == kResultOk);
+        waitFor([&] { return handler.sequence == (std::vector<int>{0, 2}); }, "hidden delay drag end");
+        parent.knobButton(false);
+        waitFor([&] { return parent.cursorVisible(); }, "hidden delay cursor restored");
+        handler.sequence.clear(); pump();
         // 交換ボタンは種類と内部設定をまとめて隣へ移動し、標準の編集通知を送る。
-        const std::array<int, 8> swappedIndices {42, 31, 32, 33, 43, 45, 46, 47};
-        const std::array<double, 8> beforeSwap {1, 1, .25, .75, 0, .5, .5, .25};
+        const std::array<int, 14> swappedIndices {42, 31, 32, 33, 51, 52, 53, 43, 45, 46, 47, 54, 55, 56};
+        const std::array<double, 14> beforeSwap {.5, 1, .25, .75, 0, .2, .3, 1, .5, .5, .25, 1, .4, .6};
         for (size_t i = 0; i < swappedIndices.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
             assert(controller->setParamNormalized(info.id, beforeSwap[i]) == kResultOk);
         }
         pump(); parent.click(uiPixel(686), uiPixel(114));
-        waitFor([&] { return handler.sequence.size() == 24; }, "adjacent effect swap");
+        waitFor([&] { return handler.sequence.size() == 42; }, "adjacent effect swap");
         for (size_t i = 0; i < swappedIndices.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
-            assert(controller->getParamNormalized(info.id) == beforeSwap[(i + 4) % 8]);
+            assert(controller->getParamNormalized(info.id) == beforeSwap[(i + 7) % 14]);
             assert(handler.sequence[i*3] == 0 && handler.sequence[i*3+1] == 1 && handler.sequence[i*3+2] == 2);
         }
         handler.sequence.clear(); pump();
@@ -617,8 +632,13 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         // Offのグループを含む全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());
-        for (int i = 1; i < 51; ++i) {
-            if (i == 9 || i == 12 || i == 23 || i == 26 || i == 31 || i == 34 || (i >= 42 && i <= 45) || i == 48) continue;
+        for (int i = 1; i < 60; ++i) {
+            if (i == 9 || i == 12 || i == 23 || i == 26 || i == 31 || i == 34 || (i >= 42 && i <= 45) || i == 48 || i == 51 || i == 54 || i == 57) continue;
+            if (i >= 51 || i == 32 || i == 33 || i == 46 || i == 47 || i == 49 || i == 50) {
+                const int slot = i >= 51 ? (i - 51) / 3 : (i < 45 ? 0 : (i - 45) / 3 + 1);
+                ParameterInfo kind; assert(controller->getParameterInfo(42 + slot, kind) == kResultOk);
+                assert(controller->setParamNormalized(kind.id, i >= 51 ? 1.0 : .5) == kResultOk);
+            }
             ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
             pump(); assert(handler.sequence.empty());
@@ -661,7 +681,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
             const double plain = (i == 35 || i == 37 || i == 40) ? 20. * std::pow(1000., 1./300.) : (i == 36 || i == 38 || i == 41) ? -17.9 : i == 39 ? .1 * std::pow(100., 1./200.) : time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
-                                 i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -59.9 : (i == 24 || i == 27) ? -2390.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : (i == 29 || i == 30 || i == 33 || i == 47 || i == 50) ? 1.0 : (i == 32 || i == 46 || i == 49) ? .1 : .01;
+                                 i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -59.9 : (i == 24 || i == 27) ? -2390.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : (i >= 51 || i == 29 || i == 30 || i == 33 || i == 47 || i == 50) ? 1.0 : (i == 32 || i == 46 || i == 49) ? .1 : .01;
             assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
             assert(parent.pointerAt(x, y));
             point.id = info.id; point.values = {{0, handler.value}};

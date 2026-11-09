@@ -8,6 +8,8 @@ mod abi;
 mod distortion;
 #[path = "../src/effects.rs"]
 mod effects;
+#[path = "../src/delay.rs"]
+mod delay;
 #[path = "../src/eq.rs"]
 mod eq;
 #[path = "../src/envelope.rs"]

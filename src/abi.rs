@@ -477,6 +477,64 @@ pub struct AudioBusBuffers {
     pub channel_buffers: *mut *mut c_void,
 }
 
+/// VST3 ivstprocesscontext.h。ホストが各process呼出し中だけ所有する時間情報。
+#[repr(C)]
+#[derive(Default)]
+pub struct ProcessContext {
+    /// 情報の有効性と再生状態のビットマスク。
+    pub state: u32,
+    /// ホストのサンプルレート（Hz）。
+    pub sample_rate: f64,
+    /// プロジェクト内のサンプル位置。
+    pub project_time_samples: i64,
+    /// システム時刻（ns）。
+    pub system_time: i64,
+    /// ループに依存しない連続サンプル位置。
+    pub continuous_time_samples: i64,
+    /// 四分音符単位の再生位置。
+    pub project_time_music: f64,
+    /// 直前の小節先頭位置。
+    pub bar_position_music: f64,
+    /// ループ開始位置。
+    pub cycle_start_music: f64,
+    /// ループ終了位置。
+    pub cycle_end_music: f64,
+    /// kTempoValidが立っている場合のBPM。
+    pub tempo: f64,
+    /// 拍子の分子。
+    pub time_sig_numerator: i32,
+    /// 拍子の分母。
+    pub time_sig_denominator: i32,
+    /// 和音情報。
+    pub chord: Chord,
+    /// SMPTE位置（1/80フレーム単位）。
+    pub smpte_offset_subframes: i32,
+    /// SMPTEのフレームレート。
+    pub frame_rate: FrameRate,
+    /// 次のMIDIクロックまでのサンプル数。
+    pub samples_to_next_clock: i32,
+}
+#[repr(C)]
+#[derive(Default)]
+pub struct Chord {
+    /// 調の基準音。
+    pub key_note: u8,
+    /// 和音の根音。
+    pub root_note: u8,
+    /// 和音構成音のビットマスク。
+    pub chord_mask: i16,
+}
+#[repr(C)]
+#[derive(Default)]
+pub struct FrameRate {
+    /// 1秒あたりのフレーム数。
+    pub frames_per_second: u32,
+    /// FrameRateの属性ビット。
+    pub flags: u32,
+}
+pub const TEMPO_VALID: u32 = 1 << 10;
+pub const NEED_TEMPO: u32 = 1 << 6;
+
 #[repr(C)]
 pub struct ProcessData {
     /// 処理モード。0はリアルタイム、1はプリフェッチ、2はオフライン。
@@ -501,7 +559,7 @@ pub struct ProcessData {
     pub input_events: This,
     /// ホストへ返すIEventList。null可。本実装ではイベントを出力しない。
     pub output_events: This,
-    /// ホストの再生位置・テンポ等のProcessContext。null可。本実装では参照しない。
+    /// ホストの再生位置・テンポ等のProcessContext。null可。有効なtempoだけを取り込む。
     pub process_context: This,
 }
 

@@ -102,7 +102,7 @@ static PROCESSOR: ProcessorVTable = ProcessorVTable {
 };
 static CONTEXT_REQUIREMENTS: ContextRequirementsVTable = ContextRequirementsVTable {
     unknown: UNKNOWN,
-    get_process_context_requirements: zero,
+    get_process_context_requirements: context_requirements,
 };
 // eguiとホストのパラメーター操作が同じVST3パラメーターを扱う。
 static CONTROLLER: ControllerVTable = ControllerVTable {
@@ -740,8 +740,8 @@ unsafe extern "system" fn latency_samples(_: This) -> u32 {
     crate::effects::LATENCY as u32
 }
 
-unsafe extern "system" fn zero(_: This) -> u32 {
-    0
+unsafe extern "system" fn context_requirements(_: This) -> u32 {
+    NEED_TEMPO
 }
 
 unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetup) -> TResult {
@@ -810,6 +810,16 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         || !matches!(data.symbolic_sample_size, SAMPLE32 | SAMPLE64)
     {
         return INVALID_ARGUMENT;
+    }
+    if !data.process_context.is_null() {
+        // SAFETY: ProcessContextはホストがこの呼び出し中所有する。未設定の任意フィールドを
+        // 読まないよう、生ポインターからstateと有効フラグの立ったtempoだけを取得する。
+        let context = data.process_context.cast::<ProcessContext>();
+        if unsafe { (*context).state } & TEMPO_VALID != 0 {
+            let tempo = unsafe { (*context).tempo };
+            // SAFETY: processとsetup/停止はホストが直列化し、UIからDSP状態には触れない。
+            unsafe { (*plugin.synth.get()).set_tempo(tempo) };
+        }
     }
     // 停止中もゼロサンプルのパラメーターフラッシュは受理する。ノートは受け付けない。
     if !plugin.processing.load(Ordering::Relaxed) {

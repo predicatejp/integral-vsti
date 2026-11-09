@@ -8,6 +8,8 @@ mod abi;
 mod distortion;
 #[path = "../src/effects.rs"]
 mod effects;
+#[path = "../src/delay.rs"]
+mod delay;
 #[path = "../src/eq.rs"]
 mod eq;
 #[path = "../src/envelope.rs"]
@@ -81,6 +83,7 @@ const BASE: [f64; parameters::COUNT] = [
     0.0,
     0.0, 0.0, 0.0, // Off / Off / Off.
     1.0, 0.0, 100.0, 1.0, 0.0, 100.0,
+    3.0, 35.0, 25.0, 3.0, 35.0, 25.0, 3.0, 35.0, 25.0, // Delay
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),

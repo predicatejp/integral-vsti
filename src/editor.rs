@@ -30,7 +30,8 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
     "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix", "Enable", "Low F", "Low G",
     "Mid F", "Mid G", "Mid Q", "High F", "High G", "Effect 1", "Effect 2", "Effect 3", "Clipper",
-    "Gain", "Mix", "Clipper", "Gain", "Mix",
+    "Gain", "Mix", "Clipper", "Gain", "Mix", "Beat", "Feedback", "Mix", "Beat", "Feedback", "Mix",
+    "Beat", "Feedback", "Mix",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -41,6 +42,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     4, 3, 4, // Distortion
     4, 4, 4, 4, 4, 4, 4, 4, // eq
     4, 4, 4, 4, 3, 4, 4, 3, 4, // Effects
+    4, 4, 4, 4, 4, 4, 4, 4, 4, // Delay
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -67,7 +69,7 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 401], 0),
         4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
         6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
-        7 | 20 | 33 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
+        7 | 20 | 33 | 52 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
         8 => (&[0, 7, 15, 23, 31], 0),          // Polyphony: 1/8/16/24/32
         // Cutoff: −2〜+8 oct、0 centを強調。
         10 => (
@@ -666,7 +668,11 @@ impl Editor {
             );
         }
         // 有効スロット内でClipperだけOffの場合もノブを半透明にする。
-        if effect.is_some() && selected[choices[1]] == 0.0 && !off {
+        if effect.is_some()
+            && parameters::control_kind(choices[1]) == 31
+            && selected[choices[1]] == 0.0
+            && !off
+        {
             painter.rect_filled(
                 egui::Rect::from_min_max(
                     rect.min + egui::vec2(GAP, body_y),
@@ -806,6 +812,22 @@ impl WindowHandler for Editor {
         ));
         input.max_texture_side = Some(painter.max_texture_side());
         let selected = self.parameters.snapshot();
+        // 種類切替で非表示になったノブの編集を終了し、当たり判定を描画中の要素だけにする。
+        let hidden_drag = self.state.borrow().drag.as_ref().is_some_and(|drag| {
+            parameters::EFFECT_SLOTS.iter().any(|indices| {
+                let delay = parameters::to_plain(indices[0], selected[indices[0]]) == 2.0;
+                let hidden = if delay {
+                    &indices[2..4]
+                } else {
+                    &indices[5..7]
+                };
+                hidden.contains(&drag.index)
+            })
+        });
+        if hidden_drag {
+            self.end_drag();
+        }
+        self.state.borrow_mut().knobs.fill(egui::Rect::NOTHING);
         self.displayed.set(selected);
         let voice_count = self.active_voices.load(Ordering::Relaxed);
         self.displayed_voices.set(voice_count);
@@ -882,6 +904,14 @@ impl WindowHandler for Editor {
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
             let full_height = panel_height + GAP + eq_height;
             let effect_height = (full_height - GAP * 2.0) / 3.0;
+            let effect_controls = parameters::EFFECT_SLOTS.map(|indices| {
+                let [kind, clipper, gain, mix, beat, feedback, delay_mix] = indices;
+                if parameters::to_plain(kind, selected[kind]) == 2.0 {
+                    ([kind, beat], [feedback, delay_mix])
+                } else {
+                    ([kind, clipper], [gain, mix])
+                }
+            });
             let groups = [
                 (
                     "Oscillator",
@@ -912,14 +942,14 @@ impl WindowHandler for Editor {
                 ),
                 (
                     "Eff 1",
-                    &[42, 31],
-                    &[&[32, 33][..]][..],
+                    &effect_controls[0].0,
+                    &[&effect_controls[0].1[..]][..],
                     [effects_x, GAP, side_width, effect_height],
                 ),
                 (
                     "Eff 2",
-                    &[43, 45],
-                    &[&[46, 47][..]][..],
+                    &effect_controls[1].0,
+                    &[&effect_controls[1].1[..]][..],
                     [
                         effects_x,
                         GAP + effect_height + GAP,
@@ -929,8 +959,8 @@ impl WindowHandler for Editor {
                 ),
                 (
                     "Eff 3",
-                    &[44, 48],
-                    &[&[49, 50][..]][..],
+                    &effect_controls[2].0,
+                    &[&effect_controls[2].1[..]][..],
                     [
                         effects_x,
                         GAP + (effect_height + GAP) * 2.0,
