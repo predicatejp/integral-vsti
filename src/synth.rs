@@ -343,9 +343,7 @@ impl Synthesizer {
             }
         }
         if clipper == ClipperType::None {
-            for out in output {
-                *out = self.finish_sample(*out, [0.0; 2], 0.0, 1.0);
-            }
+            self.finish_dry_samples(output);
         } else {
             let distortion = self.state.distortion_parameters;
             for chunk in output.chunks_mut(32) {
@@ -375,29 +373,31 @@ impl Synthesizer {
             self.state.distortion.reset();
         }
         let clipper = self.state.processing;
-        let dry = self.mix_sample();
-        let wet = if clipper == ClipperType::None {
-            [0.0; 2]
-        } else {
-            let mut distortion = self.state.distortion_parameters;
-            distortion.clipper = clipper;
-            self.state.distortion.process_sample(dry, &distortion)
-        };
         let remaining = self.state.transition;
+        self.state.transition = remaining.saturating_sub(1);
+        let dry = self.mix_sample();
+        if clipper == ClipperType::None {
+            return self.finish_sample(dry, [0.0; 2], 0.0, 1.0);
+        }
+        let mut distortion = self.state.distortion_parameters;
+        distortion.clipper = clipper;
+        let wet = self.state.distortion.process_sample(dry, &distortion);
         let gain = match remaining {
             0 => 1.0,
             1..=32 => (32 - remaining) as f64 / 32.0,
             33..=34 => 0.0,
             _ => (remaining - 35) as f64 / 32.0,
         };
-        self.state.transition = remaining.saturating_sub(1);
-        let mix = if clipper == ClipperType::None {
-            0.0
-        } else {
-            self.state.distortion_parameters.mix
-        };
         // DistortionのDryとWetを合成し、全体エフェクトへ渡す。
-        self.finish_sample(dry, wet, mix, gain)
+        self.finish_sample(dry, wet, distortion.mix, gain)
+    }
+
+    /// Offの後処理を分離し、EQ無効の系列では係数と分岐をループ外へ出す。
+    #[inline(never)]
+    fn finish_dry_samples(&mut self, output: &mut [[f64; 2]]) {
+        for out in output {
+            *out = self.finish_sample(*out, [0.0; 2], 0.0, 1.0);
+        }
     }
 
     /// DistortionのDry遅延後に全体エフェクトを処理し、Masterを適用する。

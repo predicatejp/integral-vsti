@@ -153,7 +153,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper typeの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mixの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。
 - GUIからの編集は `beginEdit` / `performEdit` / `endEdit` など規定の通知を使うこと。ホストからの値更新を再通知して循環させず、GUIを開かなくてもDSPへ更新が反映される構成にすること。
 
-- Synthesizerは共有Distortionを1個所有し、全Voiceのフィルタ出力を加算した後・EQの前で左右独立に適用する。Clipper typeの表示はOff（初期値・全体バイパス）/Soft（tanh）/Hard（±1）。Gainは0〜48 dB（初期値0）、GUIは0.1 dB刻み。Mixは原音と処理音の線形混合で0〜100%（初期値100）、GUIは1%刻み。原音側へGainを掛けない。Distortionが左右ごとのADAA履歴を所有する。Gainの線形換算は設定変更時だけ行う。GUIはAmp/Filter列とMaster列の間のエフェクト列に配置し、タイプは選択リスト、Gain・Mixは整数tickのノブとする。
+- 全体エフェクトの挿入位置は全Voiceの合成後・EQ前とする。Synthesizerは共有Distortionを1個所有し、この位置で左右独立に適用する。Clipper typeの表示はOff（初期値・全体バイパス）/Soft（tanh）/Hard（±1）。Gainは0〜48 dB（初期値0）、GUIは0.1 dB刻み。Mixは原音と処理音の線形混合で0〜100%（初期値100）、GUIは1%刻み。原音側へGainを掛けない。Distortionが左右ごとのADAA履歴を所有する。Gainの線形換算は設定変更時だけ行う。GUIはAmp/Filter列とMaster列の間のエフェクト列に配置し、タイプは選択リスト、Gain・Mixは整数tickのノブとする。
 
 - Distortionはホストレートの2階ADAAに固定する。全VoiceのSVF出力を左右別に加算してからGain・Clipper・ADAAを適用する。Dryは同じ合成音を1サンプルの純遅延だけに通し、出力時点のMixでWetと混合する。混合後にEQ、Master Volumeの順に適用する。申告遅延はClipper=Offでも1サンプルとする。Clipper変更はWetの32サンプルのフェードアウト・2サンプルの履歴充填・32サンプルのフェードインとし、Dryとノートの時間を継続する。履歴は初期化時に確保し、処理中に確保しない。GUIにはClipper type・Gain・Mixを配置する。
 
