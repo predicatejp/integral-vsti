@@ -30,8 +30,8 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
     "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix", "Enable", "Low F", "Low G",
     "Mid F", "Mid G", "Mid Q", "High F", "High G", "Effect 1", "Effect 2", "Effect 3", "Clipper",
-    "Gain", "Mix", "Clipper", "Gain", "Mix", "Beat", "Feedback", "Mix", "Beat", "Feedback", "Mix",
-    "Beat", "Feedback", "Mix",
+    "Gain", "Mix", "Clipper", "Gain", "Mix", "Time", "Fdbk", "Mix", "Time", "Fdbk", "Mix", "Time",
+    "Fdbk", "Mix",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -42,7 +42,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     4, 3, 4, // Distortion
     4, 4, 4, 4, 4, 4, 4, 4, // eq
     4, 4, 4, 4, 3, 4, 4, 3, 4, // Effects
-    4, 4, 4, 4, 4, 4, 4, 4, 4, // Delay
+    32, 4, 4, 32, 4, 4, 32, 4, 4, // Delay
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -90,6 +90,7 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         35 | 37 | 40 => (&[0, 100, 200, 300], 100),
         36 | 38 | 41 => (&[0, 60, 120, 180, 240, 300, 360], 180),
         39 => (&[0, 50, 100, 150, 200], 100),
+        51 => (&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 3), // Delay Time: 1/8を基準にする。
         _ => (&[], 0),
     }
 }
@@ -405,7 +406,9 @@ impl Editor {
             MUTED,
         );
         if drag.is_some() {
-            let value_label = if parameters::is_volume(index) && value == f64::NEG_INFINITY {
+            let value_label = if let Some(label) = parameters::choices(index).get(tick as usize) {
+                (*label).to_owned()
+            } else if parameters::is_volume(index) && value == f64::NEG_INFINITY {
                 "−∞ dB".to_owned()
             } else {
                 let number = format!("{value:.3}");
@@ -669,6 +672,7 @@ impl Editor {
         }
         // 有効スロット内でClipperだけOffの場合もノブを半透明にする。
         if effect.is_some()
+            && choices.len() > 1
             && parameters::control_kind(choices[1]) == 31
             && selected[choices[1]] == 0.0
             && !off
@@ -683,7 +687,7 @@ impl Editor {
             );
         }
         // スロットOffでは内部のClipper選択もまとめて半透明にする。
-        if effect.is_some() {
+        if effect.is_some() && choices.len() > 1 {
             ui.scope_builder(egui::UiBuilder::new().max_rect(choice_rect(1)), |ui| {
                 self.choice(ui, choices[1], selected[choices[1]]);
             });
@@ -819,7 +823,7 @@ impl WindowHandler for Editor {
                 let hidden = if delay {
                     &indices[2..4]
                 } else {
-                    &indices[5..7]
+                    &indices[4..7]
                 };
                 hidden.contains(&drag.index)
             })
@@ -904,14 +908,8 @@ impl WindowHandler for Editor {
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
             let full_height = panel_height + GAP + eq_height;
             let effect_height = (full_height - GAP * 2.0) / 3.0;
-            let effect_controls = parameters::EFFECT_SLOTS.map(|indices| {
-                let [kind, clipper, gain, mix, beat, feedback, delay_mix] = indices;
-                if parameters::to_plain(kind, selected[kind]) == 2.0 {
-                    ([kind, beat], [feedback, delay_mix])
-                } else {
-                    ([kind, clipper], [gain, mix])
-                }
-            });
+            let delay_slots = parameters::EFFECT_SLOTS
+                .map(|[kind, ..]| parameters::to_plain(kind, selected[kind]) == 2.0);
             let groups = [
                 (
                     "Oscillator",
@@ -942,14 +940,30 @@ impl WindowHandler for Editor {
                 ),
                 (
                     "Eff 1",
-                    &effect_controls[0].0,
-                    &[&effect_controls[0].1[..]][..],
+                    if delay_slots[0] {
+                        &[42][..]
+                    } else {
+                        &[42, 31][..]
+                    },
+                    &[if delay_slots[0] {
+                        &[51, 52, 53][..]
+                    } else {
+                        &[32, 33][..]
+                    }][..],
                     [effects_x, GAP, side_width, effect_height],
                 ),
                 (
                     "Eff 2",
-                    &effect_controls[1].0,
-                    &[&effect_controls[1].1[..]][..],
+                    if delay_slots[1] {
+                        &[43][..]
+                    } else {
+                        &[43, 45][..]
+                    },
+                    &[if delay_slots[1] {
+                        &[54, 55, 56][..]
+                    } else {
+                        &[46, 47][..]
+                    }][..],
                     [
                         effects_x,
                         GAP + effect_height + GAP,
@@ -959,8 +973,16 @@ impl WindowHandler for Editor {
                 ),
                 (
                     "Eff 3",
-                    &effect_controls[2].0,
-                    &[&effect_controls[2].1[..]][..],
+                    if delay_slots[2] {
+                        &[44][..]
+                    } else {
+                        &[44, 48][..]
+                    },
+                    &[if delay_slots[2] {
+                        &[57, 58, 59][..]
+                    } else {
+                        &[49, 50][..]
+                    }][..],
                     [
                         effects_x,
                         GAP + (effect_height + GAP) * 2.0,
@@ -1183,7 +1205,7 @@ mod tests {
     #[test]
     fn every_knob_tick_is_reachable_in_both_directions() {
         for (index, &pixels) in KNOB_PIXELS_PER_TICK.iter().enumerate().skip(1) {
-            if !parameters::choices(index).is_empty() {
+            if !parameters::choices(index).is_empty() && parameters::control_kind(index) != 51 {
                 continue;
             }
             let max = parameters::max_tick(index);

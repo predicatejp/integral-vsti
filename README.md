@@ -343,7 +343,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v25は484バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Beat/Feedback/Mixを各f64。little endian）です。
+保存形式v25は484バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixを各f64。little endian）です。
 読み込みは現行形式v24のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
@@ -393,7 +393,7 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 | Clipper | `0x43545950` | `0x45463243` | `0x45463343` |
 | Gain | `0x43474149` | `0x45463247` | `0x45463347` |
 | Distortion Mix | `0x434d4958` | `0x4546324d` | `0x4546334d` |
-| Delay Beat | `0x45463142` | `0x45463242` | `0x45463342` |
+| Delay Time | `0x45463142` | `0x45463242` | `0x45463342` |
 | Delay Feedback | `0x45463146` | `0x45463246` | `0x45463346` |
 | Delay Mix | `0x45463144` | `0x45463244` | `0x45463344` |
 
@@ -406,7 +406,7 @@ Delayは左右独立のフィードバックディレイです。操作項目は
 
 | 設定 | 範囲 | 初期値 |
 | --- | --- | --- |
-| Beat | 1/32、1/16、1/8 T、1/8、1/4 T、1/8 D、1/4、1/4 D、1/2、1/1 | 1/8 |
+| Time | 1/32、1/16、1/8 T、1/8、1/4 T、1/8 D、1/4、1/4 D、1/2、1/1 | 1/8 |
 | Feedback | 0〜100%、GUIは1%刻み | 35% |
 | Mix | 0〜100%、GUIは1%刻み | 25% |
 
@@ -415,7 +415,7 @@ Tは三連、Dは付点です。ホストのBPMと音価から遅延時間を求
 初回取得前は120 BPM、情報が欠ける場合は直前の有効値を保持します。
 分数サンプルは線形補間し、テンポ・音価変更は旧・新読出し位置を50msでクロスフェードします。
 切替中の変更は最新値を保持し、現在のフェード完了後に次の切替を始めます。
-Feedback・Mixは変更点間で線形補間し、Beatは変更点で切り替えます。
+Feedback・Mixは変更点間で線形補間し、Timeは変更点で切り替えます。
 Mixは0%で原音、100%で遅延音。Feedback 100%は減衰なしの反復になります。
 
 リングバッファは`setupProcessing`で3スロット分を準備し、音声処理中には確保しません。
@@ -443,7 +443,7 @@ Gain・Mixはホストから届いた変更点間をホストレートで補間�
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3つのスロット、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトルの右に種類の選択欄、その下に↑／↓の交換ボタンとClipperまたはBeatの選択欄、最下段にGain・MixまたはFeedback・Mixを均等配置します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phaseラベルと選択欄を上下に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3つのスロット、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトルの右に種類の選択欄、その下に↑／↓の交換ボタンを置きます。Distortionは同じ段にClipper選択欄、その下にGain・Mixを配置します。DelayはTime・Fdbk・Mixの3ノブを横一列に均等配置し、Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phaseラベルと選択欄を上下に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 タイトルバーの発音数インジケータの上に、同じ幅の出力ピークメータを表示します。Master音量適用後の左右最大サンプルピークを−60〜＋12 dBFSで表示します。0 dBFSまでの部分は明るい緑、0 dBFSを超えた部分は明るい赤とし、0 dBFSの境界線を示します。描画間のピークを保持し、未点灯部分は白に近い色にします。表示は48 dB/秒で減衰します。
 

@@ -450,7 +450,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {767, 70}, {688, 126}, {784, 126},
         {551, 454}, {59, 506}, {145, 506}, {230, 506}, {316, 506}, {402, 506}, {487, 506}, {573, 506},
         {780, 30}, {780, 218}, {780, 406}, {780, 258}, {688, 314}, {784, 314}, {780, 446}, {688, 502}, {784, 502},
-        {767, 70}, {688, 126}, {784, 126}, {767, 258}, {688, 314}, {784, 314}, {767, 446}, {688, 502}, {784, 502}
+        {672, 126}, {736, 126}, {800, 126}, {672, 314}, {736, 314}, {800, 314}, {672, 502}, {736, 502}, {800, 502}
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
@@ -570,13 +570,30 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         for (int index : {43, 44}) { choose(index, 1); choose(index, 0); }
         for (int index : {45, 48}) { choose(index, 2); choose(index, 0); choose(index, 1); }
         choose(42, 2);
-        for (int item : {0, 9, 3}) {
-            choose(51, item);
-            assert(handler.editedId == 0x45463142 && handler.value == item / 9.0);
+        // Timeは整数ノブ。音価を全10段階、上下両方向へ操作する。
+        assert(controller->setParamNormalized(0x45463142, 0.0) == kResultOk);
+        const int timeX = uiPixel(672), timeY = uiPixel(170);
+        parent.movePointer(timeX, timeY); pump(); parent.knobButton(true);
+        waitFor([&] { return handler.sequence == (std::vector<int>{0}); }, "time knob begin");
+        size_t edits = 1;
+        for (int direction : {-1, 1}) for (int tick = 1; tick <= 9; ++tick) {
+            const auto previous = handler.value;
+            parent.movePointer(timeX, timeY + direction * 31); pump();
+            assert(handler.sequence.size() == edits && handler.value == previous);
+            parent.movePointer(timeX, timeY + direction);
+            ++edits;
+            waitFor([&] { return handler.sequence.size() == edits; }, "time knob step");
+            const int expected = direction < 0 ? tick : 9 - tick;
+            assert(handler.editedId == 0x45463142 && handler.value == expected / 9.0);
+            if (direction < 0 && tick == 3) parent.screenshot("target/gui-delay-time.ppm");
         }
+        parent.knobButton(false);
+        waitFor([&] { return handler.sequence.size() == edits + 1 && parent.cursorVisible(); }, "time knob end");
+        handler.sequence.clear();
+        assert(controller->setParamNormalized(0x45463142, 3.0 / 9) == kResultOk); pump();
         parent.screenshot("target/gui-delay.ppm");
-        // ホストが種類を切り替えた場合、非表示になるFeedbackのドラッグを終了する。
-        parent.movePointer(uiPixel(688), uiPixel(170)); pump(); parent.knobButton(true);
+        // ホストが種類を切り替えた場合、非表示になるTimeのドラッグを終了する。
+        parent.movePointer(timeX, timeY); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence == (std::vector<int>{0}); }, "delay drag begin");
         assert(controller->setParamNormalized(0x45463154, .5) == kResultOk);
         waitFor([&] { return handler.sequence == (std::vector<int>{0, 2}); }, "hidden delay drag end");
@@ -633,7 +650,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         // Offのグループを含む全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());
         for (int i = 1; i < 60; ++i) {
-            if (i == 9 || i == 12 || i == 23 || i == 26 || i == 31 || i == 34 || (i >= 42 && i <= 45) || i == 48 || i == 51 || i == 54 || i == 57) continue;
+            if (i == 9 || i == 12 || i == 23 || i == 26 || i == 31 || i == 34 || (i >= 42 && i <= 45) || i == 48) continue;
             if (i >= 51 || i == 32 || i == 33 || i == 46 || i == 47 || i == 49 || i == 50) {
                 const int slot = i >= 51 ? (i - 51) / 3 : (i < 45 ? 0 : (i - 45) / 3 + 1);
                 ParameterInfo kind; assert(controller->getParameterInfo(42 + slot, kind) == kResultOk);
@@ -669,7 +686,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
 #endif
-            const int pixelsPerTick = i == 6 ? 32 : i == 8 ? 8 :
+            const int pixelsPerTick = (i == 6 || i == 51 || i == 54 || i == 57) ? 32 : i == 8 ? 8 :
                 (i == 10 || i == 11 || i == 13 || i == 19 || i == 22 || i == 25 || i == 28) ? 2 :
                 (i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 ||
                  i == 18 || i == 24 || i == 27 || i == 32 || i == 46 || i == 49) ? 3 : 4;

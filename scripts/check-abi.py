@@ -48,7 +48,7 @@ if options.gui:
 
     for source_name, name in [("gui-panel", "gui-panel"), ("gui-choices", "gui-choices"),
                               ("gui-smoke", "gui-overlay"), ("gui-voices", "gui-voices"),
-                              ("gui-delay", "gui-delay")]:
+                              ("gui-delay", "gui-delay"), ("gui-delay-time", "gui-delay-time")]:
         with (ROOT / "target" / f"{source_name}.ppm").open("rb") as image:
             assert image.readline() == b"P6\n"
             width, height = map(int, image.readline().split())
