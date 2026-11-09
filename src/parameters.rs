@@ -11,7 +11,27 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 42;
+pub const COUNT: usize = 51;
+/// 各スロットの種類・Clipper・Gain・Mix。IDはスロット位置に固定する。
+pub const EFFECT_SLOTS: [[usize; 4]; 3] = [[42, 31, 32, 33], [43, 45, 46, 47], [44, 48, 49, 50]];
+
+/// 同じ種類の設定は全スロットで同じ単位・量子化を用いる。
+pub fn control_kind(index: usize) -> usize {
+    match index {
+        45 | 48 => 31,
+        46 | 49 => 32,
+        47 | 50 => 33,
+        42..=44 => 34,
+        _ => index,
+    }
+}
+
+/// 隣接スロットの種類と全設定を交換する。ホストのIDは移動しない。
+pub fn swap_effects(values: &mut [f64; COUNT], first: usize) {
+    for (a, b) in EFFECT_SLOTS[first].into_iter().zip(EFFECT_SLOTS[first + 1]) {
+        values.swap(a, b);
+    }
+}
 /// Osc1・Osc2・Osc3のVolume設定位置。
 pub const OSCILLATOR_VOLUMES: [usize; 3] = [22, 25, 28];
 
@@ -124,6 +144,15 @@ pub const IDS: [u32; COUNT] = [
     0x4551_0005,
     0x4551_0006,
     0x4551_0007,
+    0x4546_3154, // EF1T
+    0x4546_3254, // EF2T
+    0x4546_3354, // EF3T
+    0x4546_3243, // EF2C
+    0x4546_3247, // EF2G
+    0x4546_324d, // EF2M
+    0x4546_3343, // EF3C
+    0x4546_3347, // EF3G
+    0x4546_334d, // EF3M
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -157,9 +186,9 @@ pub const NAMES: [&str; COUNT] = [
     "Osc3 Volume",
     "Osc2 Mod",
     "Osc3 Mod",
-    "Clipper type",
-    "Gain",
-    "Mix",
+    "Effect 1 Clipper",
+    "Effect 1 Gain",
+    "Effect 1 Mix",
     "EQ Enable",
     "EQ Low Frequency",
     "EQ Low Gain",
@@ -168,10 +197,22 @@ pub const NAMES: [&str; COUNT] = [
     "EQ Mid Q",
     "EQ High Frequency",
     "EQ High Gain",
+    "Effect 1",
+    "Effect 2",
+    "Effect 3",
+    "Effect 2 Clipper",
+    "Effect 2 Gain",
+    "Effect 2 Mix",
+    "Effect 3 Clipper",
+    "Effect 3 Gain",
+    "Effect 3 Mix",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
-    match index {
+    if (42..=44).contains(&index) {
+        return &["Off", "Distortion"];
+    }
+    match control_kind(index) {
         0 | 23 | 26 => &WAVEFORM_NAMES,
         9 => &FILTER_NAMES,
         12 => &PHASE_NAMES,
@@ -183,11 +224,13 @@ pub fn choices(index: usize) -> &'static [&'static str] {
 
 /// ノブの整数tick上限。選択リストはchoicesの列挙番号を使う。
 pub fn max_tick(index: usize) -> u32 {
+    let index = control_kind(index);
     if is_time(index) {
         TIME_TICKS
     } else {
         match index {
             34 => 1,
+            31 => 2,
             35 | 37 | 40 => 300,
             36 | 38 | 41 => 360,
             39 => 200,
@@ -211,6 +254,7 @@ pub fn to_tick(index: usize, value: f64) -> u32 {
 
 /// GUIとホストへ公開する実単位。
 pub fn unit(index: usize) -> &'static str {
+    let index = control_kind(index);
     if is_time(index) {
         "ms"
     } else {
@@ -237,11 +281,12 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 42..=45 | 48 | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
 pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
+    let index = control_kind(index);
     if index >= 34 {
         return to_plain(index, f64::from(tick) / f64::from(max_tick(index)));
     }
@@ -272,6 +317,7 @@ pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
     }
 }
 pub fn to_plain(index: usize, normalized: f64) -> f64 {
+    let index = control_kind(index);
     if is_volume(index) {
         return if normalized == 0.0 {
             f64::NEG_INFINITY
@@ -313,6 +359,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     }
 }
 pub fn to_normalized(index: usize, plain: f64) -> f64 {
+    let index = control_kind(index);
     if is_volume(index) {
         return if plain == f64::NEG_INFINITY {
             0.0
@@ -353,6 +400,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     }) / f64::from(TIME_TICKS)
 }
 pub fn valid_plain(index: usize, plain: f64) -> bool {
+    let index = control_kind(index);
     if is_volume(index) {
         return plain == f64::NEG_INFINITY || (-60.0..=12.0).contains(&plain);
     }
@@ -383,7 +431,7 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
     } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(index, 6 | 8 | 9 | 12 | 31 | 34) {
+    } else if matches!(control_kind(index), 6 | 8 | 9 | 12 | 31 | 34) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -427,7 +475,7 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         f64::NEG_INFINITY, // Osc3
         0.0,               // Osc2 Mod
         0.0,               // Osc3 Mod
-        0.0,               // Clipper: None
+        1.0,               // Clipper: Soft（スロット自体はOff）
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
         0.0,
@@ -438,6 +486,15 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         1.0,
         4000.0,
         0.0,
+        0.0,
+        0.0,
+        0.0, // 3スロットともOff
+        1.0,
+        0.0,
+        100.0, // Effect 2: Soft / 0 dB / 100%
+        1.0,
+        0.0,
+        100.0, // Effect 3
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -450,11 +507,12 @@ pub fn eq(values: &[f64; COUNT]) -> crate::eq::EqParameters {
     }
 }
 
-pub fn distortion(values: &[f64; COUNT]) -> DistortionParameters {
+pub fn distortion(values: &[f64; COUNT], slot: usize) -> DistortionParameters {
+    let [_, clipper, gain, mix] = EFFECT_SLOTS[slot];
     DistortionParameters {
-        clipper: CLIPPER_TYPES[to_plain(31, values[31]) as usize],
-        gain: 10.0_f64.powf(to_plain(32, values[32]) / 20.0),
-        mix: values[33],
+        clipper: CLIPPER_TYPES[to_plain(clipper, values[clipper]) as usize],
+        gain: 10.0_f64.powf(to_plain(gain, values[gain]) / 20.0),
+        mix: values[mix],
     }
 }
 
@@ -659,9 +717,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v23: 固定340バイト。波形番号u32と、その他の実単位f64を保持する。
+// v24: 固定412バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x17\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x18\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {

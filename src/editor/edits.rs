@@ -6,6 +6,8 @@ use std::{collections::VecDeque, sync::Mutex};
 pub(crate) enum Edit {
     /// 選択リストの単発編集。
     Set(usize, f64),
+    /// 指定位置とその次のスロットを、1件の操作として交換する。
+    SwapEffects(usize),
     /// ノブのドラッグ開始。
     Begin(usize),
     /// ドラッグ中の正規化値。

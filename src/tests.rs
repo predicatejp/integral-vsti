@@ -110,7 +110,10 @@ fn interfaces_share_identity_and_own_the_instance() {
         assert_eq!((component_table.unknown.release)(component), 1);
         // ファクトリーとComponentの参照を解放してもProcessorの所有参照は有効。
         assert_eq!((factory_table.unknown.release)(factory), 0);
-        assert_eq!((processor_table.get_latency_samples)(processor), 1);
+        assert_eq!(
+            (processor_table.get_latency_samples)(processor),
+            crate::effects::LATENCY as u32
+        );
         assert_eq!((processor_table.unknown.release)(processor), 0);
     }
 }
@@ -373,7 +376,7 @@ fn check_host_events(activate_events: bool) {
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
         let release_start = 0.5 * (2.0 * step - step * step);
-        assert!((*sample_ptr - 0.5 * step * std::f64::consts::SQRT_2 * sine(1.0)).abs() < 1e-14);
+        assert_eq!(*sample_ptr, 0.0);
         (*events_ptr).event.event_type = 0;
         (*events_ptr).event.payload = EventPayload {
             note_on: NoteOnEvent {
@@ -387,16 +390,20 @@ fn check_host_events(activate_events: bool) {
         };
         assert_eq!((pt.process)(processor, &mut data), OK);
         let restart = release_start * (1.0 - 1000.0 / setup.sample_rate / 100.0);
-        assert!((*sample_ptr - release_start * std::f64::consts::SQRT_2 * sine(3.0)).abs() < 1e-14);
+        assert_eq!(*sample_ptr, 0.0);
         data.input_events = ptr::null_mut();
         data.input_parameter_changes = ptr::null_mut();
-        // 1サンプル前の再トリガー開始値を確認し、その後も位相を進める。
+        // 3サンプル遅延後のreleaseと再トリガー開始値を確認する。
         for n in 0..69 {
             assert_eq!((pt.process)(processor, &mut data), OK);
-            if n == 0 {
-                assert!(
-                    (*sample_ptr - restart * std::f64::consts::SQRT_2 * sine(5.0)).abs() < 1e-14
-                );
+            let expected = match n {
+                0 => Some(0.5 * step * sine(1.0)),
+                1 => Some(release_start * sine(3.0)),
+                2 => Some(restart * sine(5.0)),
+                _ => None,
+            };
+            if let Some(expected) = expected {
+                assert!((*sample_ptr - expected * std::f64::consts::SQRT_2).abs() < 1e-14);
             }
             assert!(sample_ptr.read().is_finite());
         }
@@ -424,7 +431,7 @@ fn check_host_events(activate_events: bool) {
         assert_eq!((pt.set_processing)(processor, 1), OK);
         assert_eq!((pt.process)(processor, &mut data), OK);
         let peak = 0.5 * step * std::f64::consts::SQRT_2;
-        let expected_sine = [0.0, 0.0, peak * sine(76.0), 2.0 * peak * sine(77.0)];
+        let expected_sine = [0.0; 4];
         for (actual, expected) in sample_ptr
             .cast::<[f64; 4]>()
             .read()
@@ -433,7 +440,7 @@ fn check_host_events(activate_events: bool) {
         {
             assert!((actual - expected).abs() < 1e-14);
         }
-        assert_eq!((*data.outputs).silence_flags, 0);
+        assert_eq!((*data.outputs).silence_flags, STEREO);
         // 借用キュー経由で矩形波へ変更し、Miriでも入れ子の生ポインターを検査する。
         let mut point = TestPoint {
             vtable: &POINT_TABLE,
@@ -457,7 +464,12 @@ fn check_host_events(activate_events: bool) {
                 * 0.5
                 * step
         };
-        let expected = [3.0 * peak * sine(78.0), square(4), square(5), square(6)];
+        let expected = [
+            peak * sine(76.0),
+            2.0 * peak * sine(77.0),
+            3.0 * peak * sine(78.0),
+            square(4),
+        ];
         for (actual, expected) in sample_ptr
             .cast::<[f64; 4]>()
             .read()
@@ -468,7 +480,7 @@ fn check_host_events(activate_events: bool) {
         }
         data.num_samples = 1;
         data.input_parameter_changes = ptr::null_mut();
-        for n in 7..76 {
+        for n in 5..74 {
             assert_eq!((pt.process)(processor, &mut data), OK);
             assert!((sample_ptr.read() - square(n)).abs() < 1e-7);
         }

@@ -737,7 +737,7 @@ unsafe extern "system" fn can_process_sample_size(_: This, size: i32) -> TResult
 }
 
 unsafe extern "system" fn latency_samples(_: This) -> u32 {
-    crate::distortion::LATENCY as u32
+    crate::effects::LATENCY as u32
 }
 
 unsafe extern "system" fn zero(_: This) -> u32 {

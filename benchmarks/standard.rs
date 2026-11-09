@@ -6,6 +6,8 @@
 mod abi;
 #[path = "../src/distortion.rs"]
 mod distortion;
+#[path = "../src/effects.rs"]
+mod effects;
 #[path = "../src/eq.rs"]
 mod eq;
 #[path = "../src/envelope.rs"]
@@ -77,6 +79,8 @@ const BASE: [f64; parameters::COUNT] = [
     1.0,
     4000.0,
     0.0,
+    0.0, 0.0, 0.0, // Off / Off / Off.
+    1.0, 0.0, 100.0, 1.0, 0.0, 100.0,
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),
@@ -309,6 +313,7 @@ fn scenario(case: &Case, rate: usize, block: usize, length: usize) -> Scenario {
     if let Some(a) = case.automation {
         plain[a.index] = a.low;
     }
+    plain[42] = f64::from(plain[31] != 0.0); // Distortionのケースだけ先頭スロットを使う。
     assert!(
         plain
             .iter()
