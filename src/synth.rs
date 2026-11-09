@@ -326,21 +326,31 @@ impl Synthesizer {
         }
         self.state.started = true;
         let clipper = self.state.processing;
-        output.fill([0.0; 2]);
-        for chunk in output.chunks_mut(32) {
-            let mut voice_output = [[0.0; 2]; 32];
-            for voice in &mut self.state.voices[..self.state.used_voices] {
-                voice.generate_samples(
-                    self.state.sample_rate,
-                    &self.state.panning_gains,
-                    &self.state.mono_gains,
-                    &mut voice_output[..chunk.len()],
-                );
-                for (out, value) in chunk.iter_mut().zip(&voice_output) {
-                    out[0] += value[0];
-                    out[1] += value[1];
+        if let Some((first, rest)) = self.state.voices[..self.state.used_voices].split_first_mut() {
+            // 先頭Voiceは直接出力し、ゼロ埋め・最初の加算・小区間ごとの再準備を省く。
+            first.generate_samples(
+                self.state.sample_rate,
+                &self.state.panning_gains,
+                &self.state.mono_gains,
+                output,
+            );
+            for voice in rest {
+                let mut voice_output = [[0.0; 2]; 32];
+                for chunk in output.chunks_mut(32) {
+                    voice.generate_samples(
+                        self.state.sample_rate,
+                        &self.state.panning_gains,
+                        &self.state.mono_gains,
+                        &mut voice_output[..chunk.len()],
+                    );
+                    for (out, value) in chunk.iter_mut().zip(&voice_output) {
+                        out[0] += value[0];
+                        out[1] += value[1];
+                    }
                 }
             }
+        } else {
+            output.fill([0.0; 2]);
         }
         if clipper == ClipperType::None {
             self.finish_dry_samples(output);
