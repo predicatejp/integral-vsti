@@ -391,8 +391,9 @@ mod tests {
         let mut blocks = scalar.clone();
         for step in 0..30 {
             let previous = p;
-            let [kind, _, _, _, beat, feedback, mix] = EFFECT_SLOTS[step % 3];
+            let [kind, _, _, _, beat, feedback, mix, stereo] = EFFECT_SLOTS[step % 3];
             p[kind] = ((step / 3) % 3) as f64 / 2.0;
+            p[stereo] = (step % 4) as f64 / 3.0;
             p[beat] = (step % 14) as f64 / 13.0;
             p[feedback] = (step % 6) as f64 / 5.0;
             p[mix] = (step % 5) as f64 / 4.0;

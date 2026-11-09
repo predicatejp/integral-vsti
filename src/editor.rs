@@ -31,7 +31,7 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix", "Enable", "Low F", "Low G",
     "Mid F", "Mid G", "Mid Q", "High F", "High G", "Effect 1", "Effect 2", "Effect 3", "Clipper",
     "Gain", "Mix", "Clipper", "Gain", "Mix", "Time", "Fdbk", "Mix", "Time", "Fdbk", "Mix", "Time",
-    "Fdbk", "Mix",
+    "Fdbk", "Mix", "Stereo", "Stereo", "Stereo",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -43,6 +43,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     4, 4, 4, 4, 4, 4, 4, 4, // eq
     4, 4, 4, 4, 3, 4, 4, 3, 4, // Effects
     32, 4, 4, 32, 4, 4, 32, 4, 4, // Delay
+    4, 4, 4, // Stereo
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -941,7 +942,7 @@ impl WindowHandler for Editor {
                 (
                     "Eff 1",
                     if delay_slots[0] {
-                        &[42][..]
+                        &[42, 60][..]
                     } else {
                         &[42, 31][..]
                     },
@@ -955,7 +956,7 @@ impl WindowHandler for Editor {
                 (
                     "Eff 2",
                     if delay_slots[1] {
-                        &[43][..]
+                        &[43, 61][..]
                     } else {
                         &[43, 45][..]
                     },
@@ -974,7 +975,7 @@ impl WindowHandler for Editor {
                 (
                     "Eff 3",
                     if delay_slots[2] {
-                        &[44][..]
+                        &[44, 62][..]
                     } else {
                         &[44, 48][..]
                     },

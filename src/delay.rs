@@ -20,6 +20,14 @@ pub const DIVISIONS: [f64; 14] = [
     4.0,
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StereoMode {
+    Stereo,
+    Cross,
+    PingPongLeft,
+    PingPongRight,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DelayParameters {
     /// 四分音符を1とするDIVISIONSの選択番号。
@@ -28,6 +36,8 @@ pub struct DelayParameters {
     pub feedback: f64,
     /// Wet混合率。0〜1。
     pub mix: f64,
+    /// Wet入力の配置と帰還先。Dryの左右配置は変えない。
+    pub stereo: StereoMode,
 }
 
 #[derive(Clone)]
@@ -42,7 +52,7 @@ pub struct DelayState {
     sample_rate: f64,
     /// 最後に受信した有効BPM。取得前の既定は120。
     tempo: f64,
-    /// 音価・帰還倍率・Wet混合率。
+    /// 音価・帰還倍率・Wet混合率・ステレオ方式。
     parameters: DelayParameters,
     /// クロスフェード元・先と、後続変更の最新目標（サンプル単位）。
     from: f64,
@@ -177,8 +187,14 @@ impl Delay {
             }
         }
         let p = self.state.parameters;
+        let (source, returned) = match p.stereo {
+            StereoMode::Stereo => (input, wet),
+            StereoMode::Cross => (input, [wet[1], wet[0]]),
+            StereoMode::PingPongLeft => ([(input[0] + input[1]) * 0.5, 0.0], [wet[1], wet[0]]),
+            StereoMode::PingPongRight => ([0.0, (input[0] + input[1]) * 0.5], [wet[1], wet[0]]),
+        };
         self.state.buffer[self.state.write] =
-            std::array::from_fn(|ch| input[ch] + p.feedback * wet[ch]);
+            std::array::from_fn(|ch| source[ch] + p.feedback * returned[ch]);
         self.state.write = (self.state.write + 1) & (self.state.buffer.len() - 1);
         self.state.valid = (self.state.valid + 1).min(self.state.buffer.len() - 1);
         std::array::from_fn(|ch| input[ch] + p.mix * (wet[ch] - input[ch]))
@@ -193,6 +209,7 @@ mod tests {
             division,
             feedback,
             mix,
+            stereo: StereoMode::Stereo,
         });
         assert!(delay.prepare(rate));
         delay.set_tempo(tempo);
@@ -251,6 +268,71 @@ mod tests {
         });
         for _ in 0..6000 {
             assert_eq!(delay.process_sample([0.0; 2]), [0.0; 2]);
+        }
+    }
+
+    #[test]
+    fn stereo_routes_echoes_and_keeps_dry_stereo() {
+        for mode in [
+            StereoMode::Stereo,
+            StereoMode::Cross,
+            StereoMode::PingPongLeft,
+            StereoMode::PingPongRight,
+        ] {
+            for feedback in [0.0_f64, 0.5, 1.0] {
+                for mix in [0.0, 0.25, 1.0] {
+                    let mut delay = make(48000.0, 0, feedback, mix, 120.0);
+                    delay.set_parameters(DelayParameters {
+                        stereo: mode,
+                        ..delay.state.parameters
+                    });
+                    for n in 0..=18000 {
+                        let input = if n == 0 { [0.75, -0.25] } else { [0.0; 2] };
+                        let mut wet = [0.0; 2];
+                        if n > 0 && n % 3000 == 0 {
+                            let repeat = n / 3000;
+                            wet = match mode {
+                                StereoMode::Stereo => [0.75, -0.25],
+                                StereoMode::Cross if repeat % 2 == 0 => [-0.25, 0.75],
+                                StereoMode::Cross => [0.75, -0.25],
+                                StereoMode::PingPongLeft if repeat % 2 == 1 => [0.25, 0.0],
+                                StereoMode::PingPongRight if repeat % 2 == 0 => [0.25, 0.0],
+                                _ => [0.0, 0.25],
+                            }
+                            .map(|x| x * feedback.powi(repeat - 1));
+                        }
+                        let expected =
+                            std::array::from_fn(|ch| input[ch] * (1.0 - mix) + wet[ch] * mix);
+                        assert_eq!(
+                            delay.process_sample(input),
+                            expected,
+                            "{mode:?}, {feedback}, {mix}, {n}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stereo_change_preserves_pending_echo_and_changes_feedback_route() {
+        let mut delay = make(48000.0, 0, 1.0, 1.0, 120.0);
+        for n in 0..=9000 {
+            if n == 1500 {
+                delay.set_parameters(DelayParameters {
+                    stereo: StereoMode::PingPongRight,
+                    ..delay.state.parameters
+                });
+            }
+            let expected = match n {
+                3000 | 9000 => [0.75, -0.25],
+                6000 => [-0.25, 0.75],
+                _ => [0.0; 2],
+            };
+            assert_eq!(
+                delay.process_sample(if n == 0 { [0.75, -0.25] } else { [0.0; 2] }),
+                expected
+            );
         }
     }
 

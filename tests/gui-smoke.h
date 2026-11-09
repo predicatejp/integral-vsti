@@ -441,7 +441,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
-    std::array<std::pair<int, int>, 60> controls {{
+    std::array<std::pair<int, int>, 63> controls {{
         {212, 66}, {328, 93}, {392, 93}, {456, 93}, {520, 93}, {584, 93},
         {48, 118}, {112, 118}, {920, 471}, {564, 192}, {349, 256}, {456, 256},
         {920, 137}, {920, 224}, {328, 355}, {392, 355}, {456, 355}, {520, 355},
@@ -450,7 +450,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {767, 70}, {688, 126}, {784, 126},
         {551, 454}, {59, 506}, {145, 506}, {230, 506}, {316, 506}, {402, 506}, {487, 506}, {573, 506},
         {780, 30}, {780, 218}, {780, 406}, {780, 258}, {688, 314}, {784, 314}, {780, 446}, {688, 502}, {784, 502},
-        {672, 126}, {736, 126}, {800, 126}, {672, 314}, {736, 314}, {800, 314}, {672, 502}, {736, 502}, {800, 502}
+        {672, 126}, {736, 126}, {800, 126}, {672, 314}, {736, 314}, {800, 314}, {672, 502}, {736, 502}, {800, 502}, {767, 70}, {780, 258}, {780, 446}
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
@@ -458,7 +458,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         const auto [x, y] = controls[index];
         parent.click(uiPixel(x), uiPixel(y)); pump(); assert(handler.sequence.empty());
         parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
-        parent.click(uiPixel(x), uiPixel(y + 34 + item * 30));
+        // 最下段の4択は画面内へ収まるよう上側に開く。
+        const int firstItemY = index == 62 ? y - 124 : y + 34;
+        parent.click(uiPixel(x), uiPixel(firstItemY + item * 30));
         waitFor([&] { return handler.sequence.size() >= 3; }, "dropdown choice");
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
         handler.sequence.clear(); pump();
@@ -569,7 +571,16 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         for (int index : {43, 44}) { choose(index, 1); choose(index, 0); }
         for (int index : {45, 48}) { choose(index, 2); choose(index, 0); choose(index, 1); }
-        choose(42, 2);
+        for (int slot = 0; slot < 3; ++slot) {
+            choose(42 + slot, 2);
+            ParameterInfo info; assert(controller->getParameterInfo(60 + slot, info) == kResultOk);
+            assert(info.stepCount == 3);
+            assert(controller->setParamNormalized(info.id, 0) == kResultOk); pump();
+            for (int item : {1, 2, 3, 0}) {
+                choose(60 + slot, item);
+                assert(handler.editedId == info.id && handler.value == item / 3.0);
+            }
+        }
         // Timeは整数ノブ。音価を全14段階、上下両方向へ操作する。
         assert(controller->setParamNormalized(0x45463142, 0.0) == kResultOk);
         const int timeX = uiPixel(672), timeY = uiPixel(170);
@@ -601,17 +612,17 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         waitFor([&] { return parent.cursorVisible(); }, "hidden delay cursor restored");
         handler.sequence.clear(); pump();
         // 交換ボタンは種類と内部設定をまとめて隣へ移動し、標準の編集通知を送る。
-        const std::array<int, 14> swappedIndices {42, 31, 32, 33, 51, 52, 53, 43, 45, 46, 47, 54, 55, 56};
-        const std::array<double, 14> beforeSwap {.5, 1, .25, .75, 0, .2, .3, 1, .5, .5, .25, 1, .4, .6};
+        const std::array<int, 16> swappedIndices {42, 31, 32, 33, 51, 52, 53, 60, 43, 45, 46, 47, 54, 55, 56, 61};
+        const std::array<double, 16> beforeSwap {.5, 1, .25, .75, 0, .2, .3, 0, 1, .5, .5, .25, 1, .4, .6, 1};
         for (size_t i = 0; i < swappedIndices.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
             assert(controller->setParamNormalized(info.id, beforeSwap[i]) == kResultOk);
         }
         pump(); parent.click(uiPixel(686), uiPixel(114));
-        waitFor([&] { return handler.sequence.size() == 42; }, "adjacent effect swap");
+        waitFor([&] { return handler.sequence.size() == 48; }, "adjacent effect swap");
         for (size_t i = 0; i < swappedIndices.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
-            assert(controller->getParamNormalized(info.id) == beforeSwap[(i + 7) % 14]);
+            assert(controller->getParamNormalized(info.id) == beforeSwap[(i + 8) % 16]);
             assert(handler.sequence[i*3] == 0 && handler.sequence[i*3+1] == 1 && handler.sequence[i*3+2] == 2);
         }
         handler.sequence.clear(); pump();
