@@ -23,8 +23,9 @@ pub const EFFECT_TYPES: [crate::effects::EffectType; 3] = [
     crate::effects::EffectType::Distortion,
     crate::effects::EffectType::Delay,
 ];
-pub const DELAY_BEATS: [&str; 10] = [
-    "1/32", "1/16", "1/8 T", "1/8", "1/4 T", "1/8 D", "1/4", "1/4 D", "1/2", "1/1",
+pub const DELAY_BEATS: [&str; 14] = [
+    "1/32", "1/16 T", "1/16", "1/8 T", "1/16 D", "1/8", "1/4 T", "1/8 D", "1/4", "1/2 T", "1/4 D",
+    "1/2", "1/2 D", "1/1",
 ];
 
 /// 同じ種類の設定は全スロットで同じ単位・量子化を用いる。
@@ -265,7 +266,7 @@ pub fn max_tick(index: usize) -> u32 {
         match index {
             34 => 1,
             31 => 2,
-            51 => 9,
+            51 => 13,
             52 => 100,
             35 | 37 | 40 => 300,
             36 | 38 | 41 => 360,
@@ -366,7 +367,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     }
     match index {
         34 => return (normalized * 2.0).floor().min(1.0),
-        51 => return (normalized * 10.0).floor().min(9.0),
+        51 => return (normalized * 14.0).floor().min(13.0),
         52 => return normalized * 100.0,
         35 | 37 | 40 => return 20.0 * 1000_f64.powf(normalized),
         36 | 38 | 41 => return normalized * 36.0 - 18.0,
@@ -410,7 +411,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     }
     match index {
         34 => return plain.clamp(0.0, 1.0).round(),
-        51 => return plain.clamp(0.0, 9.0).round() / 9.0,
+        51 => return plain.clamp(0.0, 13.0).round() / 13.0,
         52 => return plain / 100.0,
         35 | 37 | 40 => return (plain / 20.0).log(1000.0),
         36 | 38 | 41 => return (plain + 18.0) / 36.0,
@@ -447,7 +448,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
     match index {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         34 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
-        51 => (0.0..=9.0).contains(&plain) && plain.fract() == 0.0,
+        51 => (0.0..=13.0).contains(&plain) && plain.fract() == 0.0,
         52 => (0.0..=100.0).contains(&plain),
         35 | 37 | 40 => (20.0..=20000.0).contains(&plain),
         36 | 38 | 41 => (-18.0..=18.0).contains(&plain),
@@ -537,13 +538,13 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         1.0,
         0.0,
         100.0, // Effect 3
-        3.0,
+        5.0,
         35.0,
         25.0,
-        3.0,
+        5.0,
         35.0,
         25.0,
-        3.0,
+        5.0,
         35.0,
         25.0, // Delay: 1/8, 35%, 25%
     ];
@@ -777,9 +778,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v25: 固定484バイト。波形番号u32と、その他の実単位f64を保持する。
+// v26: 固定484バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x19\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x1a\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -997,6 +998,28 @@ mod tests {
                     assert_eq!(max_tick(index), max);
                     assert_eq!(to_tick(index, normalized), tick);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn delay_triplet_and_dotted_names_match_their_durations() {
+        for (name, samples_at_120_bpm) in [
+            ("1/16 T", 4000.0),
+            ("1/16 D", 9000.0),
+            ("1/2 T", 32000.0),
+            ("1/2 D", 72000.0),
+        ] {
+            let index = DELAY_BEATS.iter().position(|&label| label == name).unwrap();
+            for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
+                let mut values = defaults();
+                let time = indices[4];
+                values[time] = to_normalized(time, index as f64);
+                let p = delay(&values, slot);
+                assert_eq!(
+                    crate::delay::DIVISIONS[p.division] * 24000.0,
+                    samples_at_120_bpm
+                );
             }
         }
     }

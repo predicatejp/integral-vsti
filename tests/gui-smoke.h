@@ -570,27 +570,27 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         for (int index : {43, 44}) { choose(index, 1); choose(index, 0); }
         for (int index : {45, 48}) { choose(index, 2); choose(index, 0); choose(index, 1); }
         choose(42, 2);
-        // Timeは整数ノブ。音価を全10段階、上下両方向へ操作する。
+        // Timeは整数ノブ。音価を全14段階、上下両方向へ操作する。
         assert(controller->setParamNormalized(0x45463142, 0.0) == kResultOk);
         const int timeX = uiPixel(672), timeY = uiPixel(170);
         parent.movePointer(timeX, timeY); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence == (std::vector<int>{0}); }, "time knob begin");
         size_t edits = 1;
-        for (int direction : {-1, 1}) for (int tick = 1; tick <= 9; ++tick) {
+        for (int direction : {-1, 1}) for (int tick = 1; tick <= 13; ++tick) {
             const auto previous = handler.value;
             parent.movePointer(timeX, timeY + direction * 31); pump();
             assert(handler.sequence.size() == edits && handler.value == previous);
             parent.movePointer(timeX, timeY + direction);
             ++edits;
             waitFor([&] { return handler.sequence.size() == edits; }, "time knob step");
-            const int expected = direction < 0 ? tick : 9 - tick;
-            assert(handler.editedId == 0x45463142 && handler.value == expected / 9.0);
-            if (direction < 0 && tick == 3) parent.screenshot("target/gui-delay-time.ppm");
+            const int expected = direction < 0 ? tick : 13 - tick;
+            assert(handler.editedId == 0x45463142 && handler.value == expected / 13.0);
+            if (direction < 0 && tick == 5) { pump(); parent.screenshot("target/gui-delay-time.ppm"); }
         }
         parent.knobButton(false);
         waitFor([&] { return handler.sequence.size() == edits + 1 && parent.cursorVisible(); }, "time knob end");
         handler.sequence.clear();
-        assert(controller->setParamNormalized(0x45463142, 3.0 / 9) == kResultOk); pump();
+        assert(controller->setParamNormalized(0x45463142, 5.0 / 13) == kResultOk); pump();
         parent.screenshot("target/gui-delay.ppm");
         // ホストが種類を切り替えた場合、非表示になるTimeのドラッグを終了する。
         parent.movePointer(timeX, timeY); pump(); parent.knobButton(true);

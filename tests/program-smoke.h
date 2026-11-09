@@ -72,7 +72,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(controller->setParamNormalized(programId, std::nan("")) == kInvalidArgument);
     assert(controller->setParamNormalized(programId, -1) == kInvalidArgument);
 
-    const std::array<double, 60> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,1,0,100,0.0,250.0,0.0,1000.0,0.0,1.0,4000.0,0.0,0,0,0,1,0,100,1,0,100,3,35,25,3,35,25,3,35,25};
+    const std::array<double, 60> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,1,0,100,0.0,250.0,0.0,1000.0,0.0,1.0,4000.0,0.0,0,0,0,1,0,100,1,0,100,5,35,25,5,35,25,5,35,25};
     ProgramHandler handler; handler.controller = controller;
     assert(controller->setComponentHandler(&handler) == kResultOk);
     // 全設定をSineと異なる値にしてから再選択し、追加済み項目も復元されることを確認する。

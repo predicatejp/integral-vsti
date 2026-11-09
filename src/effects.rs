@@ -393,7 +393,7 @@ mod tests {
             let previous = p;
             let [kind, _, _, _, beat, feedback, mix] = EFFECT_SLOTS[step % 3];
             p[kind] = ((step / 3) % 3) as f64 / 2.0;
-            p[beat] = (step % 10) as f64 / 9.0;
+            p[beat] = (step % 14) as f64 / 13.0;
             p[feedback] = (step % 6) as f64 / 5.0;
             p[mix] = (step % 5) as f64 / 4.0;
             for effects in [&mut scalar, &mut blocks] {
