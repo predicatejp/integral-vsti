@@ -865,7 +865,7 @@ void checkFilter(IComponent* component, IAudioProcessor* processor, IEditControl
     assert(component->setActive(false) == kResultOk);
 }
 
-// 原音はフィルタ後・Gain前。Voice加算とMaster適用・遅延整合後にMixで混合する。
+// ノート基準のフィルタ出力を加算してから、共有ADAAへ渡す。原音はGain前の加算値。
 // 独立した数値積分で、クリップ関数の三角形重み付き平均を照合する。
 double distortionAdaa2(int type, double x, double y, double z) {
     std::array<double, 3> v{x, y, z}; std::sort(v.begin(), v.end());
@@ -934,7 +934,7 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
         data.numSamples = 13; data.numOutputs = 1; data.outputs = &bus; data.inputEvents = &events;
         FilterReference filters[2];
         double previousDry = 0;
-        std::array<std::array<double, 2>, 2> history {};
+        std::array<double, 2> history {};
         for (int block = 0; block < 2; ++block) {
             assert(processor->process(data) == kResultOk);
             for (int n = 0; n < data.numSamples; ++n) {
@@ -942,17 +942,17 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
                 const int type = initial;
                 const double gain = std::pow(10.0, (at < 8 ? 6.0 * (at + 1) : 48.0) / 20.0);
                 const double mix = 0.25;
-                double drySum = 0, wetSum = 0;
+                double drySum = 0;
                 for (int v = 0; v < 2; ++v) {
                     const double hz = 440 * std::pow(2.0, (12 + 12 * v - 69) / 12.0 + 4);
                     const double source = at >= v*2 && at < 10 ? std::sqrt(.5) * std::sin(2*std::acos(-1.0)*(at-v*2)*hz/16/48000) : 0;
                     const double dry = filters[v].process(source, 1, hz, 1, 48000);
-                    const double driven = dry * gain;
-                    const double wet = distortionAdaa2(type, driven, history[v][0], history[v][1]);
-                    history[v] = {driven, history[v][0]};
-                    drySum += dry; wetSum += wet;
+                    drySum += dry;
                 }
-                const double expected = (type == 0 ? previousDry : previousDry*(1-mix) + wetSum*mix)
+                const double driven = drySum * gain;
+                const double wet = type == 0 ? 0.0 : distortionAdaa2(type, driven, history[0], history[1]);
+                history = {driven, history[0]};
+                const double expected = (type == 0 ? previousDry : previousDry*(1-mix) + wet*mix)
                                         * std::pow(10.0, -6.0/20.0);
                 previousDry = drySum;
                 assert(std::abs(buffer[n] - expected) < 1e-6);

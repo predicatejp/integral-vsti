@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! フィルタ出力のプリゲインとクリップ。ADAA履歴はVoice・左右で独立。
+//! 全Voiceの合成出力のプリゲインとクリップ。共有ADAA履歴は左右で独立。
 
 #[path = "distortion/soft.rs"]
 mod soft;
