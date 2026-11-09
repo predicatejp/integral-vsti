@@ -14,7 +14,7 @@ void checkDistortionBlocks(IComponent* component, IAudioProcessor* processor, IE
             ProcessSetup setup {split ? kOffline : kRealtime, precision, 257, rate};
             assert(processor->setupProcessing(setup) == kResultOk);
             Points phase, clip, gain, poly, pan, slot;
-            slot.id = 0x45463154; slot.values = {{0, 0.5 * double(mask & 1)}};
+            slot.id = 0x45463154; slot.values = {{0, (1.0 / 3.0) * double(mask & 1)}};
             phase.id = phaseId; phase.values = {{0, .5}};
             clip.id = 0x43545950; clip.values = {{0, type / 2.0}};
             gain.id = 0x43474149; gain.values = {{0, .25}};
@@ -23,7 +23,7 @@ void checkDistortionBlocks(IComponent* component, IAudioProcessor* processor, IE
             Changes changes; changes.queues = {&phase, &clip, &gain, &poly, &pan, &slot};
             std::array<Points, 8> extra;
             const std::array<int, 8> indices {43, 45, 46, 47, 44, 48, 49, 50};
-            const std::array<double, 8> values {0.5 * double((mask >> 1) & 1), 1, .125, .75, 0.5 * double((mask >> 2) & 1), .5, .375, .5};
+            const std::array<double, 8> values {(1.0 / 3.0) * double((mask >> 1) & 1), 1, .125, .75, (1.0 / 3.0) * double((mask >> 2) & 1), .5, .375, .5};
             for (size_t i = 0; i < extra.size(); ++i) {
                 ParameterInfo info; assert(controller->getParameterInfo(indices[i], info) == kResultOk);
                 extra[i].id = info.id; extra[i].values = {{0, values[i]}};

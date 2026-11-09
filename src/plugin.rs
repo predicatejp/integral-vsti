@@ -982,8 +982,8 @@ unsafe fn generate_samples(
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
     peak: &mut f32,
 ) -> u64 {
-    let automated = changes.iter().enumerate().fold(0_u64, |mask, (i, point)| {
-        mask | (u64::from(point.automated) << i)
+    let automated = changes.iter().enumerate().fold(0_u128, |mask, (i, point)| {
+        mask | (u128::from(point.automated) << i)
     });
     // バッファの有無と精度は区間ごとに選び、サンプルループ内では分岐しない。
     let nonzero = match channels {
@@ -1036,7 +1036,7 @@ fn generate_output_samples(
     plugin: &Plugin,
     synth: &mut Synthesizer,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
-    automated: u64,
+    automated: u128,
     range: std::ops::Range<i32>,
     mut write: impl FnMut(usize, [f64; 2]) -> u64,
 ) -> u64 {
@@ -1063,7 +1063,7 @@ fn apply_parameters(
     plugin: &Plugin,
     synth: &mut Synthesizer,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
-    automated: u64,
+    automated: u128,
     offset: i32,
 ) {
     let loaded = automated & (1 << parameters::PROGRAM_INDEX) != 0
@@ -1075,7 +1075,7 @@ fn apply_parameters(
             change.reset_value(offset, value);
         }
     }
-    let controls = automated & ((1_u64 << parameters::COUNT) - 1);
+    let controls = automated & ((1_u128 << parameters::COUNT) - 1);
     let mut pending = controls;
     while pending != 0 {
         let i = pending.trailing_zeros() as usize;

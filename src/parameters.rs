@@ -11,17 +11,18 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 63;
-/// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo。IDは位置に固定する。
-pub const EFFECT_SLOTS: [[usize; 8]; 3] = [
-    [42, 31, 32, 33, 51, 52, 53, 60],
-    [43, 45, 46, 47, 54, 55, 56, 61],
-    [44, 48, 49, 50, 57, 58, 59, 62],
+pub const COUNT: usize = 75;
+/// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo、ReverbのDecay/Damping/Size/Mix。IDは位置に固定する。
+pub const EFFECT_SLOTS: [[usize; 12]; 3] = [
+    [42, 31, 32, 33, 51, 52, 53, 60, 63, 64, 65, 66],
+    [43, 45, 46, 47, 54, 55, 56, 61, 67, 68, 69, 70],
+    [44, 48, 49, 50, 57, 58, 59, 62, 71, 72, 73, 74],
 ];
-pub const EFFECT_TYPES: [crate::effects::EffectType; 3] = [
+pub const EFFECT_TYPES: [crate::effects::EffectType; 4] = [
     crate::effects::EffectType::Off,
     crate::effects::EffectType::Distortion,
     crate::effects::EffectType::Delay,
+    crate::effects::EffectType::Reverb,
 ];
 pub const DELAY_STEREO_MODES: [crate::delay::StereoMode; 4] = [
     crate::delay::StereoMode::Stereo,
@@ -40,11 +41,15 @@ pub fn control_kind(index: usize) -> usize {
         45 | 48 => 31,
         46 | 49 => 32,
         47 | 50 => 33,
-        42..=44 => 31,
+        42..=44 => 42,
         54 | 57 => 51,
         55 | 58 => 52,
         53 | 56 | 59 => 33,
         61 | 62 => 60,
+        67 | 71 => 63,
+        68 | 72 => 64,
+        69 | 73 => 65,
+        66 | 70 | 74 => 33,
         _ => index,
     }
 }
@@ -188,6 +193,18 @@ pub const IDS: [u32; COUNT] = [
     0x4546_3153, // EF1S
     0x4546_3253, // EF2S
     0x4546_3353, // EF3S
+    0x52314443,  // R1DC
+    0x5231444d,  // R1DM
+    0x5231535a,  // R1SZ
+    0x52314d58,  // R1MX
+    0x52324443,  // R2DC
+    0x5232444d,  // R2DM
+    0x5232535a,  // R2SZ
+    0x52324d58,  // R2MX
+    0x52334443,  // R3DC
+    0x5233444d,  // R3DM
+    0x5233535a,  // R3SZ
+    0x52334d58,  // R3MX
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -253,11 +270,23 @@ pub const NAMES: [&str; COUNT] = [
     "Effect 1 Stereo",
     "Effect 2 Stereo",
     "Effect 3 Stereo",
+    "Effect 1 Reverb Decay",
+    "Effect 1 Reverb Damping",
+    "Effect 1 Reverb Size",
+    "Effect 1 Reverb Mix",
+    "Effect 2 Reverb Decay",
+    "Effect 2 Reverb Damping",
+    "Effect 2 Reverb Size",
+    "Effect 2 Reverb Mix",
+    "Effect 3 Reverb Decay",
+    "Effect 3 Reverb Damping",
+    "Effect 3 Reverb Size",
+    "Effect 3 Reverb Mix",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
     if (42..=44).contains(&index) {
-        return &["Off", "Distortion", "Delay"];
+        return &["Off", "Distortion", "Delay", "Reverb"];
     }
     match control_kind(index) {
         0 | 23 | 26 => &WAVEFORM_NAMES,
@@ -281,7 +310,10 @@ pub fn max_tick(index: usize) -> u32 {
             34 => 1,
             31 => 2,
             51 => 13,
-            60 => 3,
+            42 | 60 => 3,
+            63 => 200,
+            64 => 300,
+            65 => 150,
             52 => 100,
             35 | 37 | 40 => 300,
             36 | 38 | 41 => 360,
@@ -311,7 +343,9 @@ pub fn unit(index: usize) -> &'static str {
         "ms"
     } else {
         match index {
-            35 | 37 | 40 => "Hz",
+            35 | 37 | 40 | 64 => "Hz",
+            63 => "s",
+            65 => "%",
             36 | 38 | 41 => "dB",
             13 | 22 | 25 | 28 | 32 => "dB",
             20 | 21 | 29 | 30 | 33 | 52 => "%",
@@ -333,7 +367,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 42..=45 | 48 | 51 | 54 | 57 | 60..=62 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 42..=45 | 48 | 51 | 54 | 57 | 60..=62 | 65 | 69 | 73 | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
@@ -383,7 +417,10 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     match index {
         34 => return (normalized * 2.0).floor().min(1.0),
         51 => return (normalized * 14.0).floor().min(13.0),
-        60 => return (normalized * 4.0).floor().min(3.0),
+        42 | 60 => return (normalized * 4.0).floor().min(3.0),
+        63 => return 0.1 * 100_f64.powf(normalized),
+        64 => return 500.0 * 40_f64.powf(normalized),
+        65 => return 50.0 + 150.0 * normalized,
         52 => return normalized * 100.0,
         35 | 37 | 40 => return 20.0 * 1000_f64.powf(normalized),
         36 | 38 | 41 => return normalized * 36.0 - 18.0,
@@ -428,7 +465,10 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     match index {
         34 => return plain.clamp(0.0, 1.0).round(),
         51 => return plain.clamp(0.0, 13.0).round() / 13.0,
-        60 => return plain.clamp(0.0, 3.0).round() / 3.0,
+        42 | 60 => return plain.clamp(0.0, 3.0).round() / 3.0,
+        63 => return (plain / 0.1).log(100.0),
+        64 => return (plain / 500.0).log(40.0),
+        65 => return (plain - 50.0) / 150.0,
         52 => return plain / 100.0,
         35 | 37 | 40 => return (plain / 20.0).log(1000.0),
         36 | 38 | 41 => return (plain + 18.0) / 36.0,
@@ -466,7 +506,10 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         34 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
         51 => (0.0..=13.0).contains(&plain) && plain.fract() == 0.0,
-        60 => (0.0..=3.0).contains(&plain) && plain.fract() == 0.0,
+        42 | 60 => (0.0..=3.0).contains(&plain) && plain.fract() == 0.0,
+        63 => (0.1..=10.0).contains(&plain),
+        64 => (500.0..=20000.0).contains(&plain),
+        65 => (50.0..=200.0).contains(&plain),
         52 => (0.0..=100.0).contains(&plain),
         35 | 37 | 40 => (20.0..=20000.0).contains(&plain),
         36 | 38 | 41 => (-18.0..=18.0).contains(&plain),
@@ -492,7 +535,7 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
     } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(control_kind(index), 6 | 8 | 9 | 12 | 31 | 34 | 51 | 60) {
+    } else if matches!(control_kind(index), 6 | 8 | 9 | 12 | 31 | 34 | 42 | 51 | 60) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -568,6 +611,18 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         0.0,
         0.0,
         0.0, // Stereo
+        2.0,
+        6000.0,
+        100.0,
+        25.0, // Reverb
+        2.0,
+        6000.0,
+        100.0,
+        25.0, // Reverb
+        2.0,
+        6000.0,
+        100.0,
+        25.0, // Reverb
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -590,11 +645,21 @@ pub fn distortion(values: &[f64; COUNT], slot: usize) -> DistortionParameters {
 }
 
 pub fn delay(values: &[f64; COUNT], slot: usize) -> crate::delay::DelayParameters {
-    let [_, _, _, _, beat, feedback, mix, stereo] = EFFECT_SLOTS[slot];
+    let [_, _, _, _, beat, feedback, mix, stereo, ..] = EFFECT_SLOTS[slot];
     crate::delay::DelayParameters {
         division: to_plain(beat, values[beat]) as usize,
         stereo: DELAY_STEREO_MODES[to_plain(stereo, values[stereo]) as usize],
         feedback: values[feedback],
+        mix: values[mix],
+    }
+}
+
+pub fn reverb(values: &[f64; COUNT], slot: usize) -> crate::reverb::ReverbParameters {
+    let [_, _, _, _, _, _, _, _, decay, damping, size, mix] = EFFECT_SLOTS[slot];
+    crate::reverb::ReverbParameters {
+        decay_seconds: to_plain(decay, values[decay]),
+        damping_hz: to_plain(damping, values[damping]),
+        size: to_plain(size, values[size]) / 100.0,
         mix: values[mix],
     }
 }
@@ -800,9 +865,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v27: 固定508バイト。波形番号u32と、その他の実単位f64を保持する。
+// v28: 固定604バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x1b\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x1c\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
