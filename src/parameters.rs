@@ -11,9 +11,28 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 51;
-/// 各スロットの種類・Clipper・Gain・Mix。IDはスロット位置に固定する。
-pub const EFFECT_SLOTS: [[usize; 4]; 3] = [[42, 31, 32, 33], [43, 45, 46, 47], [44, 48, 49, 50]];
+pub const COUNT: usize = 63;
+/// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo。IDは位置に固定する。
+pub const EFFECT_SLOTS: [[usize; 8]; 3] = [
+    [42, 31, 32, 33, 51, 52, 53, 60],
+    [43, 45, 46, 47, 54, 55, 56, 61],
+    [44, 48, 49, 50, 57, 58, 59, 62],
+];
+pub const EFFECT_TYPES: [crate::effects::EffectType; 3] = [
+    crate::effects::EffectType::Off,
+    crate::effects::EffectType::Distortion,
+    crate::effects::EffectType::Delay,
+];
+pub const DELAY_STEREO_MODES: [crate::delay::StereoMode; 4] = [
+    crate::delay::StereoMode::Stereo,
+    crate::delay::StereoMode::Cross,
+    crate::delay::StereoMode::PingPongLeft,
+    crate::delay::StereoMode::PingPongRight,
+];
+pub const DELAY_BEATS: [&str; 14] = [
+    "1/32", "1/16 T", "1/16", "1/8 T", "1/16 D", "1/8", "1/4 T", "1/8 D", "1/4", "1/2 T", "1/4 D",
+    "1/2", "1/2 D", "1/1",
+];
 
 /// 同じ種類の設定は全スロットで同じ単位・量子化を用いる。
 pub fn control_kind(index: usize) -> usize {
@@ -21,7 +40,11 @@ pub fn control_kind(index: usize) -> usize {
         45 | 48 => 31,
         46 | 49 => 32,
         47 | 50 => 33,
-        42..=44 => 34,
+        42..=44 => 31,
+        54 | 57 => 51,
+        55 | 58 => 52,
+        53 | 56 | 59 => 33,
+        61 | 62 => 60,
         _ => index,
     }
 }
@@ -153,6 +176,18 @@ pub const IDS: [u32; COUNT] = [
     0x4546_3343, // EF3C
     0x4546_3347, // EF3G
     0x4546_334d, // EF3M
+    0x4546_3142,
+    0x4546_3146,
+    0x4546_3144, // EF1B / EF1F / EF1D
+    0x4546_3242,
+    0x4546_3246,
+    0x4546_3244,
+    0x4546_3342,
+    0x4546_3346,
+    0x4546_3344,
+    0x4546_3153, // EF1S
+    0x4546_3253, // EF2S
+    0x4546_3353, // EF3S
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -206,11 +241,23 @@ pub const NAMES: [&str; COUNT] = [
     "Effect 3 Clipper",
     "Effect 3 Gain",
     "Effect 3 Mix",
+    "Effect 1 Delay Time",
+    "Effect 1 Feedback",
+    "Effect 1 Delay Mix",
+    "Effect 2 Delay Time",
+    "Effect 2 Feedback",
+    "Effect 2 Delay Mix",
+    "Effect 3 Delay Time",
+    "Effect 3 Feedback",
+    "Effect 3 Delay Mix",
+    "Effect 1 Stereo",
+    "Effect 2 Stereo",
+    "Effect 3 Stereo",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
     if (42..=44).contains(&index) {
-        return &["Off", "Distortion"];
+        return &["Off", "Distortion", "Delay"];
     }
     match control_kind(index) {
         0 | 23 | 26 => &WAVEFORM_NAMES,
@@ -218,6 +265,8 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         12 => &PHASE_NAMES,
         31 => &CLIPPER_NAMES,
         34 => &["Off", "On"],
+        51 => &DELAY_BEATS,
+        60 => &["Stereo", "Cross", "PP-L", "PP-R"],
         _ => &[],
     }
 }
@@ -231,6 +280,9 @@ pub fn max_tick(index: usize) -> u32 {
         match index {
             34 => 1,
             31 => 2,
+            51 => 13,
+            60 => 3,
+            52 => 100,
             35 | 37 | 40 => 300,
             36 | 38 | 41 => 360,
             39 => 200,
@@ -262,7 +314,7 @@ pub fn unit(index: usize) -> &'static str {
             35 | 37 | 40 => "Hz",
             36 | 38 | 41 => "dB",
             13 | 22 | 25 | 28 | 32 => "dB",
-            20 | 21 | 29 | 30 | 33 => "%",
+            20 | 21 | 29 | 30 | 33 | 52 => "%",
             7 | 10 | 19 | 24 | 27 => "cent",
             _ => "",
         }
@@ -281,7 +333,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 42..=45 | 48 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 42..=45 | 48 | 51 | 54 | 57 | 60..=62 | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
@@ -330,6 +382,9 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     }
     match index {
         34 => return (normalized * 2.0).floor().min(1.0),
+        51 => return (normalized * 14.0).floor().min(13.0),
+        60 => return (normalized * 4.0).floor().min(3.0),
+        52 => return normalized * 100.0,
         35 | 37 | 40 => return 20.0 * 1000_f64.powf(normalized),
         36 | 38 | 41 => return normalized * 36.0 - 18.0,
         39 => return 0.1 * 100_f64.powf(normalized),
@@ -372,6 +427,9 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     }
     match index {
         34 => return plain.clamp(0.0, 1.0).round(),
+        51 => return plain.clamp(0.0, 13.0).round() / 13.0,
+        60 => return plain.clamp(0.0, 3.0).round() / 3.0,
+        52 => return plain / 100.0,
         35 | 37 | 40 => return (plain / 20.0).log(1000.0),
         36 | 38 | 41 => return (plain + 18.0) / 36.0,
         39 => return (plain / 0.1).log(100.0),
@@ -407,6 +465,9 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
     match index {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         34 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
+        51 => (0.0..=13.0).contains(&plain) && plain.fract() == 0.0,
+        60 => (0.0..=3.0).contains(&plain) && plain.fract() == 0.0,
+        52 => (0.0..=100.0).contains(&plain),
         35 | 37 | 40 => (20.0..=20000.0).contains(&plain),
         36 | 38 | 41 => (-18.0..=18.0).contains(&plain),
         39 => (0.1..=10.0).contains(&plain),
@@ -431,7 +492,7 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
     } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(control_kind(index), 6 | 8 | 9 | 12 | 31 | 34) {
+    } else if matches!(control_kind(index), 6 | 8 | 9 | 12 | 31 | 34 | 51 | 60) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -495,6 +556,18 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         1.0,
         0.0,
         100.0, // Effect 3
+        5.0,
+        35.0,
+        25.0,
+        5.0,
+        35.0,
+        25.0,
+        5.0,
+        35.0,
+        25.0, // Delay: 1/8, 35%, 25%
+        0.0,
+        0.0,
+        0.0, // Stereo
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -508,10 +581,20 @@ pub fn eq(values: &[f64; COUNT]) -> crate::eq::EqParameters {
 }
 
 pub fn distortion(values: &[f64; COUNT], slot: usize) -> DistortionParameters {
-    let [_, clipper, gain, mix] = EFFECT_SLOTS[slot];
+    let [_, clipper, gain, mix, ..] = EFFECT_SLOTS[slot];
     DistortionParameters {
         clipper: CLIPPER_TYPES[to_plain(clipper, values[clipper]) as usize],
         gain: 10.0_f64.powf(to_plain(gain, values[gain]) / 20.0),
+        mix: values[mix],
+    }
+}
+
+pub fn delay(values: &[f64; COUNT], slot: usize) -> crate::delay::DelayParameters {
+    let [_, _, _, _, beat, feedback, mix, stereo] = EFFECT_SLOTS[slot];
+    crate::delay::DelayParameters {
+        division: to_plain(beat, values[beat]) as usize,
+        stereo: DELAY_STEREO_MODES[to_plain(stereo, values[stereo]) as usize],
+        feedback: values[feedback],
         mix: values[mix],
     }
 }
@@ -717,9 +800,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v24: 固定412バイト。波形番号u32と、その他の実単位f64を保持する。
+// v27: 固定508バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x18\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x1b\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -937,6 +1020,50 @@ mod tests {
                     assert_eq!(max_tick(index), max);
                     assert_eq!(to_tick(index, normalized), tick);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn delay_stereo_switches_at_automation_point_in_each_slot() {
+        for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
+            let index = indices[7];
+            assert_eq!(choices(index), ["Stereo", "Cross", "PP-L", "PP-R"]);
+            let mut values = defaults();
+            for (mode, expected) in DELAY_STEREO_MODES.into_iter().enumerate() {
+                let value = to_normalized(index, mode as f64);
+                values[index] = value;
+                assert_eq!(delay(&values, slot).stereo, expected);
+                let mut points = ParameterPoints::empty(8, index, 0.0);
+                points.next = Some((4, value));
+                for sample in 0..4 {
+                    assert_eq!(points.value_at(sample), 0.0);
+                }
+                for sample in 4..8 {
+                    assert_eq!(points.value_at(sample), value);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn delay_triplet_and_dotted_names_match_their_durations() {
+        for (name, samples_at_120_bpm) in [
+            ("1/16 T", 4000.0),
+            ("1/16 D", 9000.0),
+            ("1/2 T", 32000.0),
+            ("1/2 D", 72000.0),
+        ] {
+            let index = DELAY_BEATS.iter().position(|&label| label == name).unwrap();
+            for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
+                let mut values = defaults();
+                let time = indices[4];
+                values[time] = to_normalized(time, index as f64);
+                let p = delay(&values, slot);
+                assert_eq!(
+                    crate::delay::DIVISIONS[p.division] * 24000.0,
+                    samples_at_120_bpm
+                );
             }
         }
     }

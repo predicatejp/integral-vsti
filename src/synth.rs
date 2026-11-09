@@ -68,12 +68,20 @@ impl Synthesizer {
     pub fn set_sample_rate(&mut self, sample_rate: f64) -> bool {
         if sample_rate.is_finite()
             && sample_rate >= crate::filter::MIN_SAMPLE_RATE
-            && !self.state.eq.prepare(sample_rate)
+            && (!self
+                .state
+                .effects
+                .prepare(sample_rate, &self.state.parameters)
+                || !self.state.eq.prepare(sample_rate))
         {
             return false;
         }
         self.state.sample_rate = sample_rate;
         true
+    }
+
+    pub fn set_tempo(&mut self, tempo: f64) {
+        self.state.effects.set_tempo(tempo);
     }
 
     pub fn parameters(&self) -> [f64; parameters::COUNT] {

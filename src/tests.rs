@@ -33,6 +33,9 @@ fn x86_64_layout() {
     assert_eq!(size_of::<AudioBusBuffers>(), 24);
     assert_eq!(offset_of!(AudioBusBuffers, silence_flags), 8);
     assert_eq!(offset_of!(AudioBusBuffers, channel_buffers), 16);
+    assert_eq!(size_of::<ProcessContext>(), 112);
+    assert_eq!(align_of::<ProcessContext>(), 8);
+    assert_eq!(offset_of!(ProcessContext, tempo), 72);
     assert_eq!(size_of::<ProcessData>(), 80);
     assert_eq!(align_of::<ProcessData>(), 8);
     assert_eq!(offset_of!(ProcessData, inputs), 24);
