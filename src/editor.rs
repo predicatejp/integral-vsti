@@ -29,7 +29,8 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "A", "H", "D", "S", "R", "Uni", "Det", "Poly", "Filter", "F", "Res", "Phase",
     "Vol", "A", "H", "D", "S", "R", "Amt", "Width", "Pan", "Vol", "Waveform", "Tune", "Vol",
     "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix", "Enable", "Low F", "Low G",
-    "Mid F", "Mid G", "Mid Q", "High F", "High G",
+    "Mid F", "Mid G", "Mid Q", "High F", "High G", "Effect 1", "Effect 2", "Effect 3", "Clipper",
+    "Gain", "Mix", "Clipper", "Gain", "Mix",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -39,6 +40,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     4, 3, 2, 4, 3, 2, 4, 4, // Osc2 / Osc3
     4, 3, 4, // Distortion
     4, 4, 4, 4, 4, 4, 4, 4, // eq
+    4, 4, 4, 4, 3, 4, 4, 3, 4, // Effects
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -60,7 +62,7 @@ fn is_detent(index: usize, tick: u32) -> bool {
 
 /// ノブごとの目盛り位置と、長く強調する基準点（ともに整数tick）。
 fn knob_marks(index: usize) -> (&'static [u32], u32) {
-    match index {
+    match parameters::control_kind(index) {
         // 時間: 0 / 10 / 100 / 1000 / 10000 ms。0と隣接する1 msは省く。
         1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 401], 0),
         4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
@@ -536,18 +538,21 @@ impl Editor {
         [x, y, width, height]: [f32; 4],
         selected: &[f64; parameters::COUNT],
     ) {
+        let effect = parameters::EFFECT_SLOTS
+            .iter()
+            .position(|indices| choices.first() == Some(&indices[0]));
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
         let choice_label_height = if choices == [12] {
             CHOICE_HEIGHT + GAP
         } else {
             0.0
         };
-        let choice_height = if matches!(choices, [12] | [31]) {
+        let choice_height = if choices == [12] || effect.is_some() {
             CHOICE_HEIGHT + choice_label_height
         } else {
             0.0
         };
-        let row_header_height = if choices.len() > 1 {
+        let row_header_height = if choices.len() > 1 && effect.is_none() {
             CHOICE_HEIGHT + GAP
         } else {
             0.0
@@ -567,7 +572,7 @@ impl Editor {
             };
         let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
         let off = choices.iter().any(|&index| {
-            matches!(index, 9 | 31 | 34) && parameters::to_tick(index, selected[index]) == 0
+            matches!(index, 9 | 34 | 42..=44) && parameters::to_tick(index, selected[index]) == 0
         });
         let painter = ui.painter().clone();
         painter.rect_filled(rect, 8.0, PANEL);
@@ -586,7 +591,7 @@ impl Editor {
             rect.min + egui::vec2(GAP + 10.0, GAP + HEADER_HEIGHT / 2.0),
             egui::Align2::LEFT_CENTER,
             title,
-            egui::FontId::proportional(24.0),
+            egui::FontId::proportional(if effect.is_some() { 18.0 } else { 24.0 }),
             INK,
         );
         if rows.is_empty() {
@@ -625,7 +630,9 @@ impl Editor {
             }
         }
         let choice_rect = |row: usize| {
-            let top = if row_header_height > 0.0 {
+            let top = if effect.is_some() && row == 0 {
+                rect.top() + GAP
+            } else if row_header_height > 0.0 {
                 rect.top() + body_y + row as f32 * (row_height + row_gap)
             } else if choice_height > 0.0 {
                 rect.top() + GAP + HEADER_HEIGHT + row_gap + choice_label_height
@@ -644,7 +651,7 @@ impl Editor {
                 23 => "Osc2",
                 26 => "Osc3",
                 12 => "Phase",
-                31 => "Type",
+                31 | 45 | 48 => "",
                 _ => continue,
             };
             painter.text(
@@ -658,9 +665,25 @@ impl Editor {
                 MUTED,
             );
         }
+        // 有効スロット内でClipperだけOffの場合もノブを半透明にする。
+        if effect.is_some() && selected[choices[1]] == 0.0 && !off {
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    rect.min + egui::vec2(GAP, body_y),
+                    rect.max - egui::vec2(GAP, GAP),
+                ),
+                0.0,
+                ui.visuals().panel_fill.gamma_multiply(0.5),
+            );
+        }
+        // スロットOffでは内部のClipper選択もまとめて半透明にする。
+        if effect.is_some() {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(choice_rect(1)), |ui| {
+                self.choice(ui, choices[1], selected[choices[1]]);
+            });
+        }
         if off {
-            // 一様な背景色を重ね、描画済みグループ全体を50%で合成する。
-            // 個々の図形を透過すると、本来隠れるノブの影まで透けてしまう。
+            // 背景色との50%合成により、影や文字を含む全体を同じ率で薄くする。
             painter.rect_filled(
                 rect.expand(1.0),
                 0.0,
@@ -668,9 +691,48 @@ impl Editor {
             );
         }
         for (row, &index) in choices.iter().enumerate() {
+            if effect.is_some() && row == 1 {
+                continue;
+            }
             ui.scope_builder(egui::UiBuilder::new().max_rect(choice_rect(row)), |ui| {
                 self.choice(ui, index, selected[index]);
             });
+        }
+        if let Some(slot) = effect {
+            // 端では対応する方向だけ無効化する。選択と内部設定を一緒に移動する。
+            for direction in 0..2 {
+                let area = egui::Rect::from_min_size(
+                    egui::pos2(
+                        rect.left() + GAP + direction as f32 * 28.0,
+                        choice_rect(1).top(),
+                    ),
+                    egui::vec2(24.0, CHOICE_HEIGHT),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                    let enabled = if direction == 0 { slot > 0 } else { slot < 2 };
+                    let response =
+                        ui.add_enabled(enabled, egui::Button::new("").min_size(area.size()));
+                    let center = response.rect.center();
+                    let sign = if direction == 0 { -1.0 } else { 1.0 };
+                    ui.painter().add(egui::Shape::convex_polygon(
+                        vec![
+                            center + egui::vec2(0.0, sign * 5.0),
+                            center + egui::vec2(-5.0, -sign * 3.0),
+                            center + egui::vec2(5.0, -sign * 3.0),
+                        ],
+                        if enabled { ACCENT } else { LINE },
+                        egui::Stroke::NONE,
+                    ));
+                    if response.clicked() {
+                        self.edits.push(Edit::SwapEffects(if direction == 0 {
+                            slot - 1
+                        } else {
+                            slot
+                        }));
+                        response.surrender_focus();
+                    }
+                });
+            }
         }
     }
 
@@ -849,15 +911,15 @@ impl WindowHandler for Editor {
                     ],
                 ),
                 (
-                    "Distortion",
-                    &[31],
+                    "Eff 1",
+                    &[42, 31],
                     &[&[32, 33][..]][..],
                     [effects_x, GAP, side_width, effect_height],
                 ),
                 (
-                    "Effect 2",
-                    &[],
-                    &[],
+                    "Eff 2",
+                    &[43, 45],
+                    &[&[46, 47][..]][..],
                     [
                         effects_x,
                         GAP + effect_height + GAP,
@@ -866,9 +928,9 @@ impl WindowHandler for Editor {
                     ],
                 ),
                 (
-                    "Effect 3",
-                    &[],
-                    &[],
+                    "Eff 3",
+                    &[44, 48],
+                    &[&[49, 50][..]][..],
                     [
                         effects_x,
                         GAP + (effect_height + GAP) * 2.0,

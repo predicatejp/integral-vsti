@@ -1,9 +1,9 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use crate::effects::Effects;
 #[cfg(test)]
-use crate::distortion::LATENCY;
-use crate::distortion::{ClipperType, Distortion, DistortionParameters};
+use crate::effects::LATENCY;
 use crate::envelope::DEFAULT_ENVELOPE;
 use crate::eq::Eq;
 use crate::oscillator::{PanningGains, panning_gains};
@@ -30,24 +30,12 @@ pub struct SynthesizerState {
     panning_gains: PanningGains,
     /// ユニゾンを使わないOsc2/3の共通Pan係数。
     mono_gains: [f64; 2],
-    /// 適用中のClipper。切り替え先はdistortion_parameters.clipperに保持する。
-    processing: ClipperType,
-    /// 32サンプルのfade-out、2のADAA履歴充填、32のfade-inの残り。
-    transition: u8,
-    /// 発音前・停止中の設定は即時反映する。
-    started: bool,
-    /// 停止・使用範囲拡大後の未使用枠を、次の有効サンプルで一度だけ更新する。
+    /// 停止・使用範囲拡大後の未使用枠を次のサンプルで更新する。
     unused_pending: bool,
-    /// Dryは平均化を通さず、1サンプルの純遅延だけを掛ける。
-    previous_dry: [f64; 2],
-    /// バイパス時に既存のDryとMasterの適用時刻を維持する。
-    previous_master_gain: f64,
-    /// 共有ディストーション後、Master前のEQ。
+    /// Voice合成後の独立した3スロット。
+    effects: Effects,
+    /// エフェクタ系列の後、Master前のEQ。
     eq: Eq,
-    /// 全Voice加算後のクリッパー。左右独立のADAA履歴を共有する。
-    distortion: Distortion,
-    /// 現在のクリップ設定。線形Gainは設定変更時に計算する。
-    distortion_parameters: DistortionParameters,
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
@@ -70,15 +58,9 @@ impl Synthesizer {
                 master_gain: 1.0,
                 panning_gains: [[1.0; 2]; 7],
                 mono_gains: [1.0; 2],
-                processing: ClipperType::None,
-                transition: 0,
-                started: false,
                 unused_pending: false,
-                previous_dry: [0.0; 2],
-                previous_master_gain: 1.0,
+                effects: Effects::new(),
                 eq: Eq::new(44100.0, parameters::eq(&parameters::defaults())),
-                distortion: Distortion::new(),
-                distortion_parameters: parameters::distortion(&parameters::defaults()),
             }),
         }
     }
@@ -113,7 +95,7 @@ impl Synthesizer {
                 return true;
             }
         }
-        if values[34..] != self.state.parameters[34..] {
+        if values[34..42] != self.state.parameters[34..42] {
             self.state.eq.set_parameters(parameters::eq(&values));
         }
         let previous = &self.state.parameters;
@@ -242,8 +224,8 @@ impl Synthesizer {
                 );
             }
         }
-        if values[31..34] != previous[31..34] {
-            self.state.distortion_parameters = parameters::distortion(&values);
+        if values[31..34] != previous[31..34] || values[42..] != previous[42..] {
+            self.state.effects.set_parameters(&values, previous);
         }
         if expanded || values[9..11] != previous[9..11] {
             let filter_type = parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize];
@@ -258,12 +240,7 @@ impl Synthesizer {
                 voice.set_resonance(resonance_q);
             }
         }
-        let clipper_changed = values[31] != previous[31];
         self.state.parameters = values;
-        if clipper_changed && !self.state.started {
-            self.state.processing = self.state.distortion_parameters.clipper;
-            self.state.distortion.reset();
-        }
         true
     }
 
@@ -288,15 +265,10 @@ impl Synthesizer {
     }
 
     pub fn stop(&mut self) {
-        self.state.previous_dry = [0.0; 2];
-        self.state.previous_master_gain = self.state.master_gain;
+        self.state.effects.reset();
         self.state.eq.reset();
-        self.state.distortion.reset();
-        self.state.started = false;
         self.state.used_voices = 0;
         self.state.unused_pending = true;
-        self.state.transition = 0;
-        self.state.processing = self.state.distortion_parameters.clipper;
         for voice in &mut self.state.voices {
             voice.stop();
         }
@@ -312,20 +284,12 @@ impl Synthesizer {
 
     /// パラメーターとノートが一定の区間を、Voiceごとのサンプル系列で加算する。
     pub fn generate_samples(&mut self, output: &mut [[f64; 2]]) {
-        if output.len() <= 1
-            || self.state.transition != 0
-            || self.state.processing != self.state.distortion_parameters.clipper
-        {
-            for out in output {
-                *out = self.generate_sample();
-            }
+        if output.is_empty() {
             return;
         }
         if self.state.unused_pending {
             self.update_unused_sample();
         }
-        self.state.started = true;
-        let clipper = self.state.processing;
         if let Some((first, rest)) = self.state.voices[..self.state.used_voices].split_first_mut() {
             // 先頭Voiceは直接出力し、ゼロ埋め・最初の加算・小区間ごとの再準備を省く。
             first.generate_samples(
@@ -352,77 +316,31 @@ impl Synthesizer {
         } else {
             output.fill([0.0; 2]);
         }
-        if clipper == ClipperType::None {
-            self.finish_dry_samples(output);
-        } else {
-            let distortion = self.state.distortion_parameters;
-            for chunk in output.chunks_mut(32) {
-                let mut wet = [[0.0; 2]; 32];
-                self.state
-                    .distortion
-                    .process_samples(chunk, &mut wet[..chunk.len()], &distortion);
-                for (out, wet) in chunk.iter_mut().zip(&wet) {
-                    *out = self.finish_sample(*out, *wet, distortion.mix, 1.0);
-                }
-            }
-        }
+        self.state.effects.process_samples(output);
+        self.finish_samples(output);
     }
 
     pub fn generate_sample(&mut self) -> [f64; 2] {
         if self.state.unused_pending {
             self.update_unused_sample();
         }
-        self.state.started = true;
-        if self.state.transition == 0
-            && self.state.processing != self.state.distortion_parameters.clipper
-        {
-            self.state.transition = 66;
-        }
-        if self.state.transition == 34 {
-            self.state.processing = self.state.distortion_parameters.clipper;
-            self.state.distortion.reset();
-        }
-        let clipper = self.state.processing;
-        let remaining = self.state.transition;
-        self.state.transition = remaining.saturating_sub(1);
-        let dry = self.mix_sample();
-        if clipper == ClipperType::None {
-            return self.finish_sample(dry, [0.0; 2], 0.0, 1.0);
-        }
-        let mut distortion = self.state.distortion_parameters;
-        distortion.clipper = clipper;
-        let wet = self.state.distortion.process_sample(dry, &distortion);
-        let gain = match remaining {
-            0 => 1.0,
-            1..=32 => (32 - remaining) as f64 / 32.0,
-            33..=34 => 0.0,
-            _ => (remaining - 35) as f64 / 32.0,
-        };
-        // DistortionのDryとWetを合成し、全体エフェクトへ渡す。
-        self.finish_sample(dry, wet, distortion.mix, gain)
+        let sum = self.mix_sample();
+        let processed = self.state.effects.process_sample(sum);
+        self.state
+            .eq
+            .process_sample(processed)
+            .map(|value| value * self.state.master_gain)
     }
 
-    /// Offの後処理を分離し、EQ無効の系列では係数と分岐をループ外へ出す。
+    /// EQとMasterを系列で適用し、一定の係数と分岐をループ外へ出す。
     #[inline(never)]
-    fn finish_dry_samples(&mut self, output: &mut [[f64; 2]]) {
-        for out in output {
-            *out = self.finish_sample(*out, [0.0; 2], 0.0, 1.0);
-        }
-    }
-
-    /// DistortionのDry遅延後に全体エフェクトを処理し、Masterを適用する。
-    #[inline]
-    fn finish_sample(&mut self, dry: [f64; 2], wet: [f64; 2], mix: f64, fade: f64) -> [f64; 2] {
-        let dry = std::mem::replace(&mut self.state.previous_dry, dry);
-        let gain = self.state.master_gain;
-        let previous_gain = std::mem::replace(&mut self.state.previous_master_gain, gain);
-        if self.state.eq.enabled() {
-            let input = std::array::from_fn(|ch| dry[ch] * (1.0 - mix) + wet[ch] * mix * fade);
-            self.state.eq.process_sample(input).map(|v| v * gain)
-        } else {
-            std::array::from_fn(|ch| {
-                (dry[ch] * previous_gain) * (1.0 - mix) + (wet[ch] * gain) * mix * fade
-            })
+    fn finish_samples(&mut self, samples: &mut [[f64; 2]]) {
+        for sample in samples {
+            *sample = self
+                .state
+                .eq
+                .process_sample(*sample)
+                .map(|value| value * self.state.master_gain);
         }
     }
 
@@ -538,7 +456,7 @@ mod tests {
     fn constant_input_series_matches_sample_processing_across_boundaries() {
         for phase in 0..3 {
             let mut values = parameters::sine_preset();
-            for (index, value) in [(5, 1.), (12, phase as f64), (32, 18.), (33, 65.)] {
+            for (index, value) in [(5, 1.), (12, phase as f64), (32, 18.), (33, 65.), (42, 1.)] {
                 values[index] = parameters::to_normalized(index, value);
             }
             let mut serial = Synthesizer::new();
@@ -650,7 +568,11 @@ mod tests {
                 }
                 assert_eq!(series.active_voice_count(), serial.active_voice_count());
                 if matches!(step, 43 | 44 | 47) {
-                    assert!(output[..count].iter().all(|sample| *sample == [0.; 2]));
+                    assert!(
+                        output[LATENCY.min(count)..count]
+                            .iter()
+                            .all(|sample| *sample == [0.; 2])
+                    );
                     assert_eq!(series.active_voice_count(), 0);
                 }
             }
@@ -1050,7 +972,7 @@ mod tests {
                 single.set_parameters(values);
                 single
             });
-            let mut delayed_expected = 0.0;
+            let mut delayed_expected = std::collections::VecDeque::from([0.0; LATENCY]);
             for n in 0..96 {
                 let db = match n {
                     0..16 => 0.0,
@@ -1077,8 +999,9 @@ mod tests {
                     references[1].stop();
                 }
                 let expected: f64 = references.iter_mut().map(|s| s.mix_sample()[0]).sum();
-                assert!((synth.generate_sample()[0] - delayed_expected).abs() < 1e-12);
-                delayed_expected = expected * 10.0_f64.powf(db / 20.0);
+                delayed_expected.push_back(expected);
+                let expected = delayed_expected.pop_front().unwrap() * 10.0_f64.powf(db / 20.0);
+                assert!((synth.generate_sample()[0] - expected).abs() < 1e-12);
             }
             synth.stop();
             assert_eq!(synth.mix_sample()[0], 0.0);
@@ -1364,6 +1287,7 @@ mod tests {
 #[cfg(test)]
 mod distortion_tests {
     use super::*;
+    use crate::distortion::Distortion;
 
     fn settings() -> [f64; parameters::COUNT] {
         let mut p = parameters::sine_preset();
@@ -1375,6 +1299,7 @@ mod distortion_tests {
             (9, 2.0),
             (10, 1200.0),
             (12, 1.0),
+            (42, 1.0),
             (31, 1.0),
             (32, 12.0),
         ] {
@@ -1408,6 +1333,7 @@ mod distortion_tests {
             let mut bypass = p;
             bypass[31] = 0.0;
             dry.set_parameters(bypass);
+            let mut mixes = std::collections::VecDeque::from([0.0; 2]);
             for n in 0..500 {
                 // Gainの段差・ランプ、Mixの急変。Mixは遅延前の値を使わない。
                 p[32] = (n % 71) as f64 / 70.0;
@@ -1423,6 +1349,8 @@ mod distortion_tests {
                 let dry_sample = dry.generate_sample();
                 let wet_sample = wet.generate_sample();
                 let actual = mixed.generate_sample();
+                mixes.push_back(mix);
+                let mix = mixes.pop_front().unwrap();
                 for ch in 0..2 {
                     let expected = dry_sample[ch] * (1.0 - mix) + wet_sample[ch] * mix;
                     assert_eq!(actual[ch], expected);
@@ -1492,11 +1420,12 @@ mod distortion_tests {
                 p[index] = parameters::to_normalized(index, value);
             }
             synth.set_parameters(p);
-            let settings = parameters::distortion(&p);
+            let settings = parameters::distortion(&p, 0);
             let mut distortion = Distortion::new();
             let mut eq = Eq::new(44100.0, parameters::eq(&p));
             let gain = 10.0_f64.powf(parameters::to_plain(13, p[13]) / 20.0);
             let mut previous_dry = [0.0; 2];
+            let mut padding = std::collections::VecDeque::from([[0.0; 2]; 2]);
             let mut error_energy = 0.0;
             let mut signal_energy = 0.0;
             let mut references: [Synthesizer; 4] = std::array::from_fn(|_| {
@@ -1555,7 +1484,10 @@ mod distortion_tests {
                     previous_dry[ch] * (1.0 - settings.mix) + wet[ch] * settings.mix
                 });
                 previous_dry = dry;
-                let expected = eq.process_sample(mixed).map(|sample| sample * gain);
+                padding.push_back(mixed);
+                let expected = eq
+                    .process_sample(padding.pop_front().unwrap())
+                    .map(|sample| sample * gain);
                 let actual = synth.generate_sample();
                 for ch in 0..2 {
                     error_energy += (actual[ch] - expected[ch]).powi(2);
@@ -1591,16 +1523,11 @@ mod distortion_tests {
                 for n in 0..66 {
                     let out = synth.generate_sample();
                     assert!(out.into_iter().all(f64::is_finite));
-                    if (32..34).contains(&n) {
+                    if (34..36).contains(&n) {
                         assert_eq!(out, [0.0; 2]);
                     }
                     assert_eq!(synth.active_voice_count(), 1);
                 }
-                assert_eq!(
-                    synth.state.processing,
-                    parameters::CLIPPER_TYPES[target as usize]
-                );
-                assert_eq!(synth.state.transition, 0);
             }
         }
     }
@@ -1632,13 +1559,6 @@ mod distortion_tests {
                 synth.set_parameters(p);
             }
             assert_eq!(synth.generate_sample(), reference.generate_sample());
-            if n % 300 == 299 {
-                assert_eq!(
-                    synth.state.processing,
-                    parameters::CLIPPER_TYPES[parameters::to_plain(31, p[31]) as usize]
-                );
-                assert_eq!(synth.state.transition, 0);
-            }
         }
     }
 }

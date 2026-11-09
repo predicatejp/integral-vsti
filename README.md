@@ -108,7 +108,7 @@ Detune=0ではノイズ源1個にまとめ、Widthは無効です。Detune>0で�
 
 ## Voiceごとのフィルタ
 
-音源は `Synthesizer → Voice → Oscillator` の階層です。各コンポーネントは専用のStateを所有します。各VoiceはOsc1・Osc2・Osc3とそれぞれの定常入力を保持します。Osc1はユニゾンを生成し、Osc2/3は各1発振器です。各発振器のVolumeを適用して加算し、共通の音量AHDSR、フィルタの順に通した後、全Voiceのフィルタ出力を左右別に加算します。合成音はSynthesizerが所有する1個の共有Distortion、EQ、Master Volumeの順に通します。フィルタの係数は左右で共用し、積分器の履歴は独立させます。
+音源は `Synthesizer → Voice → Oscillator` の階層です。各コンポーネントは専用のStateを所有します。各VoiceはOsc1・Osc2・Osc3とそれぞれの定常入力を保持します。Osc1はユニゾンを生成し、Osc2/3は各1発振器です。各発振器のVolumeを適用して加算し、共通の音量AHDSR、フィルタの順に通した後、全Voiceのフィルタ出力を左右別に加算します。合成音はSynthesizerが所有する3スロットのエフェクタ系列、EQ、Master Volumeの順に通します。フィルタの係数は左右で共用し、積分器の履歴は独立させます。
 Stateはデータ保持専用とし、所有コンポーネントのメソッドが処理とStateの更新を担当します。
 音声関数は1サンプルを`*_sample`、サンプル系列を`*_samples`で区別します。
 
@@ -166,7 +166,7 @@ Amountは10 cent刻みの整数ノブで操作します。
 
 ## マスターボリューム
 
-Volumeは全Voiceのフィルタ出力を加算し、共有DistortionとEQを通した後の音量です（ParamID `0x4d564f4c`）。
+Volumeは全Voiceのフィルタ出力を加算し、エフェクタ系列とEQを通した後の音量です（ParamID `0x4d564f4c`）。
 全Volumeの範囲は−60〜＋12 dBで、下限の−60 dB位置を−∞（完全消音）として扱います。MasterとOsc1の初期値は0 dB、Osc2/3は−∞です。
 整数ノブのtick=0は−∞、1〜720は`dB = tick / 10 − 60`で換算し、0.1 dB刻みで設定します。
 振幅倍率は`10^(dB / 20)`（−∞では0）で、値の変更時だけ計算して保持します。
@@ -343,8 +343,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v23は340バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainを各f64。little endian）です。
-読み込みは現行形式v23のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v24は412バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mixを各f64。little endian）です。
+読み込みは現行形式v24のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -353,7 +353,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定42個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定51個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -377,26 +377,37 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
 
-## ディストーション
+## エフェクタ系列
 
-全Voiceのフィルタ出力を加算した後、EQの前に共有ディストーションを1個適用します。
+全Voiceのフィルタ出力を合成した後、**Effector 1 → Effector 2 → Effector 3 → EQ → Master Volume**の順に処理します。
+各スロットでOff／Distortionを選択し、Offはそのスロットを素通しにします。初期値はすべてOffです。
+同じエフェクトを複数のスロットで使えます。設定と左右の処理履歴はスロットごとに独立します。
 
-| パラメーター | 範囲・初期値 | ParamID |
-| --- | --- | --- |
-| Clipper type | Off（初期値）、Soft、Hard | `0x43545950` |
-| Gain | 0〜+48 dB、0.1 dB刻み、初期値0 dB | `0x43474149` |
-| Mix | 0〜100%、1%刻み、初期値100% | `0x434d4958` |
+各スロットの↑／↓ボタンで、隣のスロットと種類・Clipper・Gain・Mixをまとめて交換します。
+パラメーターIDとオートメーションはスロット位置に対応します。交換はVST3の編集通知を通してホストへ伝えます。
+種類の変更時は対象スロットの履歴を初期化します。全設定を音色として保存・復元します。
 
-OffはGainとMixを含めてバイパスします。Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`で処理します。
-Gainの線形倍率は`10^(dB/20)`です。Mixは0%で全Voiceのフィルタ出力を加算した原音、100%で処理音になり、その間を線形混合します。Gain・Mixのオートメーションは正規化値を線形補間し、Clipper typeは変更点で切り替えます。
+| 設定 | Effect 1 ParamID | Effect 2 ParamID | Effect 3 ParamID |
+| --- | --- | --- | --- |
+| 種類（Off／Distortion） | `0x45463154` | `0x45463254` | `0x45463354` |
+| Clipper | `0x43545950` | `0x45463243` | `0x45463343` |
+| Gain | `0x43474149` | `0x45463247` | `0x45463347` |
+| Mix | `0x434d4958` | `0x4546324d` | `0x4546334d` |
 
-ディストーションはホストレートの2階ADAAで左右独立に処理します。Wetは全Voiceのフィルタ出力の合成音へGain・Clipper・ADAAを適用します。
-Dryは合成音へ1サンプルの純遅延だけを適用し、出力時点のMixでWetと混合します。混合後の出力へEQ、Master Volumeの順に適用します。
-Clipper=OffではDryだけを出力し、クリップ・ADAAを省きます。ホストへの申告遅延も常に1サンプルです。
+Distortionは1段につき1サンプル遅延します。系列の末尾で不足分の純遅延を補い、ホストへ常に3サンプルと申告します。
+全スロットがOffの場合も3サンプルの純遅延になり、原信号の周波数特性を変えません。
+
+### ディストーション
+
+ClipperはOff／Soft／Hard（初期値Soft）、Gainは0〜+48 dB・0.1 dB刻み（初期値0 dB）、Mixは0〜100%・1%刻み（初期値100%）です。
+Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`をホストレートの2階ADAAで左右独立に処理します。
+Gainの線形倍率は`10^(dB/20)`です。Dryはそのスロットへの入力を1サンプルだけ遅延し、Gainや平均化を掛けません。
+Mixは0%でDry、100%でWetになり、その間を線形混合して次の段へ渡します。Mixは各スロットの出力時点の値を使います。
+Clipper=OffではDryだけを出力します。Gain・Mixはオートメーションの変更点間を線形補間し、種類・Clipperは変更点で切り替えます。
 
 ADAA2による平均化はWetの高域特性に影響します。Dryは平均化を通しません。
 Softの原始関数は1025点の共有テーブルから整合した多項式で求め、近接入力では差分の桁落ちを避ける式を使います。
-Hardは区分的な関数の積分を直接計算します。ADAAの履歴は共有Distortionが左右チャンネルごとに保持します。
+Hardは区分的な関数の積分を直接計算します。ADAAの履歴は各スロットのDistortionが左右チャンネルごとに保持します。
 
 処理中のClipper typeの変更は、Wetの32サンプルのフェードアウト、2サンプルの履歴充填、32サンプルのフェードインで切り替えます。
 切替中もDryとノート・位相・AHDSRの時間は継続します。停止中の設定は次の処理開始時に即時適用します。
@@ -405,14 +416,14 @@ Gain・Mixはホストから届いた変更点間をホストレートで補間�
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列にDistortionと2つのプレースホルダ、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。Distortionは見出しの下にTypeラベルと選択欄を並べ、その下にGain・Mixを均等配置します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phaseラベルと選択欄を上下に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3つのスロット、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトルの右に種類の選択欄、その下に↑／↓の交換ボタンとClipper選択欄、最下段にGain・Mixを均等配置します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phaseラベルと選択欄を上下に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 タイトルバーの発音数インジケータの上に、同じ幅の出力ピークメータを表示します。Master音量適用後の左右最大サンプルピークを−60〜＋12 dBFSで表示します。0 dBFSまでの部分は明るい緑、0 dBFSを超えた部分は明るい赤とし、0 dBFSの境界線を示します。描画間のピークを保持し、未点灯部分は白に近い色にします。表示は48 dB/秒で減衰します。
 
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・Mod、Masterには共通Phase・Polyphony・Volume・Panを配置します。
-ノブは行内を均等割りします。ノブ行は80px高、外周・グループ間・枠内の左右余白は8pxで統一します。OscillatorとAmp/Filter列の下端を揃え、その下にEQを配置します。見出しの下に残る高さは上余白・行間・下余白へ均等配分します。エフェクト列は列全体を同じ高さの3枠に分け、上段にDistortion、中段・下段にEffect 2・Effect 3のプレースホルダを表示します。Masterは列全体を使用し、EQと下端を揃えます。見出し行とドロップダウンは28px高です。
+ノブは行内を均等割りします。ノブ行は80px高、外周・グループ間・枠内の左右余白は8pxで統一します。OscillatorとAmp/Filter列の下端を揃え、その下にEQを配置します。見出しの下に残る高さは上余白・行間・下余白へ均等配分します。エフェクト列は列全体を同じ高さの3枠に分け、上からEffect 1・Effect 2・Effect 3を表示します。Masterは列全体を使用し、EQと下端を揃えます。見出し行とドロップダウンは28px高です。
 ノブは直径47.52pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
-Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。機能を無効にする選択肢は「Off」に統一します。Filter・Distortion・EQがOffのときは選択リストを通常表示とし、枠・見出し・ノブとそのラベルを描画した後、グループ全体を画面背景と50%で合成します。Off中もノブは編集でき、操作中の値は通常のオーバーレイで表示します。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
+Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。機能を無効にする選択肢は「Off」に統一します。Filter・各エフェクタスロット・EQがOffのときは種類の選択リストと交換ボタンを通常表示とし、枠・見出し・ノブとそのラベルを描画した後、グループ全体を画面背景と50%で合成します。Off中もノブは編集でき、操作中の値は通常のオーバーレイで表示します。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
 ノブを左ボタンで押し、上へ動かすと増加、下へ動かすと減少します。1tickに必要な移動量は、Cutoff・Resonance・Cutoff Amount・各Volが2物理px、時間（A/H/D/R）・Tune・Distortion Gainが3物理px、その他が4物理pxです。Uniは32物理px、Polyは8物理pxです。全範囲の移動量が約1200pxに近づくよう、段階数の多いノブほど少ない移動量を割り当てています。1tick未満の移動量は次の操作へ持ち越します。吸着中は0〜80物理pxの内部位置を保持します。小さい値側から進入したら0、大きい値側から進入したら80、吸着点からドラッグを開始したら40に初期化します。増加方向で80へ到達すると大きい側、減少方向で0へ到達すると小さい側へ抜けます。進入直後に方向を戻すと、その側へすぐ抜けます。最大・最小値は通常動作です。吸着対象はCutoff・Tune・Cutoff Amountの1200 cent刻み、Master・Osc1/2/3のVolの6 dB刻み、Panの中央、およびEQ Low/Mid/High Gainの6 dB刻みです。上下どちらにも適用し、大きな移動でも途中の吸着値で必要な距離を消費します。
 目盛り位置は`src/editor.rs`の`knob_marks`でノブごとに整数tickとして定義します。目盛りは円弧ガイドから直接伸ばし、基準点と両端はガイドと同じ色・太さの長い線で示します。
 
@@ -751,9 +762,10 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した5波形オシレータ。
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
-- `src/distortion.rs`: 全Voice加算後のプリゲイン・クリップ・2階ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
+- `src/effects.rs`: 3スロットの直列処理、個別のDry/Mix・切り替え、全体の固定遅延。
+- `src/distortion.rs`: プリゲイン・クリップ・2階ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
 - `src/eq.rs`: TPT SVFによるLow shelf・Peak・High shelfの3帯域EQ。
-- `src/synth.rs`: Voiceの循環割り当て・共通の定位係数と、全Voice加算 → 共有Distortion → EQ → Master Volumeの処理パイプライン。
+- `src/synth.rs`: Voiceの循環割り当て・共通の定位係数と、全Voice加算 → Effector 1 → 2 → 3 → EQ → Master Volumeの処理パイプライン。
 - `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilterの処理パイプライン。
 - `src/float_mode.rs`: 音声処理中の非正規化数処理モードの保存・切り替え・復元。
 - `src/random.rs`: 位相とNoiseで共用するxoshiro256+乱数生成器。

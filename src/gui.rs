@@ -112,6 +112,20 @@ impl EditorView {
                                 value,
                             );
                         }
+                        Edit::SwapEffects(first) => {
+                            self.finish_edit(None);
+                            let mut values = self.state.parameters.snapshot();
+                            crate::parameters::swap_effects(&mut values, first);
+                            for indices in &crate::parameters::EFFECT_SLOTS[first..=first + 1] {
+                                for &index in indices {
+                                    crate::plugin::edit_parameter(
+                                        self.state.controller.as_ptr(),
+                                        index,
+                                        values[index],
+                                    );
+                                }
+                            }
+                        }
                         Edit::Begin(index) => {
                             self.finish_edit(None);
                             if let Some(handler) = crate::plugin::begin_parameter_edit(
