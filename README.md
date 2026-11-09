@@ -108,7 +108,7 @@ Detune=0ではノイズ源1個にまとめ、Widthは無効です。Detune>0で�
 
 ## Voiceごとのフィルタ
 
-音源は `Synthesizer → Voice → Oscillator` の階層です。各コンポーネントは専用のStateを所有します。各VoiceはOsc1・Osc2・Osc3とそれぞれの定常入力を保持します。Osc1はユニゾンを生成し、Osc2/3は各1発振器です。各発振器のVolumeを適用して加算し、共通の音量AHDSR、フィルタ、ディストーションの順に通した後、全Voiceを左右別に加算します。フィルタの係数は左右で共用し、積分器の履歴は独立させます。
+音源は `Synthesizer → Voice → Oscillator` の階層です。各コンポーネントは専用のStateを所有します。各VoiceはOsc1・Osc2・Osc3とそれぞれの定常入力を保持します。Osc1はユニゾンを生成し、Osc2/3は各1発振器です。各発振器のVolumeを適用して加算し、共通の音量AHDSR、フィルタの順に通した後、全Voiceのフィルタ出力を左右別に加算します。合成音はSynthesizerが所有する1個の共有Distortion、EQ、Master Volumeの順に通します。フィルタの係数は左右で共用し、積分器の履歴は独立させます。
 Stateはデータ保持専用とし、所有コンポーネントのメソッドが処理とStateの更新を担当します。
 音声関数は1サンプルを`*_sample`、サンプル系列を`*_samples`で区別します。
 
@@ -166,7 +166,7 @@ Amountは10 cent刻みの整数ノブで操作します。
 
 ## マスターボリューム
 
-Volumeは全Voiceのディストーション出力を加算した後の音量です（ParamID `0x4d564f4c`）。
+Volumeは全Voiceのフィルタ出力を加算し、共有DistortionとEQを通した後の音量です（ParamID `0x4d564f4c`）。
 全Volumeの範囲は−60〜＋12 dBで、下限の−60 dB位置を−∞（完全消音）として扱います。MasterとOsc1の初期値は0 dB、Osc2/3は−∞です。
 整数ノブのtick=0は−∞、1〜720は`dB = tick / 10 − 60`で換算し、0.1 dB刻みで設定します。
 振幅倍率は`10^(dB / 20)`（−∞では0）で、値の変更時だけ計算して保持します。
@@ -379,7 +379,7 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 
 ## ディストーション
 
-各Voiceのフィルタ直後に適用し、処理後に全Voiceを加算します。
+全Voiceのフィルタ出力を加算した後、EQの前に共有ディストーションを1個適用します。
 
 | パラメーター | 範囲・初期値 | ParamID |
 | --- | --- | --- |
@@ -388,15 +388,15 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 | Mix | 0〜100%、1%刻み、初期値100% | `0x434d4958` |
 
 OffはGainとMixを含めてバイパスします。Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`で処理します。
-Gainの線形倍率は`10^(dB/20)`です。Mixは0%でフィルタ出力の原音、100%で処理音になり、その間を線形混合します。Gain・Mixのオートメーションは正規化値を線形補間し、Clipper typeは変更点で切り替えます。
+Gainの線形倍率は`10^(dB/20)`です。Mixは0%で全Voiceのフィルタ出力を加算した原音、100%で処理音になり、その間を線形混合します。Gain・Mixのオートメーションは正規化値を線形補間し、Clipper typeは変更点で切り替えます。
 
-ディストーションはホストレートの2階ADAAで処理します。各Voiceのフィルタ出力へGain・Clipperを適用し、全Voiceを加算してMaster Volumeを掛けます。
-Dryはフィルタ出力を加算してMaster Volumeと1サンプルの純遅延だけを適用し、出力時点のMixでWetと混合します。
+ディストーションはホストレートの2階ADAAで左右独立に処理します。Wetは全Voiceのフィルタ出力の合成音へGain・Clipper・ADAAを適用します。
+Dryは合成音へ1サンプルの純遅延だけを適用し、出力時点のMixでWetと混合します。混合後の出力へEQ、Master Volumeの順に適用します。
 Clipper=OffではDryだけを出力し、クリップ・ADAAを省きます。ホストへの申告遅延も常に1サンプルです。
 
 ADAA2による平均化はWetの高域特性に影響します。Dryは平均化を通しません。
 Softの原始関数は1025点の共有テーブルから整合した多項式で求め、近接入力では差分の桁落ちを避ける式を使います。
-Hardは区分的な関数の積分を直接計算します。履歴はVoiceと左右チャンネルごとに保持します。
+Hardは区分的な関数の積分を直接計算します。ADAAの履歴は共有Distortionが左右チャンネルごとに保持します。
 
 処理中のClipper typeの変更は、Wetの32サンプルのフェードアウト、2サンプルの履歴充填、32サンプルのフェードインで切り替えます。
 切替中もDryとノート・位相・AHDSRの時間は継続します。停止中の設定は次の処理開始時に即時適用します。
@@ -461,7 +461,7 @@ Windowsはbaseviewの子ウィンドウのタイマー、LinuxはVST3のIRunLoop
 
 ## EQ試作
 
-3帯域EQを全Voice加算後・Master前へ追加する試作です。Low shelf → Peak → High shelfをTPT SVFで処理します。各帯域のFrequencyは20〜20,000 Hz、Gainは−18〜+18 dB、Mid Qは0.1〜10です。棚型の傾斜は固定。既定はOff、250/1,000/4,000 Hz、全Gain=0 dB、Q=1です。Off/On切替では履歴をリセットします。
+3帯域EQを共有ディストーション後・Master前へ追加する試作です。Low shelf → Peak → High shelfをTPT SVFで処理します。各帯域のFrequencyは20〜20,000 Hz、Gainは−18〜+18 dB、Mid Qは0.1〜10です。棚型の傾斜は固定。既定はOff、250/1,000/4,000 Hz、全Gain=0 dB、Q=1です。Off/On切替では履歴をリセットします。
 
 追加設定はVST3の変更キューと状態保存へ接続し、内蔵SineではOffに戻ります。Enableは変更点で切り替え、他の追加値はVST3の正規化空間で線形補間します。GUIはFrequencyを300tickの対数軸、Gainを0.1 dB、Qを200tickの対数軸で操作します。Gainは−12・−6・0・+6・+12 dBで、共通の80物理pxの吸着区間を使います。端点の±18 dBは通常操作です。Mid帯域のQは「Mid Q」と表示します。ParamIDは`0x45510000`〜`0x45510007`です。
 
@@ -751,10 +751,10 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/oscillator.rs`: 定常入力 `OscillatorInput` と内部状態 `OscillatorState` を分離した5波形オシレータ。
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
-- `src/distortion.rs`: フィルタ後のプリゲイン・クリップ・1次／2次ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
+- `src/distortion.rs`: 全Voice加算後のプリゲイン・クリップ・2階ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
 - `src/eq.rs`: TPT SVFによるLow shelf・Peak・High shelfの3帯域EQ。
-- `src/synth.rs`: Voiceの循環割り当て・加算出力と、共通の定位係数・マスター音量の管理。
-- `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilter → Distortionの処理パイプライン。
+- `src/synth.rs`: Voiceの循環割り当て・共通の定位係数と、全Voice加算 → 共有Distortion → EQ → Master Volumeの処理パイプライン。
+- `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilterの処理パイプライン。
 - `src/float_mode.rs`: 音声処理中の非正規化数処理モードの保存・切り替え・復元。
 - `src/random.rs`: 位相とNoiseで共用するxoshiro256+乱数生成器。
 - `src/oscillator_tables.rs`: Detune倍率と四半周期正弦波の固定テーブル。

@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Clipperのフラッシュ・実時間切替と、可変ブロックでも同じ出力になることを検証する。
+// 多声音の共有Clipperをステレオで処理し、フラッシュ・実時間切替・可変ブロック・停止を検証する。
 template <typename Sample>
 void checkDistortionBlocks(IComponent* component, IAudioProcessor* processor, IEditController* controller, int32 precision) {
     String128 text {};
@@ -13,11 +13,13 @@ void checkDistortionBlocks(IComponent* component, IAudioProcessor* processor, IE
             configureEnvelope(processor, true);
             ProcessSetup setup {split ? kOffline : kRealtime, precision, 257, rate};
             assert(processor->setupProcessing(setup) == kResultOk);
-            Points phase, clip, gain;
+            Points phase, clip, gain, poly, pan;
             phase.id = phaseId; phase.values = {{0, .5}};
             clip.id = 0x43545950; clip.values = {{0, type / 2.0}};
             gain.id = 0x43474149; gain.values = {{0, .25}};
-            Changes changes; changes.queues = {&phase, &clip, &gain};
+            poly.id = polyphonyId; poly.values = {{0, 3.0 / 31.0}};
+            pan.id = 0x4d50414e; pan.values = {{0, .625}};
+            Changes changes; changes.queues = {&phase, &clip, &gain, &poly, &pan};
             ProcessData data {}; data.symbolicSampleSize = precision;
             data.inputParameterChanges = &changes;
             assert(processor->process(data) == kResultOk); // 停止中の0サンプル更新。
@@ -32,26 +34,35 @@ void checkDistortionBlocks(IComponent* component, IAudioProcessor* processor, IE
             else bus.channelBuffers64 = channels;
             data.processMode = setup.processMode; data.numOutputs = 1; data.outputs = &bus;
             data.inputParameterChanges = nullptr;
-            Events events; events.values = {note(true, 0, 1)};
+            Events events; events.values = {note(true, 0, 1, 60), note(true, 0, 2, 64), note(true, 0, 3, 67), note(true, 0, 4, 72)};
             std::vector<Sample> actual;
+            bool stereo = false;
             for (int n = 0; n < 1024;) {
                 data.numSamples = std::min(1024 - n, split ? (n % 3 == 0 ? 1 : 63) : 257);
                 data.inputEvents = n == 0 ? &events : nullptr;
                 assert(processor->process(data) == kResultOk);
                 for (int i = 0; i < data.numSamples; ++i) {
-                    assert(std::isfinite(left[i]) && left[i] == right[i]);
+                    assert(std::isfinite(left[i]) && std::isfinite(right[i]));
+                    stereo |= left[i] != right[i];
                     actual.push_back(left[i]);
+                    actual.push_back(right[i]);
                 }
                 n += data.numSamples;
             }
             if (split) assert(actual == reference);
             else reference = actual;
+            assert(stereo);
             assert(std::any_of(actual.begin(), actual.end(), [](Sample x) {return std::abs(x) > .1;}));
             // 保持中のノートのままClipperを切り替え、遅延申告と出力の有限性を確認する。
             clip.values = {{0, (3 - type) / 2.0}}; changes.queues = {&clip};
             data.inputEvents = nullptr; data.inputParameterChanges = &changes; data.numSamples = 257;
             assert(processor->process(data) == kResultOk && processor->getLatencySamples() == 1);
             for (int i = 0; i < 257; ++i) assert(std::isfinite(left[i]) && std::isfinite(right[i]));
+            assert(processor->setProcessing(false) == kResultOk);
+            assert(processor->setProcessing(true) == kResultOk);
+            data.inputParameterChanges = nullptr; data.numSamples = 7;
+            assert(processor->process(data) == kResultOk);
+            for (int i = 0; i < data.numSamples; ++i) assert(left[i] == 0 && right[i] == 0);
             assert(processor->setProcessing(false) == kResultOk && component->setActive(false) == kResultOk);
         }
     }
