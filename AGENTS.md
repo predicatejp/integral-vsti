@@ -58,7 +58,7 @@
 - 音源方式・主要機能: 各3発振器を持つ1〜32個の独立Voiceによる多声音音源。サイン波・三角波・矩形波・ノコギリ波・ホワイトノイズに対応。既定はサイン波。音量・カットオフ用の独立した線形AHDSRエンベロープ。同一ノートの1〜7ボイスユニゾン。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
 - サンプルレートは44.1 kHz以上の有限値を受理し、範囲外はVST3の`setupProcessing`で拒否する。フィルタも同じ下限を検証し、カットオフは内部で20〜20,000 Hzにクランプする。
-- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・Modも公開する。3スロットの種類（Off／Distortion／Delay／Reverb／Chorus）と個別のClipper type・Gain・Mix、Delay Time・Feedback・Mix・Stereo、Reverb Decay・Damping・Size・Mix、Chorus Time・Depth・Rate・Detune・Feedback・Mix、およびEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainも公開する。eguiで93パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計94パラメーター）。
+- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・Modも公開する。3スロットの種類（Off／Distortion／Delay／Reverb／Chorus／Phaser）と個別のClipper type・Gain・Mix、Delay Time・Feedback・Mix・Stereo、Reverb Decay・Damping・Size・Mix、Chorus Time・Depth・Rate・Detune・Feedback・Mix、Phaser Center・Depth・Rate・Feedback・Mix、およびEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainも公開する。eguiで108パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計109パラメーター）。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。
 バス構成、最大同時発音数、サンプル精度、対応サンプルレート、MIDI機能、独自GUIの有無は、実装時に対応範囲を明記すること。
@@ -153,7 +153,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper typeの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mixの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。
 - GUIからの編集は `beginEdit` / `performEdit` / `endEdit` など規定の通知を使うこと。ホストからの値更新を再通知して循環させず、GUIを開かなくてもDSPへ更新が反映される構成にすること。
 
-- 全体エフェクトの挿入位置は全Voiceの合成後・EQ前とする。SynthesizerはEffectsを所有し、独立した3スロットを上から直列に通す。各スロットはOff（初期値）／Distortion／Delay／Reverbを選択し、Offは素通しとする。Clipper typeはOff/Soft（tanh・初期値）/Hard（±1）。Gainは0〜48 dB（初期値0）、GUIは0.1 dB刻み。Mixは原音と処理音の線形混合で0〜100%（初期値100）、GUIは1%刻み。原音側へGainを掛けない。Distortionが左右ごとのADAA履歴を所有する。Gainの線形換算は設定変更時だけ行う。GUIはAmp/Filter列とMaster列の間のエフェクト列に配置し、タイプは選択リスト、Gain・Mixは整数tickのノブとする。
+- 全体エフェクトの挿入位置は全Voiceの合成後・EQ前とする。SynthesizerはEffectsを所有し、独立した3スロットを上から直列に通す。各スロットはOff（初期値）／Distortion／Delay／Reverb／Chorus／Phaserを選択し、Offは素通しとする。Clipper typeはOff/Soft（tanh・初期値）/Hard（±1）。Gainは0〜48 dB（初期値0）、GUIは0.1 dB刻み。Mixは原音と処理音の線形混合で0〜100%（初期値100）、GUIは1%刻み。原音側へGainを掛けない。Distortionが左右ごとのADAA履歴を所有する。Gainの線形換算は設定変更時だけ行う。GUIはAmp/Filter列とMaster列の間のエフェクト列に配置し、タイプは選択リスト、Gain・Mixは整数tickのノブとする。
 
 - Distortionはホストレートの2階ADAAに固定する。各スロットへの入力にGain・Clipper・ADAAを適用する。Dryは同じ入力を1サンプルの純遅延だけに通し、出力時点のMixでWetと混合する。混合後にEQ、Master Volumeの順に適用する。系列の末尾でDistortion以外のスロット数に相当する純遅延を補い、申告遅延を常に3サンプルとする。Clipper変更はWetの32サンプルのフェードアウト・2サンプルの履歴充填・32サンプルのフェードインとし、Dryとノートの時間を継続する。履歴は初期化時に確保し、処理中に確保しない。GUIには各スロットの種類、Clipper type・Gain・Mixと隣接交換の↑／↓を配置する。交換は種類と全設定を一緒に行い、IDとオートメーションはスロット位置に固定する。
 
@@ -169,6 +169,8 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 
 - Chorusは左右1tapの線形補間可変遅延と独立帰還でFlangerも兼ねる。Timeは0.1〜40 ms（初期20、GUI 0.1 ms）、Depthは0〜10 ms（初期2、GUI 0.01 ms）、Rateは0.05〜5 Hz（初期0.7、GUI 0.01 Hz）、Detuneは−0.1〜0.1（初期0、GUI 0.001）、Feedbackは−95〜95%（初期0）、Mixは0〜100%（初期50）。左右LFOはRate×(1+Detune)とRate×(1−Detune)、開始位相は0°と180°。Rate/Detune変更で位相を保持する。実効DepthをTime−1サンプル以下へ制限し、正弦変調と正の帰還遅延を保つ。全設定を連続補間し、保存・交換に含める。
 - Chorusの最大Time+Depth用履歴は全3スロットでsetup時に確保し、1スロット16 MiBを上限とする。種類変更・処理停止・再設定で音声とLFOをリセットし、再生停止・シークでは継続する。ノブはTime・Depth・Rate・Det・Fdbk・Mixを横一列とし、Depthは2px/tick、Rateは3px/tick、その他は4px/tickとする。
+
+- Phaserは各スロットの左右独立6段正規化ラティスallpassと1サンプル前Wetの帰還。Centerは100〜4000 Hz（対数400tick、初期1000）、Depthは0〜2400 cent（10cent、初期1200）、Rateは0.05〜5Hz（0.01Hz、初期0.5）、Feedbackは−95〜95%（1%、初期50）、Mixは0〜100%（1%、初期50）。共通のf64 MCF LFOで周波数を動かし、係数は64サンプルごとの計算と線形補間を用いる。Rate変更で位相を保持する。設定は連続補間し、保存・交換に含める。種類変更・処理停止・再設定で固定長の履歴をリセットし、再生停止・シークでは継続する。追加遅延は0、系列の申告遅延は3サンプル。5ノブを横一列に配置し、Center/Rateは3px/tick、他は4px/tickとする。
 
 ### 状態保存とGUI
 

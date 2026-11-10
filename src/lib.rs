@@ -23,6 +23,7 @@ mod gui;
 mod host;
 mod oscillator;
 mod parameters;
+mod phaser;
 mod plugin;
 mod random;
 mod reverb;
