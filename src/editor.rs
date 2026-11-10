@@ -719,8 +719,8 @@ impl Editor {
             for direction in 0..2 {
                 let area = egui::Rect::from_min_size(
                     egui::pos2(
-                        rect.left() + GAP + direction as f32 * 28.0,
-                        choice_rect(1).top(),
+                        rect.left() + GAP + 64.0 + direction as f32 * 28.0,
+                        choice_rect(0).top(),
                     ),
                     egui::vec2(24.0, CHOICE_HEIGHT),
                 );
