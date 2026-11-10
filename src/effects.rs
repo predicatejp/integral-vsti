@@ -7,6 +7,7 @@ use crate::chorus::{Chorus, ChorusParameters};
 use crate::delay::{Delay, DelayParameters};
 use crate::distortion::{ClipperType, Distortion, DistortionParameters};
 use crate::parameters::{self, EFFECT_SLOTS};
+use crate::phaser::{Phaser, PhaserParameters};
 use crate::reverb::{Reverb, ReverbParameters};
 
 /// 各Distortionの1サンプル遅延を含む、系列全体の固定遅延。
@@ -19,6 +20,7 @@ pub enum EffectType {
     Delay,
     Reverb,
     Chorus,
+    Phaser,
 }
 
 #[cfg_attr(test, derive(Clone))]
@@ -31,6 +33,8 @@ struct EffectState {
     reverb: Reverb,
     /// 可変遅延・帰還・左右LFOの独立した履歴。
     chorus: Chorus,
+    /// 左右独立の6段allpassと共通LFO。
+    phaser: Phaser,
     /// このスロットだけの設定と左右独立のADAA履歴。
     parameters: DistortionParameters,
     distortion: Distortion,
@@ -55,6 +59,7 @@ impl Effect {
         delay_parameters: DelayParameters,
         reverb_parameters: ReverbParameters,
         chorus_parameters: ChorusParameters,
+        phaser_parameters: PhaserParameters,
     ) -> Self {
         Self {
             state: EffectState {
@@ -62,6 +67,7 @@ impl Effect {
                 delay: Delay::new(delay_parameters),
                 reverb: Reverb::new(reverb_parameters),
                 chorus: Chorus::new(chorus_parameters),
+                phaser: Phaser::new(phaser_parameters),
                 parameters,
                 distortion: Distortion::new(),
                 processing: parameters.clipper,
@@ -92,6 +98,7 @@ impl Effect {
         self.state.delay.reset();
         self.state.reverb.reset();
         self.state.chorus.reset();
+        self.state.phaser.reset();
         self.state.previous_dry = [0.0; 2];
         self.state.processing = self.state.parameters.clipper;
         self.state.transition = 0;
@@ -148,6 +155,13 @@ impl Effect {
             EffectType::Chorus => {
                 for sample in samples {
                     *sample = self.state.chorus.process_sample(*sample);
+                }
+                self.state.started = true;
+                return;
+            }
+            EffectType::Phaser => {
+                for sample in samples {
+                    *sample = self.state.phaser.process_sample(*sample);
                 }
                 self.state.started = true;
                 return;
@@ -211,6 +225,7 @@ impl Effects {
                         parameters::delay(&values, slot),
                         parameters::reverb(&values, slot),
                         parameters::chorus(&values, slot),
+                        parameters::phaser(&values, slot),
                     )
                 }),
                 padding: LATENCY,
@@ -252,6 +267,7 @@ impl Effects {
             .zip(reverbs)
             .zip(choruses)
         {
+            slot.state.phaser.prepare(sample_rate);
             slot.state.delay = delay;
             slot.state.reverb = reverb;
             slot.state.chorus = chorus;
@@ -281,11 +297,17 @@ impl Effects {
                         .reverb
                         .set_parameters(parameters::reverb(values, slot));
                 }
-                if indices[12..].iter().any(|&i| values[i] != previous[i]) {
+                if indices[12..18].iter().any(|&i| values[i] != previous[i]) {
                     self.state.slots[slot]
                         .state
                         .chorus
                         .set_parameters(parameters::chorus(values, slot));
+                }
+                if indices[18..].iter().any(|&i| values[i] != previous[i]) {
+                    self.state.slots[slot]
+                        .state
+                        .phaser
+                        .set_parameters(parameters::phaser(values, slot));
                 }
                 // 他のエフェクト設定変更でDistortionのGain換算をやり直さない。
                 let distortion = if indices[1..4].iter().any(|&i| values[i] != previous[i]) {
@@ -333,6 +355,10 @@ impl Effects {
                     slot.state.started = true;
                     slot.state.chorus.process_sample(sample)
                 }
+                EffectType::Phaser => {
+                    slot.state.started = true;
+                    slot.state.phaser.process_sample(sample)
+                }
                 EffectType::Reverb => {
                     slot.state.started = true;
                     slot.state.reverb.process_sample(sample)
@@ -368,7 +394,7 @@ mod tests {
         let mut values = parameters::defaults();
         for (slot, [kind, clipper, gain, mix, ..]) in EFFECT_SLOTS.into_iter().enumerate() {
             values[kind] = if mask & (1 << slot) != 0 {
-                1.0 / 4.0
+                parameters::to_normalized(kind, 1.0)
             } else {
                 0.0
             };
@@ -444,7 +470,11 @@ mod tests {
         for step in 0..24 {
             let previous = p;
             let [kind, clipper, gain, mix, ..] = EFFECT_SLOTS[step % 3];
-            p[kind] = if step % 4 == 0 { 0.0 } else { 1.0 / 4.0 };
+            p[kind] = if step % 4 == 0 {
+                0.0
+            } else {
+                parameters::to_normalized(kind, 1.0)
+            };
             p[clipper] = (step % 3) as f64 / 2.0;
             p[gain] = (step % 7) as f64 / 6.0;
             p[mix] = (step % 5) as f64 / 4.0;
@@ -468,7 +498,7 @@ mod tests {
         for step in 0..30 {
             let previous = p;
             let [kind, _, _, _, beat, feedback, mix, stereo, ..] = EFFECT_SLOTS[step % 3];
-            p[kind] = parameters::to_normalized(kind, ((step / 3) % 5) as f64);
+            p[kind] = parameters::to_normalized(kind, ((step / 3) % 6) as f64);
             p[stereo] = (step % 4) as f64 / 3.0;
             p[beat] = (step % 14) as f64 / 13.0;
             p[feedback] = (step % 6) as f64 / 5.0;
@@ -498,6 +528,35 @@ mod tests {
         for _ in 0..24000 {
             assert_eq!(scalar.process_sample([0.0; 2]), [0.0; 2]);
         }
+    }
+
+    #[test]
+    fn phaser_automation_matches_sample_and_block_paths() {
+        let mut p = parameters::defaults();
+        let mut scalar = Effects::new();
+        assert!(scalar.prepare(96000.0, &p));
+        let mut blocks = scalar.clone();
+        for step in 0..40 {
+            let previous = p;
+            for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
+                p[indices[0]] = parameters::to_normalized(indices[0], 5.0);
+                for (j, &i) in indices[18..].iter().enumerate() {
+                    p[i] = ((step + j + slot) % 11) as f64 / 10.0;
+                }
+            }
+            scalar.set_parameters(&p, &previous);
+            blocks.set_parameters(&p, &previous);
+            let len = [0, 1, 17, 63, 64, 65, 257][step % 7];
+            let mut samples: Vec<_> = (0..len)
+                .map(|n| [(n as f64 * 0.2).sin(), (n as f64 * 0.07).cos()])
+                .collect();
+            let expected: Vec<_> = samples.iter().map(|&x| scalar.process_sample(x)).collect();
+            blocks.process_samples(&mut samples);
+            assert_eq!(samples, expected);
+            assert!(samples.iter().flatten().all(|x| x.is_finite()));
+        }
+        blocks.reset();
+        assert_eq!(blocks.process_sample([0.0; 2]), [0.0; 2]);
     }
 
     #[test]
@@ -531,6 +590,7 @@ mod tests {
             delay_parameters,
             parameters::reverb(&parameters::defaults(), 0),
             parameters::chorus(&parameters::defaults(), 0),
+            parameters::phaser(&parameters::defaults(), 0),
         );
         effect.set_parameters(EffectType::Distortion, p, delay_parameters);
         let mut dry = [0.0; 2];

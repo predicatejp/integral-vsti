@@ -34,6 +34,8 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Fdbk", "Mix", "Stereo", "Stereo", "Stereo", "Dec", "Damp", "Size", "Mix", "Dec", "Damp",
     "Size", "Mix", "Dec", "Damp", "Size", "Mix", "Time", "Depth", "Rate", "Det", "Fdbk", "Mix",
     "Time", "Depth", "Rate", "Det", "Fdbk", "Mix", "Time", "Depth", "Rate", "Det", "Fdbk", "Mix",
+    "Center", "Depth", "Rate", "Fdbk", "Mix", "Center", "Depth", "Rate", "Fdbk", "Mix", "Center",
+    "Depth", "Rate", "Fdbk", "Mix",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -48,6 +50,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     4, 4, 4, // Stereo
     4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, // Reverb
     4, 2, 3, 4, 4, 4, 4, 2, 3, 4, 4, 4, 4, 2, 3, 4, 4, 4, // Chorus
+    3, 4, 3, 4, 4, 3, 4, 3, 4, 4, 3, 4, 3, 4, 4, // Phaser
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -95,6 +98,8 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         35 | 37 | 40 => (&[0, 100, 200, 300], 100),
         36 | 38 | 41 => (&[0, 60, 120, 180, 240, 300, 360], 180),
         39 => (&[0, 50, 100, 150, 200], 100),
+        93 => (&[0, 100, 200, 300, 400], 0),
+        94 => (&[0, 60, 120, 180, 240], 0),
         75 => (&[0, 9, 99, 199, 399], 199), // Time: 1/10/20/40ms
         76 => (&[0, 100, 200, 500, 1000], 0),
         77 => (&[0, 45, 95, 195, 495], 95),
@@ -839,7 +844,8 @@ impl WindowHandler for Editor {
                 {
                     2 => &indices[4..7],
                     3 => &indices[8..12],
-                    4 => &indices[12..],
+                    4 => &indices[12..18],
+                    5 => &indices[18..],
                     _ => &indices[2..4],
                 };
                 indices.contains(&drag.index) && !visible.contains(&drag.index)
@@ -959,13 +965,14 @@ impl WindowHandler for Editor {
                     "Eff 1",
                     match effect_kinds[0] {
                         2 => &[42, 60][..],
-                        3 | 4 => &[42][..],
+                        3..=5 => &[42][..],
                         _ => &[42, 31][..],
                     },
                     &[match effect_kinds[0] {
                         2 => &[51, 52, 53][..],
                         3 => &[63, 64, 65, 66][..],
                         4 => &[75, 76, 77, 78, 79, 80][..],
+                        5 => &[93, 94, 95, 96, 97][..],
                         _ => &[32, 33][..],
                     }][..],
                     [effects_x, GAP, side_width, effect_height],
@@ -974,13 +981,14 @@ impl WindowHandler for Editor {
                     "Eff 2",
                     match effect_kinds[1] {
                         2 => &[43, 61][..],
-                        3 | 4 => &[43][..],
+                        3..=5 => &[43][..],
                         _ => &[43, 45][..],
                     },
                     &[match effect_kinds[1] {
                         2 => &[54, 55, 56][..],
                         3 => &[67, 68, 69, 70][..],
                         4 => &[81, 82, 83, 84, 85, 86][..],
+                        5 => &[98, 99, 100, 101, 102][..],
                         _ => &[46, 47][..],
                     }][..],
                     [
@@ -994,13 +1002,14 @@ impl WindowHandler for Editor {
                     "Eff 3",
                     match effect_kinds[2] {
                         2 => &[44, 62][..],
-                        3 | 4 => &[44][..],
+                        3..=5 => &[44][..],
                         _ => &[44, 48][..],
                     },
                     &[match effect_kinds[2] {
                         2 => &[57, 58, 59][..],
                         3 => &[71, 72, 73, 74][..],
                         4 => &[87, 88, 89, 90, 91, 92][..],
+                        5 => &[103, 104, 105, 106, 107][..],
                         _ => &[49, 50][..],
                     }][..],
                     [
