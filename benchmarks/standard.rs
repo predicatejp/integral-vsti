@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! 通常の演奏・音色・オートメーションを固定した性能回帰スイート。
 #![allow(dead_code)] // ABI・保存処理など、計測対象以外の既存定義も読み込む。
+#[path = "../src/limiter.rs"]
+mod limiter;
 #[path = "../src/phaser.rs"]
 mod phaser;
 #[path = "../src/chorus.rs"]
@@ -98,6 +100,7 @@ const BASE: [f64; parameters::COUNT] = [
     1000., 1200., 0.5, 50., 50.,
     1000., 1200., 0.5, 50., 50.,
     1000., 1200., 0.5, 50., 50.,
+    0., // Limiter Off
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),

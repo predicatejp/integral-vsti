@@ -58,7 +58,7 @@
 - 音源方式・主要機能: 各3発振器を持つ1〜32個の独立Voiceによる多声音音源。サイン波・三角波・矩形波・ノコギリ波・ホワイトノイズに対応。既定はサイン波。音量・カットオフ用の独立した線形AHDSRエンベロープ。同一ノートの1〜7ボイスユニゾン。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
 - サンプルレートは44.1 kHz以上の有限値を受理し、範囲外はVST3の`setupProcessing`で拒否する。フィルタも同じ下限を検証し、カットオフは内部で20〜20,000 Hzにクランプする。
-- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・Modも公開する。3スロットの種類（Off／Distortion／Delay／Reverb／Chorus／Phaser）と個別のClipper type・Gain・Mix、Delay Time・Feedback・Mix・Stereo、Reverb Decay・Damping・Size・Mix、Chorus Time・Depth・Rate・Detune・Feedback・Mix、Phaser Center・Depth・Rate・Feedback・Mix、およびEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainも公開する。eguiで108パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計109パラメーター）。
+- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・Modも公開する。3スロットの種類（Off／Distortion／Delay／Reverb／Chorus／Phaser）と個別のClipper type・Gain・Mix、Delay Time・Feedback・Mix・Stereo、Reverb Decay・Damping・Size・Mix、Chorus Time・Depth・Rate・Detune・Feedback・Mix、Phaser Center・Depth・Rate・Feedback・Mix、およびEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainも公開する。MasterのLimiter Off/Onも公開する。eguiで109パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計110パラメーター）。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。
 バス構成、最大同時発音数、サンプル精度、対応サンプルレート、MIDI機能、独自GUIの有無は、実装時に対応範囲を明記すること。
@@ -171,6 +171,8 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - Chorusの最大Time+Depth用履歴は全3スロットでsetup時に確保し、1スロット16 MiBを上限とする。種類変更・処理停止・再設定で音声とLFOをリセットし、再生停止・シークでは継続する。ノブはTime・Depth・Rate・Det・Fdbk・Mixを横一列とし、Depthは2px/tick、Rateは3px/tick、その他は4px/tickとする。
 
 - Phaserは各スロットの左右独立6段正規化ラティスallpassと1サンプル前Wetの帰還。Centerは100〜4000 Hz（対数400tick、初期1000）、Depthは0〜2400 cent（10cent、初期1200）、Rateは0.05〜5Hz（0.01Hz、初期0.5）、Feedbackは−95〜95%（1%、初期50）、Mixは0〜100%（1%、初期50）。共通のf64 MCF LFOで周波数を動かし、係数は64サンプルごとの計算と線形補間を用いる。Rate変更で位相を保持する。設定は連続補間し、保存・交換に含める。種類変更・処理停止・再設定で固定長の履歴をリセットし、再生停止・シークでは継続する。追加遅延は0、系列の申告遅延は3サンプル。5ノブを横一列に配置し、Center/Rateは3px/tick、他は4px/tickとする。
+
+- LimiterはEQ直後・Master Volume直前に1個置く。Master内にOff/Onのみを配置し、既定はOff。先読み5 ms、プリゲイン0 dB、シーリング0 dBFS、Release時定数100 msに固定する。左右ピークを共通検出し、最大値窓→指数Release→先読み長の矩形平均→逆数ゲインの順で処理する。Releaseの平均はサンプル区間の積分から求める。音声の純遅延は`ceil(sample_rate * 0.005)`サンプルとし、Offでも遅延と検出履歴を維持する。処理中に確保せず、処理停止で履歴を消去する。申告遅延はエフェクタ系列の3サンプルと合計し、サンプルレート設定成功時に更新する。
 
 ### 状態保存とGUI
 

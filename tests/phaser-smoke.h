@@ -11,7 +11,7 @@ void checkPhaser(IComponent* component, IAudioProcessor* processor, IEditControl
             assert(processor->setupProcessing(setup) == kResultOk);
             std::array<Points, 20> points;
             Changes changes;
-            const std::array<int, 20> indices {108,12,42,43,44,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107};
+            const std::array<int, 20> indices {109,12,42,43,44,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107};
             const std::array<double, 20> plain {0,1,slots>=3?5.:0.,slots>=2?5.:0.,slots>=1?5.:0.,
                 1000,1200,.5,50,100,400,2400,1,-50,100,2000,600,.3,60,100};
             for (size_t i=0;i<points.size();++i) {
@@ -46,7 +46,7 @@ void checkPhaser(IComponent* component, IAudioProcessor* processor, IEditControl
                 }
                 n+=data.numSamples;
             }
-            assert(processor->getLatencySamples()==3);
+            assert(processor->getLatencySamples()==3 + static_cast<uint32>(std::ceil(rate * .005)));
             assert(processor->setProcessing(false)==kResultOk && processor->setProcessing(true)==kResultOk);
             data.inputEvents=nullptr;data.inputParameterChanges=nullptr;data.numSamples=257;
             for(int n=0;n<length;n+=257) {
@@ -70,8 +70,8 @@ void checkPhaser(IComponent* component, IAudioProcessor* processor, IEditControl
             if(slots==1) {
                 const auto ramp=render(1,true,true);
                 for(int n=0;n<length;++n) {
-                    // Mixを適用した時刻から系列末尾の純遅延3サンプル後に出力する。
-                    const double mix=std::clamp((n-3)/255.0,0.0,1.0);
+                    // Mixを適用した時刻から系列末尾の申告遅延後に出力する。
+                    const double mix=std::clamp((n-static_cast<int>(processor->getLatencySamples()))/255.0,0.0,1.0);
                     for(int ch=0;ch<2;++ch) assert(std::abs(ramp[n][ch]-(dry[n][ch]*(1-mix)+wet[n][ch]*mix))<1e-6);
                 }
             }

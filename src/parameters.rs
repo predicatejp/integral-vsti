@@ -11,7 +11,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 108;
+pub const COUNT: usize = 109;
 /// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo、ReverbのDecay/Damping/Size/Mix、ChorusのTime/Depth/Rate/Detune/Feedback/Mix、PhaserのCenter/Depth/Rate/Feedback/Mix。IDは位置に固定する。
 pub const EFFECT_SLOTS: [[usize; 23]; 3] = [
     [
@@ -259,6 +259,7 @@ pub const IDS: [u32; COUNT] = [
     0x50335254,  // P3RT
     0x50334642,  // P3FB
     0x50334d58,  // P3MX
+    0x4c490000,  // Limiter
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -369,6 +370,7 @@ pub const NAMES: [&str; COUNT] = [
     "Effect 3 Phaser Rate",
     "Effect 3 Phaser Feedback",
     "Effect 3 Phaser Mix",
+    "Limiter",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -380,7 +382,7 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         9 => &FILTER_NAMES,
         12 => &PHASE_NAMES,
         31 => &CLIPPER_NAMES,
-        34 => &["Off", "On"],
+        34 | 108 => &["Off", "On"],
         51 => &DELAY_BEATS,
         60 => &["Stereo", "Cross", "PP-L", "PP-R"],
         _ => &[],
@@ -394,7 +396,7 @@ pub fn max_tick(index: usize) -> u32 {
         TIME_TICKS
     } else {
         match index {
-            34 => 1,
+            34 | 108 => 1,
             31 => 2,
             51 => 13,
             42 => 5,
@@ -463,7 +465,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 42..=45 | 48 | 51 | 54 | 57 | 60..=62 | 65 | 69 | 73 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 42..=45 | 48 | 51 | 54 | 57 | 60..=62 | 65 | 69 | 73 | 108 | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
@@ -511,7 +513,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         return from_normalized(normalized).map_or(0.0, |w| f64::from(waveform_index(w)));
     }
     match index {
-        34 => return (normalized * 2.0).floor().min(1.0),
+        34 | 108 => return (normalized * 2.0).floor().min(1.0),
         51 => return (normalized * 14.0).floor().min(13.0),
         42 => return (normalized * 6.0).floor().min(5.0),
         93 => return 100.0 * 40_f64.powf(normalized),
@@ -567,7 +569,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         return plain.clamp(0.0, 4.0).round() / 4.0;
     }
     match index {
-        34 => return plain.clamp(0.0, 1.0).round(),
+        34 | 108 => return plain.clamp(0.0, 1.0).round(),
         51 => return plain.clamp(0.0, 13.0).round() / 13.0,
         42 => return plain.clamp(0.0, 5.0).round() / 5.0,
         93 => return (plain / 100.0).log(40.0),
@@ -616,7 +618,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
     }
     match index {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
-        34 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
+        34 | 108 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
         51 => (0.0..=13.0).contains(&plain) && plain.fract() == 0.0,
         42 => (0.0..=5.0).contains(&plain) && plain.fract() == 0.0,
         93 => (100.0..=4000.0).contains(&plain),
@@ -655,7 +657,10 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         0.0 // 1音色の一覧は全正規化値を番号0へ対応させる。
     } else if is_waveform(index) {
         normalized(from_normalized(value).expect("validated normalized value"))
-    } else if matches!(control_kind(index), 6 | 8 | 9 | 12 | 31 | 34 | 42 | 51 | 60) {
+    } else if matches!(
+        control_kind(index),
+        6 | 8 | 9 | 12 | 31 | 34 | 42 | 51 | 60 | 108
+    ) {
         to_normalized(index, to_plain(index, value))
     } else {
         value
@@ -776,6 +781,7 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         0.5,
         50.0,
         50.0,
+        0.0, // Limiter: Off
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -1042,9 +1048,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v30: 固定868バイト。波形番号u32と、その他の実単位f64を保持する。
+// v31: 固定876バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x1e\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x1f\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {

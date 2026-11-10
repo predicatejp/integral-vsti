@@ -32,7 +32,7 @@ void checkDistortionBlocks(IComponent* component, IAudioProcessor* processor, IE
             ProcessData data {}; data.symbolicSampleSize = precision;
             data.inputParameterChanges = &changes;
             assert(processor->process(data) == kResultOk); // 停止中の0サンプル更新。
-            assert(processor->getLatencySamples() == 3);
+            assert(processor->getLatencySamples() == 3 + static_cast<uint32>(std::ceil(rate * .005)));
             assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
             assert(component->activateBus(kEvent, kInput, 0, true) == kResultOk);
             assert(component->setActive(true) == kResultOk && processor->setProcessing(true) == kResultOk);
@@ -65,7 +65,7 @@ void checkDistortionBlocks(IComponent* component, IAudioProcessor* processor, IE
             // 保持中のノートのままClipperを切り替え、遅延申告と出力の有限性を確認する。
             clip.values = {{0, (3 - type) / 2.0}}; changes.queues = {&clip};
             data.inputEvents = nullptr; data.inputParameterChanges = &changes; data.numSamples = 257;
-            assert(processor->process(data) == kResultOk && processor->getLatencySamples() == 3);
+            assert(processor->process(data) == kResultOk && processor->getLatencySamples() == 3 + static_cast<uint32>(std::ceil(rate * .005)));
             for (int i = 0; i < 257; ++i) assert(std::isfinite(left[i]) && std::isfinite(right[i]));
             assert(processor->setProcessing(false) == kResultOk);
             assert(processor->setProcessing(true) == kResultOk);

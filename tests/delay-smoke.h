@@ -11,7 +11,7 @@ void checkDelay(IComponent* component, IAudioProcessor* processor, IEditControll
         const int slots = trial == 0 ? 0 : trial < 5 ? 1 : trial < 7 ? trial - 3 : 1;
         std::array<Points, 15> points;
         Changes changes;
-        const std::array<int, 15> indices {108, 12, 42, 51, 52, 53, 43, 54, 55, 56, 44, 57, 58, 59, 60};
+        const std::array<int, 15> indices {109, 12, 42, 51, 52, 53, 43, 54, 55, 56, 44, 57, 58, 59, 60};
         const std::array<double, 15> values {0, .5, slots > 0 ? 0.4 : 0.0, 0, 1, 1,
             slots > 1 ? 0.4 : 0.0, 0, 0, 1, slots > 2 ? 0.4 : 0.0, 0, 0, 1, trial < 7 ? 0.0 : (trial - 7) / 3.0};
         for (size_t i = 0; i < points.size(); ++i) {
@@ -58,13 +58,13 @@ void checkDelay(IComponent* component, IAudioProcessor* processor, IEditControll
                 Sample expected = 0;
                 // 最初のDelayだけFeedback=100%。後段は純粋なWet遅延。
                 for (int offset = slots * delay; offset <= n; offset += delay)
-                    if (n - offset < 16) expected += dry[n - offset];
+                    if (n - offset < int(processor->getLatencySamples()) + 16) expected += dry[n - offset];
                 const bool leftOnly = trial == 9 ? (n / delay) % 2 == 1 : (n / delay) % 2 == 0;
                 assert(std::abs(actual[n] - (trial < 9 || leftOnly ? expected : 0)) < 1e-6);
                 assert(std::abs(actualRight[n] - (trial < 9 || !leftOnly ? expected : 0)) < 1e-6);
             }
         }
-        assert(processor->getLatencySamples() == 3);
+        assert(processor->getLatencySamples() == 3 + static_cast<uint32>(std::ceil(setup.sampleRate * .005)));
         assert(processor->setProcessing(false) == kResultOk);
         assert(processor->setProcessing(true) == kResultOk);
         data.inputEvents = nullptr; data.numSamples = 257;

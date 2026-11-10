@@ -32,7 +32,6 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     auto* component = static_cast<IComponent*>(object);
     auto* controller = query<IEditController>(component, IEditController_iid);
     auto* processor = query<IAudioProcessor>(component, IAudioProcessor_iid);
-    LatencyReference<Sample> reference(processor);
     auto* units = query<IUnitInfo>(controller, IUnitInfo_iid);
     auto* identity = query<FUnknown>(units, FUnknown_iid);
     assert(identity == component);
@@ -61,7 +60,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(units->getUnitByBus(kEvent, kInput, 0, 16, id) == kResultFalse);
     assert(units->setUnitProgramData(0, 0, nullptr) == kNotImplemented);
     ParameterInfo info {};
-    assert(controller->getParameterInfo(108, info) == kResultOk && info.id == programId);
+    assert(controller->getParameterInfo(109, info) == kResultOk && info.id == programId);
     assert(info.unitId == unit.id && info.stepCount == list.programCount - 1);
     assert(info.flags == (ParameterInfo::kIsList | ParameterInfo::kIsProgramChange));
     assert(controller->getParamStringByValue(programId, 1.0, name) == kResultOk && std::u16string(name) == u"Sine");
@@ -72,7 +71,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     assert(controller->setParamNormalized(programId, std::nan("")) == kInvalidArgument);
     assert(controller->setParamNormalized(programId, -1) == kInvalidArgument);
 
-    const std::array<double, 108> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,1,0,100,0.0,250.0,0.0,1000.0,0.0,1.0,4000.0,0.0,0,0,0,1,0,100,1,0,100,5,35,25,5,35,25,5,35,25,0,0,0,2,6000,100,25,2,6000,100,25,2,6000,100,25,20,2,0.7,0,0,50,20,2,0.7,0,0,50,20,2,0.7,0,0,50,1000,1200,.5,50,50,1000,1200,.5,50,50,1000,1200,.5,50,50};
+    const std::array<double, 109> sine {0,0,0,0,1,0,1,0,1,0,4800,1,0,0,0,0,0,1,0,0,0,0,0,0,0,-std::numeric_limits<double>::infinity(),0,0,-std::numeric_limits<double>::infinity(),0,0,1,0,100,0.0,250.0,0.0,1000.0,0.0,1.0,4000.0,0.0,0,0,0,1,0,100,1,0,100,5,35,25,5,35,25,5,35,25,0,0,0,2,6000,100,25,2,6000,100,25,2,6000,100,25,20,2,0.7,0,0,50,20,2,0.7,0,0,50,20,2,0.7,0,0,50,1000,1200,.5,50,50,1000,1200,.5,50,50,1000,1200,.5,50,50};
     ProgramHandler handler; handler.controller = controller;
     assert(controller->setComponentHandler(&handler) == kResultOk);
     // 全設定をSineと異なる値にしてから再選択し、追加済み項目も復元されることを確認する。
@@ -83,7 +82,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     }
     assert(controller->setParamNormalized(programId, 0.0) == kResultOk);
     assert(handler.calls == 1 && handler.refs == 1);
-    for (int32 i = 0; i < 108; ++i) {
+    for (int32 i = 0; i < 109; ++i) {
         assert(controller->getParameterInfo(i, info) == kResultOk);
         const auto plain = controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id));
         assert(plain == sine[i] || std::abs(plain - sine[i]) < 1e-10);
@@ -96,7 +95,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     StateStream saved;
     assert(component->getState(&saved) == kResultOk);
     assert(controller->setComponentState(&saved) == kResultOk);
-    for (int32 i = 0; i < 108; ++i) {
+    for (int32 i = 0; i < 109; ++i) {
         assert(controller->getParameterInfo(i, info) == kResultOk);
         const auto plain = controller->normalizedParamToPlain(info.id, controller->getParamNormalized(info.id));
         assert(plain == sine[i] || std::abs(plain - sine[i]) < 1e-10);
@@ -104,6 +103,7 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
 
     ProcessSetup setup {kRealtime, precision, 33, 48000.0};
     assert(processor->setupProcessing(setup) == kResultOk);
+    LatencyReference<Sample> reference(processor);
     assert(component->activateBus(kAudio, kOutput, 0, true) == kResultOk);
     assert(component->setActive(true) == kResultOk);
     assert(processor->setProcessing(true) == kResultOk);

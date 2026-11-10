@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::effects::Effects;
-#[cfg(test)]
-use crate::effects::LATENCY;
 use crate::envelope::DEFAULT_ENVELOPE;
 use crate::eq::Eq;
+use crate::limiter::Limiter;
 use crate::oscillator::{PanningGains, panning_gains};
 use crate::parameters;
 use crate::voice::{Note, Voice};
@@ -36,6 +35,8 @@ pub struct SynthesizerState {
     effects: Effects,
     /// エフェクタ系列の後、Master前のEQ。
     eq: Eq,
+    /// EQ後、Master Volume直前の固定5 ms先読みリミッター。
+    limiter: Limiter,
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
@@ -61,6 +62,7 @@ impl Synthesizer {
                 unused_pending: false,
                 effects: Effects::new(),
                 eq: Eq::new(44100.0, parameters::eq(&parameters::defaults())),
+                limiter: Limiter::new(),
             }),
         }
     }
@@ -72,12 +74,17 @@ impl Synthesizer {
                 .state
                 .effects
                 .prepare(sample_rate, &self.state.parameters)
-                || !self.state.eq.prepare(sample_rate))
+                || !self.state.eq.prepare(sample_rate)
+                || !self.state.limiter.prepare(sample_rate))
         {
             return false;
         }
         self.state.sample_rate = sample_rate;
         true
+    }
+
+    pub fn latency_samples(&self) -> usize {
+        crate::effects::LATENCY + self.state.limiter.latency_samples()
     }
 
     pub fn set_tempo(&mut self, tempo: f64) {
@@ -106,6 +113,7 @@ impl Synthesizer {
         if values[34..42] != self.state.parameters[34..42] {
             self.state.eq.set_parameters(parameters::eq(&values));
         }
+        self.state.limiter.set_enabled(values[108] >= 0.5);
         let previous = &self.state.parameters;
         // 有効範囲が広がるときは、休止していた枠へ現在の全設定を配送する。
         let expanded = values[8] > previous[8];
@@ -275,6 +283,7 @@ impl Synthesizer {
     pub fn stop(&mut self) {
         self.state.effects.reset();
         self.state.eq.reset();
+        self.state.limiter.reset();
         self.state.used_voices = 0;
         self.state.unused_pending = true;
         for voice in &mut self.state.voices {
@@ -334,21 +343,22 @@ impl Synthesizer {
         }
         let sum = self.mix_sample();
         let processed = self.state.effects.process_sample(sum);
+        let equalized = self.state.eq.process_sample(processed);
         self.state
-            .eq
-            .process_sample(processed)
+            .limiter
+            .process_sample(equalized)
             .map(|value| value * self.state.master_gain)
     }
 
-    /// EQとMasterを系列で適用し、一定の係数と分岐をループ外へ出す。
+    /// EQ・Limiter・Masterを系列で適用する。
     #[inline(never)]
     fn finish_samples(&mut self, samples: &mut [[f64; 2]]) {
+        for sample in &mut *samples {
+            *sample = self.state.eq.process_sample(*sample);
+        }
+        self.state.limiter.process_samples(samples);
         for sample in samples {
-            *sample = self
-                .state
-                .eq
-                .process_sample(*sample)
-                .map(|value| value * self.state.master_gain);
+            *sample = sample.map(|value| value * self.state.master_gain);
         }
     }
 
@@ -446,7 +456,7 @@ mod tests {
                 let next = note(2, 0, 69);
                 assert!(synth.note_on(next, 0.0, 1.0));
                 synth.note_off(next);
-                let mut output = [[0.0; 2]; 64];
+                let mut output = vec![[0.0; 2]; synth.latency_samples() + 64];
                 synth.generate_samples(&mut output);
                 let peak = output.iter().flatten().fold(0.0_f64, |p, v| p.max(v.abs()));
                 let advanced = matches!(advance, 2 | 3 | 5);
@@ -577,7 +587,7 @@ mod tests {
                 assert_eq!(series.active_voice_count(), serial.active_voice_count());
                 if matches!(step, 43 | 44 | 47) {
                     assert!(
-                        output[LATENCY.min(count)..count]
+                        output[series.latency_samples().min(count)..count]
                             .iter()
                             .all(|sample| *sample == [0.; 2])
                     );
@@ -980,9 +990,10 @@ mod tests {
                 single.set_parameters(values);
                 single
             });
-            let mut delayed_expected = std::collections::VecDeque::from([0.0; LATENCY]);
-            for n in 0..96 {
-                let db = match n {
+            let mut delayed_expected =
+                std::collections::VecDeque::from(vec![0.0; synth.latency_samples()]);
+            for n in 0..96 + synth.latency_samples() {
+                let db = match n.saturating_sub(synth.latency_samples()) {
                     0..16 => 0.0,
                     16..32 => -48.0,
                     32..48 => -12.3,
@@ -1341,7 +1352,8 @@ mod distortion_tests {
             let mut bypass = p;
             bypass[31] = 0.0;
             dry.set_parameters(bypass);
-            let mut mixes = std::collections::VecDeque::from([0.0; 2]);
+            let mut mixes =
+                std::collections::VecDeque::from(vec![0.0; mixed.latency_samples() - 1]);
             for n in 0..500 {
                 // Gainの段差・ランプ、Mixの急変。Mixは遅延前の値を使わない。
                 p[32] = (n % 71) as f64 / 70.0;
@@ -1379,8 +1391,9 @@ mod distortion_tests {
         p[31] = 0.0;
         synth.set_parameters(p);
         native.set_parameters(p);
-        let mut expected = std::collections::VecDeque::from(vec![[0.0; 2]; LATENCY]);
-        for n in 0..200 {
+        let mut expected =
+            std::collections::VecDeque::from(vec![[0.0; 2]; synth.latency_samples()]);
+        for n in 0..600 {
             for s in [&mut synth, &mut native] {
                 if n == 0 || n == 7 {
                     s.note_on(
@@ -1434,6 +1447,11 @@ mod distortion_tests {
             let gain = 10.0_f64.powf(parameters::to_plain(13, p[13]) / 20.0);
             let mut previous_dry = [0.0; 2];
             let mut padding = std::collections::VecDeque::from([[0.0; 2]; 2]);
+            let mut limiter_delay = std::collections::VecDeque::from(vec![
+                    [0.0; 2];
+                    synth.latency_samples()
+                        - crate::effects::LATENCY
+                ]);
             let mut error_energy = 0.0;
             let mut signal_energy = 0.0;
             let mut references: [Synthesizer; 4] = std::array::from_fn(|_| {
@@ -1452,7 +1470,7 @@ mod distortion_tests {
                 s.note_on(note, 0.0, 1.0);
                 synth.note_on(note, 0.0, 1.0);
             }
-            for n in 0..220 {
+            for n in 0..800 {
                 if n == 80 {
                     let note = Note {
                         id: 1,
@@ -1493,8 +1511,10 @@ mod distortion_tests {
                 });
                 previous_dry = dry;
                 padding.push_back(mixed);
-                let expected = eq
-                    .process_sample(padding.pop_front().unwrap())
+                limiter_delay.push_back(eq.process_sample(padding.pop_front().unwrap()));
+                let expected = limiter_delay
+                    .pop_front()
+                    .unwrap()
                     .map(|sample| sample * gain);
                 let actual = synth.generate_sample();
                 for ch in 0..2 {
@@ -1522,16 +1542,17 @@ mod distortion_tests {
                 0.0,
                 1.0,
             );
+            let delay = synth.latency_samples() - crate::effects::LATENCY;
             for target in [2.0, 1.0] {
-                for _ in 0..200 {
+                for _ in 0..200 + delay {
                     synth.generate_sample();
                 }
                 p[31] = parameters::to_normalized(31, target);
                 synth.set_parameters(p);
-                for n in 0..66 {
+                for n in 0..66 + delay {
                     let out = synth.generate_sample();
                     assert!(out.into_iter().all(f64::is_finite));
-                    if (34..36).contains(&n) {
+                    if (34 + delay..36 + delay).contains(&n) {
                         assert_eq!(out, [0.0; 2]);
                     }
                     assert_eq!(synth.active_voice_count(), 1);

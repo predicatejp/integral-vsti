@@ -11,7 +11,7 @@ void checkChorus(IComponent* component, IAudioProcessor* processor, IEditControl
             assert(processor->setupProcessing(setup) == kResultOk);
             std::array<Points, 23> points;
             Changes changes;
-            const std::array<int, 23> indices {108,12,42,43,44,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92};
+            const std::array<int, 23> indices {109,12,42,43,44,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92};
             const std::array<double, 23> plain {0,1,slots>=3?4.:0.,slots>=2?4.:0.,slots>=1?4.:0.,
                 2.5,.5,.7,.1,50,100,2.5,.5,.7,-.1,-50,100,2.5,.5,.7,.1,50,100};
             for (size_t i=0;i<points.size();++i) {
@@ -46,7 +46,7 @@ void checkChorus(IComponent* component, IAudioProcessor* processor, IEditControl
                 }
                 n+=data.numSamples;
             }
-            assert(processor->getLatencySamples()==3);
+            assert(processor->getLatencySamples()==3 + static_cast<uint32>(std::ceil(rate * .005)));
             assert(processor->setProcessing(false)==kResultOk && processor->setProcessing(true)==kResultOk);
             data.inputEvents=nullptr;data.inputParameterChanges=nullptr;data.numSamples=257;
             for(int n=0;n<length;n+=257) {
@@ -70,8 +70,8 @@ void checkChorus(IComponent* component, IAudioProcessor* processor, IEditControl
             if(slots==1) {
                 const auto ramp=render(1,true,true);
                 for(int n=0;n<length;++n) {
-                    // Mixを適用した時刻から系列末尾の純遅延3サンプル後に出力する。
-                    const double mix=std::clamp((n-3)/255.0,0.0,1.0);
+                    // Mixを適用した時刻から系列末尾の申告遅延後に出力する。
+                    const double mix=std::clamp((n-static_cast<int>(processor->getLatencySamples()))/255.0,0.0,1.0);
                     for(int ch=0;ch<2;++ch) assert(std::abs(ramp[n][ch]-(dry[n][ch]*(1-mix)+wet[n][ch]*mix))<1e-6);
                 }
             }

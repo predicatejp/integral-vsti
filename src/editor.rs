@@ -35,7 +35,7 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Size", "Mix", "Dec", "Damp", "Size", "Mix", "Time", "Depth", "Rate", "Det", "Fdbk", "Mix",
     "Time", "Depth", "Rate", "Det", "Fdbk", "Mix", "Time", "Depth", "Rate", "Det", "Fdbk", "Mix",
     "Center", "Depth", "Rate", "Fdbk", "Mix", "Center", "Depth", "Rate", "Fdbk", "Mix", "Center",
-    "Depth", "Rate", "Fdbk", "Mix",
+    "Depth", "Rate", "Fdbk", "Mix", "Limiter",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -51,6 +51,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, // Reverb
     4, 2, 3, 4, 4, 4, 4, 2, 3, 4, 4, 4, 4, 2, 3, 4, 4, 4, // Chorus
     3, 4, 3, 4, 4, 3, 4, 3, 4, 4, 3, 4, 3, 4, 4, // Phaser
+    4, // Limiter
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -568,23 +569,25 @@ impl Editor {
             .iter()
             .position(|indices| choices.first() == Some(&indices[0]));
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
-        let choice_label_height = if choices == [12] {
+        let stacked_choices = choices.first() == Some(&12);
+        let choice_label_height = if stacked_choices {
             CHOICE_HEIGHT + GAP
         } else {
             0.0
         };
-        let choice_height = if choices == [12] || effect.is_some() {
-            CHOICE_HEIGHT + choice_label_height
+        let choice_rows = if stacked_choices {
+            choices.len()
         } else {
-            0.0
+            usize::from(effect.is_some())
         };
-        let row_header_height = if choices.len() > 1 && effect.is_none() {
+        let choice_height = (CHOICE_HEIGHT + choice_label_height) * choice_rows as f32;
+        let row_header_height = if choices.len() > 1 && effect.is_none() && !stacked_choices {
             CHOICE_HEIGHT + GAP
         } else {
             0.0
         };
         let row_height = KNOB_CELL.y + row_header_height;
-        let content_rows = rows.len() + usize::from(choice_height > 0.0);
+        let content_rows = rows.len() + choice_rows;
         let row_gap =
             (height - GAP - HEADER_HEIGHT - choice_height - row_height * rows.len() as f32)
                 / (content_rows + 1) as f32;
@@ -592,7 +595,7 @@ impl Editor {
             + HEADER_HEIGHT
             + row_gap
             + if choice_height > 0.0 {
-                choice_height + row_gap
+                choice_height + row_gap * choice_rows as f32
             } else {
                 0.0
             };
@@ -661,7 +664,16 @@ impl Editor {
             } else if row_header_height > 0.0 {
                 rect.top() + body_y + row as f32 * (row_height + row_gap)
             } else if choice_height > 0.0 {
-                rect.top() + GAP + HEADER_HEIGHT + row_gap + choice_label_height
+                rect.top()
+                    + GAP
+                    + HEADER_HEIGHT
+                    + row_gap
+                    + choice_label_height
+                    + if stacked_choices {
+                        row as f32 * (CHOICE_HEIGHT + choice_label_height + row_gap)
+                    } else {
+                        0.0
+                    }
             } else {
                 rect.top() + GAP + (HEADER_HEIGHT - CHOICE_HEIGHT) / 2.0
             };
@@ -677,6 +689,7 @@ impl Editor {
                 23 => "Osc2",
                 26 => "Osc3",
                 12 => "Phase",
+                108 => "Limiter",
                 31 | 45 | 48 => "",
                 _ => continue,
             };
@@ -1032,7 +1045,7 @@ impl WindowHandler for Editor {
                 ),
                 (
                     "Master",
-                    &[12],
+                    &[12, 108],
                     &[&[13][..], &[21][..], &[8][..]][..],
                     [master_x, GAP, master_width, full_height],
                 ),
