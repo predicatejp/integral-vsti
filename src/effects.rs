@@ -88,7 +88,8 @@ impl Effect {
         self.state.parameters = parameters;
         self.state.kind = kind;
         self.state.delay.set_parameters(delay_parameters);
-        if changed || !self.state.started {
+        // Off中は設定だけ更新し、種類の選択時または有効スロットの処理開始前に初期化する。
+        if changed || (!self.state.started && kind != EffectType::Off) {
             self.reset();
         }
     }
