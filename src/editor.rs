@@ -31,7 +31,8 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Waveform", "Tune", "Vol", "Mod", "Mod", "Clipper", "Gain", "Mix", "Enable", "Low F", "Low G",
     "Mid F", "Mid G", "Mid Q", "High F", "High G", "Effect 1", "Effect 2", "Effect 3", "Clipper",
     "Gain", "Mix", "Clipper", "Gain", "Mix", "Time", "Fdbk", "Mix", "Time", "Fdbk", "Mix", "Time",
-    "Fdbk", "Mix", "Stereo", "Stereo", "Stereo",
+    "Fdbk", "Mix", "Stereo", "Stereo", "Stereo", "Dec", "Damp", "Size", "Mix", "Dec", "Damp",
+    "Size", "Mix", "Dec", "Damp", "Size", "Mix",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -44,6 +45,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     4, 4, 4, 4, 3, 4, 4, 3, 4, // Effects
     32, 4, 4, 32, 4, 4, 32, 4, 4, // Delay
     4, 4, 4, // Stereo
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, // Reverb
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -91,6 +93,9 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         35 | 37 | 40 => (&[0, 100, 200, 300], 100),
         36 | 38 | 41 => (&[0, 60, 120, 180, 240, 300, 360], 180),
         39 => (&[0, 50, 100, 150, 200], 100),
+        63 => (&[0, 50, 100, 150, 200], 100), // Decay: 1s
+        64 => (&[0, 75, 150, 225, 300], 0),
+        65 => (&[0, 50, 100, 150], 50), // Size: 100%
         51 => (&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], 5), // Delay Time: 1/8を基準にする。
         _ => (&[], 0),
     }
@@ -714,8 +719,8 @@ impl Editor {
             for direction in 0..2 {
                 let area = egui::Rect::from_min_size(
                     egui::pos2(
-                        rect.left() + GAP + direction as f32 * 28.0,
-                        choice_rect(1).top(),
+                        rect.left() + GAP + 64.0 + direction as f32 * 28.0,
+                        choice_rect(0).top(),
                     ),
                     egui::vec2(24.0, CHOICE_HEIGHT),
                 );
@@ -820,13 +825,13 @@ impl WindowHandler for Editor {
         // 種類切替で非表示になったノブの編集を終了し、当たり判定を描画中の要素だけにする。
         let hidden_drag = self.state.borrow().drag.as_ref().is_some_and(|drag| {
             parameters::EFFECT_SLOTS.iter().any(|indices| {
-                let delay = parameters::to_plain(indices[0], selected[indices[0]]) == 2.0;
-                let hidden = if delay {
-                    &indices[2..4]
-                } else {
-                    &indices[4..7]
+                let visible = match parameters::to_plain(indices[0], selected[indices[0]]) as usize
+                {
+                    2 => &indices[4..7],
+                    3 => &indices[8..],
+                    _ => &indices[2..4],
                 };
-                hidden.contains(&drag.index)
+                indices.contains(&drag.index) && !visible.contains(&drag.index)
             })
         });
         if hidden_drag {
@@ -898,7 +903,7 @@ impl WindowHandler for Editor {
             let panel_height = GAP * 8.0 + HEADER_HEIGHT * 4.0 + KNOB_CELL.y * 3.0;
             let center_x = GAP + oscillator_width + GAP;
             let effects_x = center_x + filter_width + GAP;
-            let side_width = GAP * 2.0 + KNOB_CELL.x * 3.0;
+            let side_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
             let master_x = effects_x + side_width + GAP;
             let master_width = GAP * 2.0 + KNOB_CELL.x * 2.0;
             // AmpとFilterの上余白・行間・下余白を同じ長さに揃える。
@@ -909,8 +914,8 @@ impl WindowHandler for Editor {
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
             let full_height = panel_height + GAP + eq_height;
             let effect_height = (full_height - GAP * 2.0) / 3.0;
-            let delay_slots = parameters::EFFECT_SLOTS
-                .map(|[kind, ..]| parameters::to_plain(kind, selected[kind]) == 2.0);
+            let effect_kinds = parameters::EFFECT_SLOTS
+                .map(|[kind, ..]| parameters::to_plain(kind, selected[kind]) as usize);
             let groups = [
                 (
                     "Oscillator",
@@ -941,29 +946,29 @@ impl WindowHandler for Editor {
                 ),
                 (
                     "Eff 1",
-                    if delay_slots[0] {
-                        &[42, 60][..]
-                    } else {
-                        &[42, 31][..]
+                    match effect_kinds[0] {
+                        2 => &[42, 60][..],
+                        3 => &[42][..],
+                        _ => &[42, 31][..],
                     },
-                    &[if delay_slots[0] {
-                        &[51, 52, 53][..]
-                    } else {
-                        &[32, 33][..]
+                    &[match effect_kinds[0] {
+                        2 => &[51, 52, 53][..],
+                        3 => &[63, 64, 65, 66][..],
+                        _ => &[32, 33][..],
                     }][..],
                     [effects_x, GAP, side_width, effect_height],
                 ),
                 (
                     "Eff 2",
-                    if delay_slots[1] {
-                        &[43, 61][..]
-                    } else {
-                        &[43, 45][..]
+                    match effect_kinds[1] {
+                        2 => &[43, 61][..],
+                        3 => &[43][..],
+                        _ => &[43, 45][..],
                     },
-                    &[if delay_slots[1] {
-                        &[54, 55, 56][..]
-                    } else {
-                        &[46, 47][..]
+                    &[match effect_kinds[1] {
+                        2 => &[54, 55, 56][..],
+                        3 => &[67, 68, 69, 70][..],
+                        _ => &[46, 47][..],
                     }][..],
                     [
                         effects_x,
@@ -974,15 +979,15 @@ impl WindowHandler for Editor {
                 ),
                 (
                     "Eff 3",
-                    if delay_slots[2] {
-                        &[44, 62][..]
-                    } else {
-                        &[44, 48][..]
+                    match effect_kinds[2] {
+                        2 => &[44, 62][..],
+                        3 => &[44][..],
+                        _ => &[44, 48][..],
                     },
-                    &[if delay_slots[2] {
-                        &[57, 58, 59][..]
-                    } else {
-                        &[49, 50][..]
+                    &[match effect_kinds[2] {
+                        2 => &[57, 58, 59][..],
+                        3 => &[71, 72, 73, 74][..],
+                        _ => &[49, 50][..],
                     }][..],
                     [
                         effects_x,

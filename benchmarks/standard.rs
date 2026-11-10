@@ -10,6 +10,8 @@ mod distortion;
 mod effects;
 #[path = "../src/delay.rs"]
 mod delay;
+#[path = "../src/reverb.rs"]
+mod reverb;
 #[path = "../src/eq.rs"]
 mod eq;
 #[path = "../src/envelope.rs"]
@@ -85,6 +87,7 @@ const BASE: [f64; parameters::COUNT] = [
     1.0, 0.0, 100.0, 1.0, 0.0, 100.0,
     5.0, 35.0, 25.0, 5.0, 35.0, 25.0, 5.0, 35.0, 25.0, // Delay
     0.0, 0.0, 0.0, // Stereo
+    2.0, 6000.0, 100.0, 25.0, 2.0, 6000.0, 100.0, 25.0, 2.0, 6000.0, 100.0, 25.0, // Reverb
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),

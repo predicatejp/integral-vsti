@@ -10,6 +10,8 @@ mod distortion;
 mod effects;
 #[path = "../src/delay.rs"]
 mod delay;
+#[path = "../src/reverb.rs"]
+mod reverb;
 #[path = "../src/eq.rs"]
 mod eq;
 #[path = "../src/envelope.rs"]

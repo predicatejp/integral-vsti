@@ -333,8 +333,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 
 | パラメーター | 変更点の間の処理 |
 | --- | --- |
-| Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper type・Effect種類・Delay Time・Stereo | 直前の値を保持し、変更点で切り替える |
-| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mix | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
+| Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper type・Effect種類・Delay Time・Stereo・Reverb Size | 直前の値を保持し、変更点で切り替える |
+| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mix・Reverb Decay/Damping | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
 
 最後の点以降は値を保持します。同位置ではパラメーターをキュー順に適用した後、ノートをイベントリスト順に処理します。
 
@@ -343,7 +343,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v27は508バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereoを各f64。little endian）です。
+保存形式v28は604バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/Mixを各f64。little endian）です。
 読み込みは現行形式v24のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
@@ -353,7 +353,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定63個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定75個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -373,23 +373,23 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
 音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
 連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
-編集内容は実際の63設定として保存し、復元時にも編集後の値を保持します。
+編集内容は実際の75設定として保存し、復元時にも編集後の値を保持します。
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
 
 ## エフェクタ系列
 
 全Voiceのフィルタ出力を合成した後、**Effector 1 → Effector 2 → Effector 3 → EQ → Master Volume**の順に処理します。
-各スロットでOff／Distortion／Delayを選択し、Offはそのスロットを素通しにします。初期値はすべてOffです。
+各スロットでOff／Distortion／Delay／Reverbを選択し、Offはそのスロットを素通しにします。初期値はすべてOffです。
 同じエフェクトを複数のスロットで使えます。設定と左右の処理履歴はスロットごとに独立します。
 
-各スロットの↑／↓ボタンで、隣のスロットと種類とDistortion／Delayの全設定をまとめて交換します。
+各スロットの↑／↓ボタンで、隣のスロットと種類とDistortion／Delay・Reverbの全設定をまとめて交換します。
 パラメーターIDとオートメーションはスロット位置に対応します。交換はVST3の編集通知を通してホストへ伝えます。
 種類の変更時は対象スロットの履歴を初期化します。全設定を音色として保存・復元します。
 
 | 設定 | Effect 1 ParamID | Effect 2 ParamID | Effect 3 ParamID |
 | --- | --- | --- | --- |
-| 種類（Off／Distortion／Delay） | `0x45463154` | `0x45463254` | `0x45463354` |
+| 種類（Off／Distortion／Delay／Reverb） | `0x45463154` | `0x45463254` | `0x45463354` |
 | Clipper | `0x43545950` | `0x45463243` | `0x45463343` |
 | Gain | `0x43474149` | `0x45463247` | `0x45463347` |
 | Distortion Mix | `0x434d4958` | `0x4546324d` | `0x4546334d` |
@@ -397,6 +397,10 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 | Delay Feedback | `0x45463146` | `0x45463246` | `0x45463346` |
 | Delay Mix | `0x45463144` | `0x45463244` | `0x45463344` |
 | Delay Stereo | `0x45463153` | `0x45463253` | `0x45463353` |
+| Reverb Decay | `0x52314443` | `0x52324443` | `0x52334443` |
+| Reverb Damping | `0x5231444d` | `0x5232444d` | `0x5233444d` |
+| Reverb Size | `0x5231535a` | `0x5232535a` | `0x5233535a` |
+| Reverb Mix | `0x52314d58` | `0x52324d58` | `0x52334d58` |
 
 Distortionは1段につき1サンプル遅延します。系列の末尾で不足分の純遅延を補い、ホストへ常に3サンプルと申告します。
 全スロットがOffの場合も3サンプルの純遅延になり、原信号の周波数特性を変えません。
@@ -430,6 +434,26 @@ PP-L／PP-RはWetへの入力を`(L + R) / 2`でモノラル化し、指定側�
 再生停止・シーク・ループで履歴を消さず、処理停止・再設定・スロット種類変更で初期化します。
 音価による遅延はエフェクトの動作であり、ホストへ申告する固定3サンプルの処理遅延に加算しません。
 
+### リバーブ
+
+Reverbは8本の遅延線をHouseholder行列で結合するステレオFDNです。各帰還へ遅延長に応じた減衰と1極LPFを適用します。
+
+| 設定 | 範囲・GUI刻み | 初期値 |
+| --- | --- | --- |
+| Decay | 0.1〜10秒、対数200tick | 2秒 |
+| Damping | 500〜20,000Hz、対数300tick | 6,000Hz |
+| Size | 50〜200%、1%刻み | 100% |
+| Mix | 0〜100%、1%刻み | 25% |
+
+Decayは低域の設計残響時間（T60）、Dampingは帰還LPFの設計周波数、Sizeは遅延長の倍率です。
+Decay・Damping・Mixは変更点間を線形補間し、Sizeは変更点で切り替えて残響をリセットします。
+Mix=0%は原音、100%は残響です。操作ノブは各スロットにDec・Damp・Size・Mixの順で横一列に配置します。
+
+8本の履歴は最大Sizeを収める領域を`setupProcessing`で全3スロット分確保し、処理中に確保・解放しません。
+上限は1スロット合計16 MiBです。資源上限を超えるレートや確保失敗は`setupProcessing`で拒否します。
+再生停止・シークでは残響を継続し、処理停止・再設定・スロット種類変更でリセットします。
+追加の処理遅延は0サンプルで、エフェクタ系列の申告遅延は固定3サンプルです。
+
 ### ディストーション
 
 ClipperはOff／Soft／Hard（初期値Soft）、Gainは0〜+48 dB・0.1 dB刻み（初期値0 dB）、Mixは0〜100%・1%刻み（初期値100%）です。
@@ -449,7 +473,7 @@ Gain・Mixはホストから届いた変更点間をホストレートで補間�
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3つのスロット、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトルの右に種類の選択欄、その下に↑／↓の交換ボタンを置きます。Distortionは同じ段にClipper選択欄、その下にGain・Mixを配置します。Delayは交換ボタンの右にStereo方式の選択欄、その下にTime・Fdbk・Mixの3ノブを横一列に均等配置し、Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phaseラベルと選択欄を上下に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3つのスロット、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトル・↑／↓の交換ボタン・種類の選択欄を同じ行に置き、交換ボタンのX座標を3スロットで揃えます。Distortionは次の段にClipper選択欄、その下にGain・Mixを配置します。Delayは次の段にStereo方式の選択欄、その下にTime・Fdbk・Mixの3ノブを横一列に均等配置し、Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phaseラベルと選択欄を上下に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 タイトルバーの発音数インジケータの上に、同じ幅の出力ピークメータを表示します。Master音量適用後の左右最大サンプルピークを−60〜＋12 dBFSで表示します。0 dBFSまでの部分は明るい緑、0 dBFSを超えた部分は明るい赤とし、0 dBFSの境界線を示します。描画間のピークを保持し、未点灯部分は白に近い色にします。表示は48 dB/秒で減衰します。
 
@@ -483,7 +507,7 @@ Windowsではノブ操作の開始・終了でキーボードフォーカスを�
 選択肢・単位・整数tickの換算は`src/parameters.rs`で定義し、GUIとVST3 Controllerが共用します。
 VST3の `IPlugView` を直接実装し、WindowsではHWND、LinuxではX11EmbedWindowIDへ埋め込みます。
 Linuxではホストが `IPlugFrame` 経由で `Linux::IRunLoop` を提供する必要があります。Waylandへの直接埋め込みは未対応です。
-サイズは1200×740物理ピクセルで固定です。EQは左2列の下段、Masterは右列全体に配置しています。標準フォントは21.6px、見出しは28.8pxです。
+サイズは1277×740物理ピクセルで固定です。EQは左2列の下段、Masterは右列全体に配置しています。標準フォントは21.6px、見出しは28.8pxです。
 `python3 scripts/check-abi.py --gui`では、実ウィンドウを撮影した通常画面・選択状態・操作中・発音中の画像を`target/gui-panel.png`、`target/gui-choices.png`、`target/gui-overlay.png`、`target/gui-voices.png`へ保存します。
 Windowsでは、描画中に再描画と編集配送タイマーを意図的に再入させ、描画の延期と、描画終了後の編集通知を検証します。
 画面作成・描画・破棄と作成失敗時に、ホストのOpenGLコンテキストと描画先が復元されることも検証します。
