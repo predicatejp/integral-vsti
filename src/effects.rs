@@ -3,6 +3,7 @@
 
 //! Voice合成後、EQ前に置く3つの独立した直列エフェクタ。
 
+use crate::chorus::{Chorus, ChorusParameters};
 use crate::delay::{Delay, DelayParameters};
 use crate::distortion::{ClipperType, Distortion, DistortionParameters};
 use crate::parameters::{self, EFFECT_SLOTS};
@@ -17,6 +18,7 @@ pub enum EffectType {
     Distortion,
     Delay,
     Reverb,
+    Chorus,
 }
 
 #[cfg_attr(test, derive(Clone))]
@@ -27,6 +29,8 @@ struct EffectState {
     delay: Delay,
     /// スロットごとに独立した8本のFDN履歴。
     reverb: Reverb,
+    /// 可変遅延・帰還・左右LFOの独立した履歴。
+    chorus: Chorus,
     /// このスロットだけの設定と左右独立のADAA履歴。
     parameters: DistortionParameters,
     distortion: Distortion,
@@ -50,12 +54,14 @@ impl Effect {
         parameters: DistortionParameters,
         delay_parameters: DelayParameters,
         reverb_parameters: ReverbParameters,
+        chorus_parameters: ChorusParameters,
     ) -> Self {
         Self {
             state: EffectState {
                 kind: EffectType::Off,
                 delay: Delay::new(delay_parameters),
                 reverb: Reverb::new(reverb_parameters),
+                chorus: Chorus::new(chorus_parameters),
                 parameters,
                 distortion: Distortion::new(),
                 processing: parameters.clipper,
@@ -85,6 +91,7 @@ impl Effect {
         self.state.distortion.reset();
         self.state.delay.reset();
         self.state.reverb.reset();
+        self.state.chorus.reset();
         self.state.previous_dry = [0.0; 2];
         self.state.processing = self.state.parameters.clipper;
         self.state.transition = 0;
@@ -134,6 +141,13 @@ impl Effect {
             EffectType::Reverb => {
                 for sample in samples {
                     *sample = self.state.reverb.process_sample(*sample);
+                }
+                self.state.started = true;
+                return;
+            }
+            EffectType::Chorus => {
+                for sample in samples {
+                    *sample = self.state.chorus.process_sample(*sample);
                 }
                 self.state.started = true;
                 return;
@@ -196,6 +210,7 @@ impl Effects {
                         parameters::distortion(&values, slot),
                         parameters::delay(&values, slot),
                         parameters::reverb(&values, slot),
+                        parameters::chorus(&values, slot),
                     )
                 }),
                 padding: LATENCY,
@@ -209,6 +224,7 @@ impl Effects {
     pub fn prepare(&mut self, sample_rate: f64, values: &[f64; parameters::COUNT]) -> bool {
         if self.state.slots[0].state.delay.prepared_for(sample_rate)
             && self.state.slots[0].state.reverb.prepared_for(sample_rate)
+            && self.state.slots[0].state.chorus.prepared_for(sample_rate)
         {
             self.reset();
             return true;
@@ -217,15 +233,28 @@ impl Effects {
             std::array::from_fn(|slot| Delay::new(parameters::delay(values, slot)));
         let mut reverbs: [Reverb; 3] =
             std::array::from_fn(|slot| Reverb::new(parameters::reverb(values, slot)));
-        for (delay, reverb) in delays.iter_mut().zip(&mut reverbs) {
-            if !delay.prepare(sample_rate) || !reverb.prepare(sample_rate) {
+        let mut choruses: [Chorus; 3] =
+            std::array::from_fn(|slot| Chorus::new(parameters::chorus(values, slot)));
+        for ((delay, reverb), chorus) in delays.iter_mut().zip(&mut reverbs).zip(&mut choruses) {
+            if !delay.prepare(sample_rate)
+                || !reverb.prepare(sample_rate)
+                || !chorus.prepare(sample_rate)
+            {
                 return false;
             }
             delay.set_tempo(self.state.tempo);
         }
-        for ((slot, delay), reverb) in self.state.slots.iter_mut().zip(delays).zip(reverbs) {
+        for (((slot, delay), reverb), chorus) in self
+            .state
+            .slots
+            .iter_mut()
+            .zip(delays)
+            .zip(reverbs)
+            .zip(choruses)
+        {
             slot.state.delay = delay;
             slot.state.reverb = reverb;
+            slot.state.chorus = chorus;
         }
         true
     }
@@ -246,11 +275,17 @@ impl Effects {
     ) {
         for (slot, indices) in EFFECT_SLOTS.into_iter().enumerate() {
             if indices.into_iter().any(|i| values[i] != previous[i]) {
-                if indices[8..].iter().any(|&i| values[i] != previous[i]) {
+                if indices[8..12].iter().any(|&i| values[i] != previous[i]) {
                     self.state.slots[slot]
                         .state
                         .reverb
                         .set_parameters(parameters::reverb(values, slot));
+                }
+                if indices[12..].iter().any(|&i| values[i] != previous[i]) {
+                    self.state.slots[slot]
+                        .state
+                        .chorus
+                        .set_parameters(parameters::chorus(values, slot));
                 }
                 // 他のエフェクト設定変更でDistortionのGain換算をやり直さない。
                 let distortion = if indices[1..4].iter().any(|&i| values[i] != previous[i]) {
@@ -294,6 +329,10 @@ impl Effects {
                     slot.state.started = true;
                     slot.state.delay.process_sample(sample)
                 }
+                EffectType::Chorus => {
+                    slot.state.started = true;
+                    slot.state.chorus.process_sample(sample)
+                }
                 EffectType::Reverb => {
                     slot.state.started = true;
                     slot.state.reverb.process_sample(sample)
@@ -329,7 +368,7 @@ mod tests {
         let mut values = parameters::defaults();
         for (slot, [kind, clipper, gain, mix, ..]) in EFFECT_SLOTS.into_iter().enumerate() {
             values[kind] = if mask & (1 << slot) != 0 {
-                1.0 / 3.0
+                1.0 / 4.0
             } else {
                 0.0
             };
@@ -405,7 +444,7 @@ mod tests {
         for step in 0..24 {
             let previous = p;
             let [kind, clipper, gain, mix, ..] = EFFECT_SLOTS[step % 3];
-            p[kind] = if step % 4 == 0 { 0.0 } else { 1.0 / 3.0 };
+            p[kind] = if step % 4 == 0 { 0.0 } else { 1.0 / 4.0 };
             p[clipper] = (step % 3) as f64 / 2.0;
             p[gain] = (step % 7) as f64 / 6.0;
             p[mix] = (step % 5) as f64 / 4.0;
@@ -429,7 +468,7 @@ mod tests {
         for step in 0..30 {
             let previous = p;
             let [kind, _, _, _, beat, feedback, mix, stereo, ..] = EFFECT_SLOTS[step % 3];
-            p[kind] = parameters::to_normalized(kind, ((step / 3) % 4) as f64);
+            p[kind] = parameters::to_normalized(kind, ((step / 3) % 5) as f64);
             p[stereo] = (step % 4) as f64 / 3.0;
             p[beat] = (step % 14) as f64 / 13.0;
             p[feedback] = (step % 6) as f64 / 5.0;
@@ -491,6 +530,7 @@ mod tests {
             p,
             delay_parameters,
             parameters::reverb(&parameters::defaults(), 0),
+            parameters::chorus(&parameters::defaults(), 0),
         );
         effect.set_parameters(EffectType::Distortion, p, delay_parameters);
         let mut dry = [0.0; 2];
