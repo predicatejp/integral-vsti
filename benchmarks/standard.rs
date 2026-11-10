@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! 通常の演奏・音色・オートメーションを固定した性能回帰スイート。
 #![allow(dead_code)] // ABI・保存処理など、計測対象以外の既存定義も読み込む。
+#[path = "../src/chorus.rs"]
+mod chorus;
 #[path = "../src/abi.rs"]
 mod abi;
 #[path = "../src/distortion.rs"]
@@ -88,6 +90,9 @@ const BASE: [f64; parameters::COUNT] = [
     5.0, 35.0, 25.0, 5.0, 35.0, 25.0, 5.0, 35.0, 25.0, // Delay
     0.0, 0.0, 0.0, // Stereo
     2.0, 6000.0, 100.0, 25.0, 2.0, 6000.0, 100.0, 25.0, 2.0, 6000.0, 100.0, 25.0, // Reverb
+    20., 2., 0.7, 0., 0., 50.,
+    20., 2., 0.7, 0., 0., 50.,
+    20., 2., 0.7, 0., 0., 50.,
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),
