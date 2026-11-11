@@ -1318,8 +1318,8 @@ mod distortion_tests {
             (9, 2.0),
             (10, 1200.0),
             (12, 1.0),
-            (42, 1.0),
-            (31, 1.0),
+            (42, 4.0),
+            (31, 0.0),
             (32, 12.0),
         ] {
             p[i] = parameters::to_normalized(i, v);
@@ -1329,7 +1329,7 @@ mod distortion_tests {
     #[test]
     #[cfg_attr(miri, ignore)] // Gain/Mixの数値総当たりは実CPUで照合する。
     fn adaa2_keeps_dry_exact_and_mixes_at_the_output_time() {
-        for clipper in [1.0, 2.0] {
+        for clipper in [0.0, 1.0] {
             let mut mixed = Synthesizer::new();
             let mut wet = Synthesizer::new();
             let mut dry = Synthesizer::new();
@@ -1350,7 +1350,7 @@ mod distortion_tests {
                 }
             }
             let mut bypass = p;
-            bypass[31] = 0.0;
+            bypass[42] = 0.0;
             dry.set_parameters(bypass);
             let mut mixes =
                 std::collections::VecDeque::from(vec![0.0; mixed.latency_samples() - 1]);
@@ -1388,7 +1388,7 @@ mod distortion_tests {
         let mut synth = Synthesizer::new();
         let mut native = Synthesizer::new();
         let mut p = settings();
-        p[31] = 0.0;
+        p[42] = 0.0;
         synth.set_parameters(p);
         native.set_parameters(p);
         let mut expected =
@@ -1424,7 +1424,7 @@ mod distortion_tests {
     }
     #[test]
     fn shared_distortion_follows_voice_sum_and_precedes_eq_and_master() {
-        for clipper in [1.0, 2.0] {
+        for clipper in [0.0, 1.0] {
             let mut synth = Synthesizer::new();
             let mut p = settings();
             p[31] = parameters::to_normalized(31, clipper);
@@ -1543,7 +1543,7 @@ mod distortion_tests {
                 1.0,
             );
             let delay = synth.latency_samples() - crate::effects::LATENCY;
-            for target in [2.0, 1.0] {
+            for target in [1.0, 0.0] {
                 for _ in 0..200 + delay {
                     synth.generate_sample();
                 }
@@ -1568,7 +1568,7 @@ mod distortion_tests {
         p[33] = 0.0;
         synth.set_parameters(p);
         let mut bypass = p;
-        bypass[31] = 0.0;
+        bypass[42] = 0.0;
         reference.set_parameters(bypass);
         for s in [&mut synth, &mut reference] {
             s.note_on(
@@ -1581,10 +1581,10 @@ mod distortion_tests {
                 1.0,
             );
         }
-        // MiriでもNone→Soft→Hard→Noneの各切替と66サンプルの遷移を通す。
+        // MiriでもSoft/Hardの切替と66サンプルの遷移を通す。
         for n in 0..if cfg!(miri) { 1200 } else { 3000 } {
             if n % 300 == 0 {
-                p[31] = ((n / 300) % 3) as f64 / 2.0;
+                p[31] = ((n / 300) % 2) as f64;
                 synth.set_parameters(p);
             }
             assert_eq!(synth.generate_sample(), reference.generate_sample());

@@ -14,16 +14,16 @@ void checkDistortionBlocks(IComponent* component, IAudioProcessor* processor, IE
             ProcessSetup setup {split ? kOffline : kRealtime, precision, 257, rate};
             assert(processor->setupProcessing(setup) == kResultOk);
             Points phase, clip, gain, poly, pan, slot;
-            slot.id = 0x45463154; slot.values = {{0, (1.0 / 6.0) * double(mask & 1)}};
+            slot.id = 0x45463154; slot.values = {{0, (4.0 / 6.0) * double(mask & 1)}};
             phase.id = phaseId; phase.values = {{0, .5}};
-            clip.id = 0x43545950; clip.values = {{0, type / 2.0}};
+            clip.id = 0x43545950; clip.values = {{0, double(type - 1)}};
             gain.id = 0x43474149; gain.values = {{0, .25}};
             poly.id = polyphonyId; poly.values = {{0, 3.0 / 31.0}};
             pan.id = 0x4d50414e; pan.values = {{0, .625}};
             Changes changes; changes.queues = {&phase, &clip, &gain, &poly, &pan, &slot};
             std::array<Points, 8> extra;
             const std::array<int, 8> indices {43, 45, 46, 47, 44, 48, 49, 50};
-            const std::array<double, 8> values {(1.0 / 6.0) * double((mask >> 1) & 1), 1, .125, .75, (1.0 / 6.0) * double((mask >> 2) & 1), .5, .375, .5};
+            const std::array<double, 8> values {(4.0 / 6.0) * double((mask >> 1) & 1), 1, .125, .75, (4.0 / 6.0) * double((mask >> 2) & 1), 0, .375, .5};
             for (size_t i = 0; i < extra.size(); ++i) {
                 ParameterInfo info; assert(controller->getParameterInfo(indices[i], info) == kResultOk);
                 extra[i].id = info.id; extra[i].values = {{0, values[i]}};
@@ -63,7 +63,7 @@ void checkDistortionBlocks(IComponent* component, IAudioProcessor* processor, IE
             assert(stereo);
             assert(std::any_of(actual.begin(), actual.end(), [](Sample x) {return std::abs(x) > .1;}));
             // 保持中のノートのままClipperを切り替え、遅延申告と出力の有限性を確認する。
-            clip.values = {{0, (3 - type) / 2.0}}; changes.queues = {&clip};
+            clip.values = {{0, double(2 - type)}}; changes.queues = {&clip};
             data.inputEvents = nullptr; data.inputParameterChanges = &changes; data.numSamples = 257;
             assert(processor->process(data) == kResultOk && processor->getLatencySamples() == 3 + static_cast<uint32>(std::ceil(rate * .005)));
             for (int i = 0; i < 257; ++i) assert(std::isfinite(left[i]) && std::isfinite(right[i]));

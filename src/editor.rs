@@ -631,16 +631,10 @@ impl Editor {
             egui::FontId::proportional(if effect.is_some() { 18.0 } else { 24.0 }),
             INK,
         );
-        if rows.is_empty() {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Empty",
-                egui::FontId::proportional(18.0),
-                MUTED,
-            );
-        }
         for (row, knobs) in rows.iter().enumerate() {
+            if knobs.is_empty() {
+                continue;
+            }
             let row_top = body_y + row as f32 * (row_height + row_gap);
             if row > 0 && row_header_height > 0.0 {
                 painter.hline(
@@ -691,7 +685,17 @@ impl Editor {
                 130.0
             });
             egui::Rect::from_min_size(
-                egui::pos2(rect.right() - GAP - width, top),
+                egui::pos2(
+                    rect.right()
+                        - GAP
+                        - width
+                        - if effect.is_some() && row == 0 {
+                            60.0
+                        } else {
+                            0.0
+                        },
+                    top,
+                ),
                 egui::vec2(width, CHOICE_HEIGHT),
             )
         };
@@ -716,28 +720,6 @@ impl Editor {
                 MUTED,
             );
         }
-        // 有効スロット内でClipperだけOffの場合もノブを半透明にする。
-        if effect.is_some()
-            && choices.len() > 1
-            && parameters::control_kind(choices[1]) == 31
-            && selected[choices[1]] == 0.0
-            && !off
-        {
-            painter.rect_filled(
-                egui::Rect::from_min_max(
-                    rect.min + egui::vec2(GAP, body_y),
-                    rect.max - egui::vec2(GAP, GAP),
-                ),
-                0.0,
-                ui.visuals().panel_fill.gamma_multiply(0.5),
-            );
-        }
-        // スロットOffでは内部のClipper選択もまとめて半透明にする。
-        if effect.is_some() && choices.len() > 1 {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(choice_rect(1)), |ui| {
-                self.choice(ui, choices[1], selected[choices[1]]);
-            });
-        }
         if off {
             // 背景色との50%合成により、影や文字を含む全体を同じ率で薄くする。
             painter.rect_filled(
@@ -747,9 +729,6 @@ impl Editor {
             );
         }
         for (row, &index) in choices.iter().enumerate() {
-            if effect.is_some() && row == 1 {
-                continue;
-            }
             ui.scope_builder(egui::UiBuilder::new().max_rect(choice_rect(row)), |ui| {
                 self.choice(ui, index, selected[index]);
             });
@@ -759,7 +738,7 @@ impl Editor {
             for direction in 0..2 {
                 let area = egui::Rect::from_min_size(
                     egui::pos2(
-                        rect.left() + GAP + 64.0 + direction as f32 * 28.0,
+                        rect.right() - GAP - 52.0 + direction as f32 * 28.0,
                         choice_rect(0).top(),
                     ),
                     egui::vec2(24.0, CHOICE_HEIGHT),
@@ -867,12 +846,13 @@ impl WindowHandler for Editor {
             parameters::EFFECT_SLOTS.iter().any(|indices| {
                 let visible = match parameters::to_plain(indices[0], selected[indices[0]]) as usize
                 {
-                    2 => &indices[4..7],
-                    3 => &indices[8..12],
-                    4 => &indices[12..18],
+                    1 => &indices[12..18],
+                    2 => &indices[23..],
+                    3 => &indices[4..7],
+                    4 => &indices[2..4],
                     5 => &indices[18..23],
-                    6 => &indices[23..],
-                    _ => &indices[2..4],
+                    6 => &indices[8..12],
+                    _ => &[],
                 };
                 indices.contains(&drag.index) && !visible.contains(&drag.index)
             })
@@ -990,34 +970,36 @@ impl WindowHandler for Editor {
                 (
                     "Eff 1",
                     match effect_kinds[0] {
-                        2 => &[42, 60][..],
-                        3..=6 => &[42][..],
-                        _ => &[42, 31][..],
+                        3 => &[42, 60][..],
+                        4 => &[42, 31][..],
+                        _ => &[42][..],
                     },
                     &[match effect_kinds[0] {
-                        2 => &[51, 52, 53][..],
-                        3 => &[63, 64, 65, 66][..],
-                        4 => &[75, 76, 77, 78, 79, 80][..],
+                        1 => &[75, 76, 77, 78, 79, 80][..],
+                        2 => &[109, 110, 111, 112, 113, 114, 115][..],
+                        3 => &[51, 52, 53][..],
+                        4 => &[32, 33][..],
                         5 => &[93, 94, 95, 96, 97][..],
-                        6 => &[109, 110, 111, 112, 113, 114, 115][..],
-                        _ => &[32, 33][..],
+                        6 => &[63, 64, 65, 66][..],
+                        _ => &[],
                     }][..],
                     [effects_x, GAP, side_width, effect_height],
                 ),
                 (
                     "Eff 2",
                     match effect_kinds[1] {
-                        2 => &[43, 61][..],
-                        3..=6 => &[43][..],
-                        _ => &[43, 45][..],
+                        3 => &[43, 61][..],
+                        4 => &[43, 45][..],
+                        _ => &[43][..],
                     },
                     &[match effect_kinds[1] {
-                        2 => &[54, 55, 56][..],
-                        3 => &[67, 68, 69, 70][..],
-                        4 => &[81, 82, 83, 84, 85, 86][..],
+                        1 => &[81, 82, 83, 84, 85, 86][..],
+                        2 => &[116, 117, 118, 119, 120, 121, 122][..],
+                        3 => &[54, 55, 56][..],
+                        4 => &[46, 47][..],
                         5 => &[98, 99, 100, 101, 102][..],
-                        6 => &[116, 117, 118, 119, 120, 121, 122][..],
-                        _ => &[46, 47][..],
+                        6 => &[67, 68, 69, 70][..],
+                        _ => &[],
                     }][..],
                     [
                         effects_x,
@@ -1029,17 +1011,18 @@ impl WindowHandler for Editor {
                 (
                     "Eff 3",
                     match effect_kinds[2] {
-                        2 => &[44, 62][..],
-                        3..=6 => &[44][..],
-                        _ => &[44, 48][..],
+                        3 => &[44, 62][..],
+                        4 => &[44, 48][..],
+                        _ => &[44][..],
                     },
                     &[match effect_kinds[2] {
-                        2 => &[57, 58, 59][..],
-                        3 => &[71, 72, 73, 74][..],
-                        4 => &[87, 88, 89, 90, 91, 92][..],
+                        1 => &[87, 88, 89, 90, 91, 92][..],
+                        2 => &[123, 124, 125, 126, 127, 128, 129][..],
+                        3 => &[57, 58, 59][..],
+                        4 => &[49, 50][..],
                         5 => &[103, 104, 105, 106, 107][..],
-                        6 => &[123, 124, 125, 126, 127, 128, 129][..],
-                        _ => &[49, 50][..],
+                        6 => &[71, 72, 73, 74][..],
+                        _ => &[],
                     }][..],
                     [
                         effects_x,
