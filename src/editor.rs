@@ -139,7 +139,7 @@ const CHOICE_HEIGHT: f32 = 28.0;
 /// プラグイン名と発音数を表示する上部バー。
 const TITLE_BAR_HEIGHT: f32 = 36.0;
 /// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
-const KNOB_CELL: egui::Vec2 = egui::vec2(64.0, 72.0);
+const KNOB_CELL: egui::Vec2 = egui::vec2(56.0, 64.0);
 const KNOB_CENTER_Y: f32 = 28.0;
 const FONT_SIZE: f32 = 16.0;
 const HEADING_FONT_SIZE: f32 = 22.0;
@@ -455,7 +455,7 @@ impl Editor {
             egui::Stroke::new(3.0 * KNOB_SCALE, ACCENT),
         );
         painter.text(
-            egui::pos2(center.x, area.top() + 62.0),
+            egui::pos2(center.x, area.top() + 56.0),
             egui::Align2::CENTER_CENTER,
             KNOB_NAMES[index],
             egui::FontId::proportional(FONT_SIZE),
@@ -628,7 +628,7 @@ impl Editor {
         };
         let choice_rows = if stacked_choices { choices.len() } else { 0 };
         let internal_choice_width = if effect.is_some() && choices.len() > 1 {
-            130.0 + GAP
+            90.0 + GAP
         } else {
             0.0
         };
@@ -975,7 +975,8 @@ impl WindowHandler for Editor {
             let panel_height = full_height - GAP - eq_height;
             let center_x = GAP + oscillator_width + GAP;
             let effects_x = center_x + filter_width + GAP;
-            let side_width = GAP * 2.0 + KNOB_CELL.x * 6.0;
+            // 2段配置の最大4ノブと、種類選択・交換ボタンが収まる幅。
+            let side_width = GAP * 2.0 + 64.0 * 4.0;
             let master_x = effects_x + side_width + GAP;
             let master_width = GAP * 2.0 + KNOB_CELL.x * 2.0;
             // AmpとFilterの上余白・行間・下余白を同じ長さに揃える。
