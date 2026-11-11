@@ -706,13 +706,13 @@ impl Editor {
             let width = (rect.width()
                 - GAP * 2.0
                 - internal_choice_width
-                - if effect.is_some() { KNOB_CELL.x } else { 0.0 })
+                - if effect.is_some() {
+                    KNOB_CELL.x + GAP * 2.0
+                } else {
+                    0.0
+                })
                 / knobs.len() as f32;
             let mut left = GAP + internal_choice_width;
-            if effect.is_some() && rows.len() == 1 && internal_choice_width == 0.0 {
-                // 1段のノブ列は、右端に固定したMixまで同じ中心間隔に揃える。
-                left += (KNOB_CELL.x - width) / 2.0;
-            }
             for &index in *knobs {
                 let area = egui::Rect::from_min_size(
                     rect.min + egui::vec2(left, row_top + row_header_height),
@@ -737,7 +737,7 @@ impl Editor {
                 KNOB_CELL,
             );
             painter.vline(
-                area.left() - GAP / 2.0,
+                area.left() - GAP,
                 rect.top() + HEADER_HEIGHT + GAP * 2.0..=rect.bottom() - GAP,
                 egui::Stroke::new(1.0, LINE),
             );
