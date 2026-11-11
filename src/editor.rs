@@ -705,11 +705,7 @@ impl Editor {
                 egui::Align2::LEFT_CENTER,
                 title,
                 egui::FontId::proportional(FONT_SIZE),
-                if off {
-                    SECTION_TITLE.gamma_multiply(0.5)
-                } else {
-                    SECTION_TITLE
-                },
+                SECTION_TITLE,
             );
         } else {
             panel(&painter, rect, title);
@@ -838,7 +834,7 @@ impl Editor {
                 SECTION_TITLE,
             );
         }
-        if off && effect.is_none() {
+        if off {
             // 背景色との50%合成により、影や文字を含む全体を同じ率で薄くする。
             painter.rect_filled(
                 rect.expand(1.0),

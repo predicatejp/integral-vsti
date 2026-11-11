@@ -671,8 +671,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence[i*3] == 0 && handler.sequence[i*3+1] == 1 && handler.sequence[i*3+2] == 2);
         }
         handler.sequence.clear(); pump();
-        // Offでは完成したヘッダ・ノブを背景へ50%合成し、選択欄は通常の色を維持する。
-        for (const auto& check : std::array<std::array<int, 3>, 2>{{{9, 10, 266}, {34, 35, 18}}}) {
+        // Offでは枠・見出し・表示中のノブを背景へ50%合成し、選択欄は通常の色を維持する。
+        for (const auto& check : std::array<std::array<int, 3>, 5>{{
+            {9, 10, 266}, {34, 35, 18}, {42, 32, 560}, {43, 46, 560}, {44, 49, 560}}}) {
             const auto [choiceIndex, knobIndex, headerX] = check;
             ParameterInfo info; assert(controller->getParameterInfo(choiceIndex, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
@@ -681,7 +682,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 const auto [knobX, knobY] = controls[knobIndex];
                 return std::array<uint32, 3>{
                     parent.pixel(uiPixel(headerX), uiPixel(choiceY)),
-                    parent.pixel(uiPixel(knobX), uiPixel(knobY)),
+                    // Offスロットのノブは非表示なので、枠と見出しを照合する。
+                    parent.pixel(uiPixel(choiceIndex >= 42 ? 578 : knobX),
+                                 uiPixel(choiceIndex >= 42 ? choiceY : knobY)),
                     parent.pixel(uiPixel(choiceX + 40), uiPixel(choiceY - 8))};
             };
             parent.movePointer(4, 4); pump();
@@ -705,7 +708,6 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         // Offは内部選択欄・ノブ・ラベルを描画せず、旧ノブ位置でも編集を始めない。
         for (int slot = 0; slot < 3; ++slot) {
-            choose(42 + slot, 0);
             parent.movePointer(4, 4); pump();
             const int y = controls[53 + slot * 3].second;
             const auto empty = parent.pixel(uiPixel(578), uiPixel(y - 40));
