@@ -955,7 +955,7 @@ impl WindowHandler for Editor {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
-            let filter_width = GAP * 2.0 + KNOB_CELL.x * 6.0;
+            let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
             let center_x = GAP + oscillator_width + GAP;
             let effects_x = center_x + filter_width + GAP;
             let title = egui::Rect::from_min_size(
@@ -1022,8 +1022,8 @@ impl WindowHandler for Editor {
             let master_width = GAP * 2.0 + KNOB_CELL.x * 2.0;
             // AmpとFilterの上余白・行間・下余白を同じ長さに揃える。
             let center_gap =
-                (panel_height - GAP - 2.0 * (GAP + HEADER_HEIGHT) - KNOB_CELL.y * 3.0) / 5.0;
-            let amp_height = GAP + HEADER_HEIGHT + KNOB_CELL.y + center_gap * 2.0;
+                (panel_height - GAP - 2.0 * (GAP + HEADER_HEIGHT) - KNOB_CELL.y * 4.0) / 6.0;
+            let amp_height = GAP + HEADER_HEIGHT + KNOB_CELL.y * 2.0 + center_gap * 3.0;
             let filter_height = panel_height - amp_height - GAP;
             let effects_body_y = GAP * 2.0 + HEADER_HEIGHT;
             let effect_height = (full_height - GAP - HEADER_HEIGHT) / 3.0;
@@ -1051,7 +1051,7 @@ impl WindowHandler for Editor {
                 (
                     "Amp",
                     &[],
-                    &[&[1, 2, 3, 4, 5, 130][..]][..],
+                    &[&[130][..], &[1, 2, 3, 4, 5][..]][..],
                     [center_x, left_top, filter_width, amp_height],
                 ),
                 (
