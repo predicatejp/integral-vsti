@@ -447,23 +447,23 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {1112, 119}, {1112, 278}, {328, 355}, {392, 355}, {456, 355}, {520, 355},
         {584, 355}, {563, 256}, {176, 118}, {1112, 383}, {240, 118}, {212, 190},
         {59, 242}, {144, 242}, {212, 314}, {59, 366}, {144, 366}, {229, 242},
-        {229, 366}, {959, 70}, {736, 126}, {928, 126}, {551, 454}, {59, 506},
+        {229, 366}, {705, 106}, {840, 106}, {963, 106}, {551, 454}, {59, 506},
         {145, 506}, {230, 506}, {316, 506}, {402, 506}, {487, 506}, {573, 506},
-        {972, 30}, {972, 218}, {972, 406}, {972, 258}, {736, 314}, {928, 314},
-        {972, 446}, {736, 502}, {928, 502}, {704, 126}, {832, 126}, {960, 126},
-        {704, 314}, {832, 314}, {960, 314}, {704, 502}, {832, 502}, {960, 502},
-        {959, 70}, {972, 258}, {972, 446}, {688, 126}, {784, 126}, {880, 126},
-        {976, 126}, {688, 314}, {784, 314}, {880, 314}, {976, 314}, {688, 502},
-        {784, 502}, {880, 502}, {976, 502}, {672, 126}, {736, 126}, {800, 126},
-        {864, 126}, {928, 126}, {992, 126}, {672, 314}, {736, 314}, {800, 314},
-        {864, 314}, {928, 314}, {992, 314}, {672, 502}, {736, 502}, {800, 502},
-        {864, 502}, {928, 502}, {992, 502},
-        {678,126}, {755,126}, {832,126}, {909,126}, {986,126},
-        {678,314}, {755,314}, {832,314}, {909,314}, {986,314},
-        {678,502}, {755,502}, {832,502}, {909,502}, {986,502}, {1112, 209},
-        {667,126}, {722,126}, {777,126}, {832,126}, {887,126}, {942,126}, {997,126},
-        {667,314}, {722,314}, {777,314}, {832,314}, {887,314}, {942,314}, {997,314},
-        {667,502}, {722,502}, {777,502}, {832,502}, {887,502}, {942,502}, {997,502},
+        {889, 30}, {889, 218}, {889, 406}, {705, 294}, {840, 294}, {963, 294},
+        {705, 482}, {840, 482}, {963, 482}, {819, 106}, {901, 106}, {983, 106},
+        {819, 294}, {901, 294}, {983, 294}, {819, 482}, {901, 482}, {983, 482},
+        {705, 106}, {705, 294}, {705, 482}, {688, 106}, {784, 106}, {880, 106},
+        {976, 106}, {688, 294}, {784, 294}, {880, 294}, {976, 294}, {688, 482},
+        {784, 482}, {880, 482}, {976, 482}, {672, 106}, {736, 106}, {800, 106},
+        {864, 106}, {928, 106}, {992, 106}, {672, 294}, {736, 294}, {800, 294},
+        {864, 294}, {928, 294}, {992, 294}, {672, 482}, {736, 482}, {800, 482},
+        {864, 482}, {928, 482}, {992, 482},
+        {678, 106}, {755, 106}, {832, 106}, {909, 106}, {986, 106},
+        {678, 294}, {755, 294}, {832, 294}, {909, 294}, {986, 294},
+        {678, 482}, {755, 482}, {832, 482}, {909, 482}, {986, 482}, {1112, 209},
+        {667, 106}, {722, 106}, {777, 106}, {832, 106}, {887, 106}, {942, 106}, {997, 106},
+        {667, 294}, {722, 294}, {777, 294}, {832, 294}, {887, 294}, {942, 294}, {997, 294},
+        {667, 482}, {722, 482}, {777, 482}, {832, 482}, {887, 482}, {942, 482}, {997, 482},
 
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
@@ -574,19 +574,24 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             choose(index, 0);
             assert(handler.editedId == info.id && handler.value == 0.0);
         }
+        choose(42, 4);
         assert(controller->setParamNormalized(0x43545950, 0) == kResultOk); pump();
-        for (int item : {1, 2, 0}) {
+        for (int item : {1, 0}) {
             choose(31, item);
-            assert(handler.editedId == 0x43545950 && handler.value == item / 2.0);
+            assert(handler.editedId == 0x43545950 && handler.value == item);
         }
         for (int index : {34, 108}) for (int item : {1, 0}) {
             choose(index, item);
             assert(handler.value == item);
         }
-        for (int index : {43, 44}) { choose(index, 1); choose(index, 0); }
-        for (int index : {45, 48}) { choose(index, 2); choose(index, 0); choose(index, 1); }
+        for (int slot = 1; slot < 3; ++slot) {
+            choose(42 + slot, 4);
+            choose(slot == 1 ? 45 : 48, 1);
+            choose(slot == 1 ? 45 : 48, 0);
+        }
+        parent.movePointer(4, 4); pump(); parent.screenshot("target/gui-distortion.ppm");
         for (int slot = 0; slot < 3; ++slot) {
-            choose(42 + slot, 2);
+            choose(42 + slot, 3);
             ParameterInfo info; assert(controller->getParameterInfo(60 + slot, info) == kResultOk);
             assert(info.stepCount == 3);
             assert(controller->setParamNormalized(info.id, 0) == kResultOk); pump();
@@ -596,20 +601,20 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             }
         }
         for (int slot=0; slot<3; ++slot) {
-            choose(42+slot,3);
-            assert(handler.value==0.5);
+            choose(42+slot, 6);
+            assert(handler.value==1.0);
         }
         parent.movePointer(4,4);pump();parent.screenshot("target/gui-reverb.ppm");
-        for(int slot=0;slot<3;++slot) choose(42+slot,4);
+        for(int slot=0;slot<3;++slot) choose(42+slot, 1);
         parent.movePointer(4,4);pump();parent.screenshot("target/gui-chorus.ppm");
-        for(int slot=0;slot<3;++slot) choose(42+slot,5);
+        for(int slot=0;slot<3;++slot) choose(42+slot, 5);
         parent.movePointer(4,4);pump();parent.screenshot("target/gui-phaser.ppm");
-        for(int slot=0;slot<3;++slot) choose(42+slot,6);
+        for(int slot=0;slot<3;++slot) choose(42+slot, 2);
         parent.movePointer(4,4);pump();parent.screenshot("target/gui-compressor.ppm");
-        for(int slot=0;slot<3;++slot) choose(42+slot,2);
+        for(int slot=0;slot<3;++slot) choose(42+slot, 3);
         // Timeは整数ノブ。音価を全14段階、上下両方向へ操作する。
         assert(controller->setParamNormalized(0x45463142, 0.0) == kResultOk);
-        const int timeX = uiPixel(704), timeY = uiPixel(170);
+        const int timeX = uiPixel(819), timeY = uiPixel(150);
         parent.movePointer(timeX, timeY); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence == (std::vector<int>{0}); }, "time knob begin");
         size_t edits = 1;
@@ -632,19 +637,19 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         // ホストが種類を切り替えた場合、非表示になるTimeのドラッグを終了する。
         parent.movePointer(timeX, timeY); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence == (std::vector<int>{0}); }, "delay drag begin");
-        assert(controller->setParamNormalized(0x45463154, 1.0 / 6.0) == kResultOk);
+        assert(controller->setParamNormalized(0x45463154, 0.0) == kResultOk);
         waitFor([&] { return handler.sequence == (std::vector<int>{0, 2}); }, "hidden delay drag end");
         parent.knobButton(false);
         waitFor([&] { return parent.cursorVisible(); }, "hidden delay cursor restored");
         handler.sequence.clear(); pump();
         // 交換ボタンは種類と内部設定をまとめて隣へ移動し、標準の編集通知を送る。
         const std::array<int, 60> swappedIndices {42, 31, 32, 33, 51, 52, 53, 60, 63, 64, 65, 66, 75, 76, 77, 78, 79, 80, 93, 94, 95, 96, 97, 109, 110, 111, 112, 113, 114, 115, 43, 45, 46, 47, 54, 55, 56, 61, 67, 68, 69, 70, 81, 82, 83, 84, 85, 86, 98, 99, 100, 101, 102, 116, 117, 118, 119, 120, 121, 122};
-        const std::array<double, 60> beforeSwap {1./6, 1, .25, .75, 0, .2, .3, 0, .1, .2, .3, .4, .1, .2, .3, .4, .5, .6, .1, .2, .3, .4, .5, .1, .2, .3, .4, .5, .6, .7, 1, .5, .5, .25, 1, .4, .6, 1, .5, .6, .7, .8, .6, .5, .4, .3, .2, .1, .9, .8, .7, .6, .4, .7, .6, .5, .3, .2, .1, .8};
+        const std::array<double, 60> beforeSwap {4./6, 1, .25, .75, 0, .2, .3, 0, .1, .2, .3, .4, .1, .2, .3, .4, .5, .6, .1, .2, .3, .4, .5, .1, .2, .3, .4, .5, .6, .7, 1, 0, .5, .25, 1, .4, .6, 1, .5, .6, .7, .8, .6, .5, .4, .3, .2, .1, .9, .8, .7, .6, .4, .7, .6, .5, .3, .2, .1, .8};
         for (size_t i = 0; i < swappedIndices.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
             assert(controller->setParamNormalized(info.id, beforeSwap[i]) == kResultOk);
         }
-        pump(); parent.click(uiPixel(744), uiPixel(74));
+        pump(); parent.click(uiPixel(1012), uiPixel(74));
         waitFor([&] { return handler.sequence.size() == 180; }, "adjacent effect swap");
         for (size_t i = 0; i < swappedIndices.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
@@ -653,7 +658,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         handler.sequence.clear(); pump();
         // Offでは完成したヘッダ・ノブを背景へ50%合成し、選択欄は通常の色を維持する。
-        for (const auto& check : std::array<std::array<int, 3>, 3>{{{9, 10, 298}, {42, 32, 642}, {34, 35, 18}}}) {
+        for (const auto& check : std::array<std::array<int, 3>, 2>{{{9, 10, 298}, {34, 35, 18}}}) {
             const auto [choiceIndex, knobIndex, headerX] = check;
             ParameterInfo info; assert(controller->getParameterInfo(choiceIndex, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
@@ -684,6 +689,22 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             parent.movePointer(4, 4); pump();
             assert(pixels() == off);
         }
+        // Offは内部選択欄・ノブ・ラベルを描画せず、旧ノブ位置でも編集を始めない。
+        for (int slot = 0; slot < 3; ++slot) {
+            choose(42 + slot, 0);
+            parent.movePointer(4, 4); pump();
+            const int y = 150 + 188 * slot;
+            const auto empty = parent.pixel(uiPixel(650), uiPixel(y - 40));
+            for (int x : {667, 704, 736, 777, 832, 887, 928, 960, 997}) {
+                assert(parent.pixel(uiPixel(x), uiPixel(y)) == empty);
+                assert(parent.pixel(uiPixel(x), uiPixel(y + 40)) == empty);
+            }
+            assert(parent.pixel(uiPixel(705), uiPixel(y)) == empty);
+            parent.movePointer(uiPixel(736), uiPixel(y)); pump(); parent.knobButton(true); pump();
+            assert(handler.sequence.empty() && parent.cursorVisible());
+            parent.knobButton(false); pump();
+        }
+        parent.movePointer(4, 4); pump(); parent.screenshot("target/gui-effects-off.ppm");
         // Offのグループを含む全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());
         for (int i = 1; i < 130; ++i) {
@@ -691,7 +712,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             if (i >= 51 || i == 32 || i == 33 || i == 46 || i == 47 || i == 49 || i == 50) {
                 const int slot = i >= 109 ? (i - 109) / 7 : i >= 93 ? (i - 93) / 5 : i >= 75 ? (i - 75) / 6 : i >= 63 ? (i - 63) / 4 : i >= 51 ? (i - 51) / 3 : (i < 45 ? 0 : (i - 45) / 3 + 1);
                 ParameterInfo kind; assert(controller->getParameterInfo(42 + slot, kind) == kResultOk);
-                assert(controller->setParamNormalized(kind.id, i >= 109 ? 1.0 : i >= 93 ? 5./6 : i >= 75 ? 4./6 : i >= 63 ? 3./6 : i >= 51 ? 2./6 : 1./6) == kResultOk);
+                assert(controller->setParamNormalized(kind.id, i >= 109 ? 2./6 : i >= 93 ? 5./6 : i >= 75 ? 1./6 : i >= 63 ? 1.0 : i >= 51 ? 3./6 : 4./6) == kResultOk);
             }
             ParameterInfo info; assert(controller->getParameterInfo(i, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);

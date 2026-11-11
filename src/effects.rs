@@ -421,11 +421,11 @@ mod tests {
         let mut values = parameters::defaults();
         for (slot, [kind, clipper, gain, mix, ..]) in EFFECT_SLOTS.into_iter().enumerate() {
             values[kind] = if mask & (1 << slot) != 0 {
-                parameters::to_normalized(kind, 1.0)
+                parameters::to_normalized(kind, 4.0)
             } else {
                 0.0
             };
-            values[clipper] = parameters::to_normalized(clipper, if slot == 1 { 2.0 } else { 1.0 });
+            values[clipper] = parameters::to_normalized(clipper, if slot == 1 { 1.0 } else { 0.0 });
             values[gain] = parameters::to_normalized(gain, 6.0 + slot as f64 * 9.0);
             values[mix] = 0.3 + slot as f64 * 0.2;
         }
@@ -500,9 +500,9 @@ mod tests {
             p[kind] = if step % 4 == 0 {
                 0.0
             } else {
-                parameters::to_normalized(kind, 1.0)
+                parameters::to_normalized(kind, 4.0)
             };
-            p[clipper] = (step % 3) as f64 / 2.0;
+            p[clipper] = (step % 2) as f64;
             p[gain] = (step % 7) as f64 / 6.0;
             p[mix] = (step % 5) as f64 / 4.0;
             scalar.set_parameters(&p, &previous);
@@ -525,7 +525,7 @@ mod tests {
         for step in 0..30 {
             let previous = p;
             let [kind, _, _, _, beat, feedback, mix, stereo, ..] = EFFECT_SLOTS[step % 3];
-            p[kind] = parameters::to_normalized(kind, ((step / 3) % 6) as f64);
+            p[kind] = parameters::to_normalized(kind, ((step / 3) % 7) as f64);
             p[stereo] = (step % 4) as f64 / 3.0;
             p[beat] = (step % 14) as f64 / 13.0;
             p[feedback] = (step % 6) as f64 / 5.0;
@@ -549,7 +549,7 @@ mod tests {
         scalar.process_samples(&mut [[0.0; 2]; 32]);
         let previous = p;
         for [kind, ..] in EFFECT_SLOTS {
-            p[kind] = parameters::to_normalized(kind, 2.0);
+            p[kind] = parameters::to_normalized(kind, 3.0);
         }
         scalar.set_parameters(&p, &previous);
         for _ in 0..24000 {
@@ -590,7 +590,7 @@ mod tests {
     fn compressors_have_independent_history_and_follow_slot_order() {
         let mut values = parameters::defaults();
         for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
-            values[indices[0]] = parameters::to_normalized(indices[0], 6.0);
+            values[indices[0]] = parameters::to_normalized(indices[0], 2.0);
             for (&index, plain) in indices[23..].iter().zip([
                 -24.0 + slot as f64 * 6.0,
                 2.0 + slot as f64,
@@ -639,7 +639,7 @@ mod tests {
         for step in 0..40 {
             let previous = p;
             for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
-                p[indices[0]] = parameters::to_normalized(indices[0], 6.0);
+                p[indices[0]] = parameters::to_normalized(indices[0], 2.0);
                 for (j, &i) in indices[23..].iter().enumerate() {
                     p[i] = ((step + j + slot) % 11) as f64 / 10.0;
                 }

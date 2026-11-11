@@ -48,7 +48,7 @@ if options.gui:
 
     for source_name, name in [("gui-panel", "gui-panel"), ("gui-choices", "gui-choices"),
                               ("gui-smoke", "gui-overlay"), ("gui-voices", "gui-voices"),
-                              ("gui-delay", "gui-delay"), ("gui-delay-time", "gui-delay-time"), ("gui-reverb", "gui-reverb"), ("gui-chorus", "gui-chorus"), ("gui-phaser", "gui-phaser"), ("gui-compressor", "gui-compressor")]:
+                              ("gui-distortion", "gui-distortion"), ("gui-delay", "gui-delay"), ("gui-delay-time", "gui-delay-time"), ("gui-reverb", "gui-reverb"), ("gui-chorus", "gui-chorus"), ("gui-phaser", "gui-phaser"), ("gui-compressor", "gui-compressor"), ("gui-effects-off", "gui-effects-off"), ("gui-menu-42", "gui-effects-menu")]:
         with (ROOT / "target" / f"{source_name}.ppm").open("rb") as image:
             assert image.readline() == b"P6\n"
             width, height = map(int, image.readline().split())

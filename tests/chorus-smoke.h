@@ -12,7 +12,7 @@ void checkChorus(IComponent* component, IAudioProcessor* processor, IEditControl
             std::array<Points, 23> points;
             Changes changes;
             const std::array<int, 23> indices {130,12,42,43,44,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92};
-            const std::array<double, 23> plain {0,1,slots>=3?4.:0.,slots>=2?4.:0.,slots>=1?4.:0.,
+            const std::array<double, 23> plain {0,1,slots>=3?1.:0.,slots>=2?1.:0.,slots>=1?1.:0.,
                 2.5,.5,.7,.1,50,100,2.5,.5,.7,-.1,-50,100,2.5,.5,.7,.1,50,100};
             for (size_t i=0;i<points.size();++i) {
                 ParameterInfo info; assert(controller->getParameterInfo(indices[i],info)==kResultOk);

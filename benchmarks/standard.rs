@@ -92,7 +92,7 @@ const BASE: [f64; parameters::COUNT] = [
     4000.0,
     0.0,
     0.0, 0.0, 0.0, // Off / Off / Off.
-    1.0, 0.0, 100.0, 1.0, 0.0, 100.0,
+    0.0, 0.0, 100.0, 0.0, 0.0, 100.0,
     5.0, 35.0, 25.0, 5.0, 35.0, 25.0, 5.0, 35.0, 25.0, // Delay
     0.0, 0.0, 0.0, // Stereo
     2.0, 6000.0, 100.0, 25.0, 2.0, 6000.0, 100.0, 25.0, 2.0, 6000.0, 100.0, 25.0, // Reverb
@@ -264,14 +264,14 @@ fn cases() -> Vec<Case> {
             name: "soft-bass",
             phrase: Phrase::Bass,
             settings: BASS,
-            extra: &[(31, 1.), (32, 9.), (33, 40.)],
+            extra: &[(31, 0.), (32, 9.), (33, 40.)],
             automation: None,
         },
         Case {
             name: "hard-lead",
             phrase: Phrase::Mono,
             settings: LEAD,
-            extra: &[(31, 2.), (32, 6.), (33, 25.)],
+            extra: &[(31, 1.), (32, 6.), (33, 25.)],
             automation: None,
         },
         Case {
@@ -285,21 +285,21 @@ fn cases() -> Vec<Case> {
             name: "compressor-bass",
             phrase: Phrase::Bass,
             settings: BASS,
-            extra: &[(42, 6.)],
+            extra: &[(42, 2.)],
             automation: None,
         },
         Case {
             name: "compressor-chords",
             phrase: Phrase::Chord,
             settings: CHORD,
-            extra: &[(42, 6.)],
+            extra: &[(42, 2.)],
             automation: None,
         },
         Case {
             name: "auto-compressor-threshold",
             phrase: Phrase::Chord,
             settings: CHORD,
-            extra: &[(42, 6.)],
+            extra: &[(42, 2.)],
             automation: Some(Automation { index: 109, low: -30., high: -12., period_seconds: 4. }),
         },
     ];
@@ -323,7 +323,7 @@ fn cases() -> Vec<Case> {
             },
             settings: if index == 29 { BELL } else { CHORD },
             extra: if distortion {
-                &[(31, 1.), (32, 9.), (33, 40.)]
+                &[(31, 0.), (32, 9.), (33, 40.)]
             } else {
                 &[]
             },
@@ -359,8 +359,8 @@ fn scenario(case: &Case, rate: usize, block: usize, length: usize) -> Scenario {
     if let Some(a) = case.automation {
         plain[a.index] = a.low;
     }
-    if plain[31] != 0.0 {
-        plain[42] = 1.0; // Distortionのケースは先頭スロットを使う。
+    if case.extra.iter().any(|&(i, _)| i == 31) {
+        plain[42] = 4.0; // Distortionのケースは先頭スロットを使う。
     }
     assert!(
         plain

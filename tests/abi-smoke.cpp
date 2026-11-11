@@ -395,7 +395,7 @@ void checkParameters(IComponent* component, IAudioProcessor* processor, IEditCon
     assert(controller->setParamNormalized(0, 0.0) == kInvalidArgument);
     StateStream initial;
     assert(component->getState(&initial) == kResultOk);
-    assert(initial.bytes.size() == 1044 && initial.bytes[4] == 32 && initial.bytes[8] == 0);
+    assert(initial.bytes.size() == 1044 && initial.bytes[4] == 33 && initial.bytes[8] == 0);
     configureEnvelope(processor, true);
     // Controllerへの表示更新だけではProcessorの値は変わらない。
     assert(controller->getParamNormalized(waveformId) == 1.0);
@@ -586,7 +586,7 @@ void checkEnvelope(IComponent* component, IAudioProcessor* processor, IEditContr
     check({.3, .25, .2, .15}); // offset=-1の0.7からoffset=3の0.3へ線形補間。
     changes.queues.clear(); check({.15, .15});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 1044 && saved.bytes[4] == 32);
+    assert(saved.bytes.size() == 1044 && saved.bytes[4] == 33);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(std::abs(controller->getParamNormalized(envelopeIds[3]) - .3) < 1e-12);
     // 不正な時間値はControllerにもDSPにも適用しない。
@@ -662,7 +662,7 @@ void checkUnison(IComponent* component, IAudioProcessor* processor, IEditControl
         events.values.clear(); previousCount = n; previousDetune = target;
     }
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 1044 && saved.bytes[4] == 32);
+    assert(saved.bytes.size() == 1044 && saved.bytes[4] == 33);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(unisonId) == 1.0);
     assert(controller->getParamNormalized(detuneId) == 1.0);
@@ -764,7 +764,7 @@ void checkPolyphony(IComponent* component, IAudioProcessor* processor, IEditCont
     events.values = {note(true, 0, 200, 12, 0, .5f), note(false, 0, 100, 12)};
     check({15.75, 15.75});
     StateStream saved; assert(component->getState(&saved) == kResultOk);
-    assert(saved.bytes.size() == 1044 && saved.bytes[4] == 32);
+    assert(saved.bytes.size() == 1044 && saved.bytes[4] == 33);
     assert(controller->setComponentState(&saved) == kResultOk);
     assert(controller->getParamNormalized(polyphonyId) == 1.0);
     // 次の割り当て位置は2。減少で範囲外の音を止め、増加しても復活させない。
@@ -898,14 +898,26 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
     for (int i = 0; i < 3; ++i) {
         ParameterInfo info;
         assert(controller->getParameterInfo(31 + i, info) == kResultOk && info.id == ids[i]);
-        assert(info.stepCount == (i == 0 ? 2 : 0));
-        assert(controller->normalizedParamToPlain(info.id, info.defaultNormalizedValue) == (i == 2 ? 100 : i == 0 ? 1 : 0));
+        assert(info.stepCount == (i == 0 ? 1 : 0));
+        assert(controller->normalizedParamToPlain(info.id, info.defaultNormalizedValue) == (i == 2 ? 100 : 0));
     }
-    const std::array<std::u16string, 3> names {u"Off", u"Soft", u"Hard"};
-    for (int type = 0; type < 3; ++type) {
+    const std::array<std::u16string, 2> names {u"Soft", u"Hard"};
+    for (int type = 0; type < 2; ++type) {
         String128 text; double parsed = -1;
-        assert(controller->getParamStringByValue(ids[0], type / 2.0, text) == kResultOk && std::u16string(text) == names[type]);
-        assert(controller->getParamValueByString(ids[0], text, parsed) == kResultOk && parsed == type / 2.0);
+        assert(controller->getParamStringByValue(ids[0], double(type), text) == kResultOk && std::u16string(text) == names[type]);
+        assert(controller->getParamValueByString(ids[0], text, parsed) == kResultOk && parsed == double(type));
+    }
+    String128 off {}; off[0] = 'O'; off[1] = 'f'; off[2] = 'f';
+    double invalid = 0;
+    assert(controller->getParamValueByString(ids[0], off, invalid) == kInvalidArgument);
+    const std::array<std::u16string, 7> effectNames {u"Off",u"Chorus",u"Compressor",u"Delay",u"Distortion",u"Phaser",u"Reverb"};
+    for (int slot = 0; slot < 3; ++slot) {
+        ParameterInfo effect; assert(controller->getParameterInfo(42+slot, effect) == kResultOk);
+        for (int type = 0; type < 7; ++type) {
+            String128 text {};
+            assert(controller->getParamStringByValue(effect.id, type/6., text) == kResultOk);
+            assert(std::u16string(text) == effectNames[type]);
+        }
     }
     configureEnvelope(processor, true);
     ProcessSetup setup {kRealtime, precision, 16, 48000.0};
@@ -917,10 +929,10 @@ void checkDistortion(IComponent* component, IAudioProcessor* processor, IEditCon
     AudioBusBuffers bus; bus.numChannels = 2;
     if constexpr (std::is_same_v<Sample, float>) bus.channelBuffers32 = channels;
     else bus.channelBuffers64 = channels;
-    for (int initial = 0; initial < 3; ++initial) {
+    for (int initial = 1; initial < 3; ++initial) {
         std::array<Points, 10> points;
         const std::array<int, 10> indices {9, 10, 8, 0, 12, 31, 32, 33, 13, 42};
-        const std::array<double, 10> plain {1, 4800, 2, 0, 1, double(initial), 0, 25, -6, 1};
+        const std::array<double, 10> plain {1, 4800, 2, 0, 1, double(initial-1), 0, 25, -6, 4};
         Changes changes;
         for (size_t i = 0; i < points.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(indices[i], info) == kResultOk);
@@ -1462,7 +1474,7 @@ void checkNoise(IComponent* component, IAudioProcessor* processor, IEditControll
 
 void checkStateReload(IPluginFactory* factory, const TUID cid) {
     // 全130設定を変更して保存・破棄し、新規インスタンスへ復元する。GUIは開かない。
-    const std::array<double, 130> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125, 62.5, -35.25, -3.7, 2, -1234.5, -8.1, 3, 1599.75, -std::numeric_limits<double>::infinity(), 137.5, 200, 2, 12.3, 37.5, 1.0, 350.0, 3.0, 1700.0, -4.0, 2.0, 6000.0, 5.0, 1, 0, 1, 2, 18.5, 23, 1, 24, 55, 0, 100, 17, 3, 56.7, 73, 9, 89.5, 12, 1, 2, 3, 0.7, 500, 50, 100, 10, 20000, 200, 0, 3, 1200, 123, 39, 0.1,10,5,-0.1,-95,100,40,0,0.05,0.1,95,0,2.5,0.5,0.7,0.025,50,37.5, 100,2400,5,-95,100, 4000,0,.05,95,0, 1750,1350,.75,25,37.5, 1, -24,8,0,300,12,6,50, -30,2,20,400,0,12,100, -12,20,100,1000,24,24,25};
+    const std::array<double, 130> plain {3, 25, 15, 250, 0.4567, 350.25, 7, 25.125, 32, 6, 2400.125, 2.5125, 2, -12.345, 25, 15, 250, 0.4567, 350.25, -1234.125, 62.5, -35.25, -3.7, 2, -1234.5, -8.1, 3, 1599.75, -std::numeric_limits<double>::infinity(), 137.5, 200, 1, 12.3, 37.5, 1.0, 350.0, 3.0, 1700.0, -4.0, 2.0, 6000.0, 5.0, 1, 0, 1, 1, 18.5, 23, 0, 24, 55, 0, 100, 17, 3, 56.7, 73, 9, 89.5, 12, 1, 2, 3, 0.7, 500, 50, 100, 10, 20000, 200, 0, 3, 1200, 123, 39, 0.1,10,5,-0.1,-95,100,40,0,0.05,0.1,95,0,2.5,0.5,0.7,0.025,50,37.5, 100,2400,5,-95,100, 4000,0,.05,95,0, 1750,1350,.75,25,37.5, 1, -24,8,0,300,12,6,50, -30,2,20,400,0,12,100, -12,20,100,1000,24,24,25};
     std::array<double, 130> expected {};
     StateStream saved;
     for (bool restore : {false, true}) {

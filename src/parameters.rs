@@ -29,12 +29,12 @@ pub const EFFECT_SLOTS: [[usize; 30]; 3] = [
 ];
 pub const EFFECT_TYPES: [crate::effects::EffectType; 7] = [
     crate::effects::EffectType::Off,
-    crate::effects::EffectType::Distortion,
-    crate::effects::EffectType::Delay,
-    crate::effects::EffectType::Reverb,
     crate::effects::EffectType::Chorus,
-    crate::effects::EffectType::Phaser,
     crate::effects::EffectType::Compressor,
+    crate::effects::EffectType::Delay,
+    crate::effects::EffectType::Distortion,
+    crate::effects::EffectType::Phaser,
+    crate::effects::EffectType::Reverb,
 ];
 pub const DELAY_STEREO_MODES: [crate::delay::StereoMode; 4] = [
     crate::delay::StereoMode::Stereo,
@@ -119,9 +119,8 @@ pub fn sine_preset() -> [f64; COUNT] {
     )
 }
 
-pub const CLIPPER_TYPES: [ClipperType; 3] =
-    [ClipperType::None, ClipperType::Soft, ClipperType::Hard];
-pub const CLIPPER_NAMES: [&str; 3] = ["Off", "Soft", "Hard"];
+pub const CLIPPER_TYPES: [ClipperType; 2] = [ClipperType::Soft, ClipperType::Hard];
+pub const CLIPPER_NAMES: [&str; 2] = ["Soft", "Hard"];
 
 pub const PHASE_MODES: [PhaseMode; 3] = [PhaseMode::Keep, PhaseMode::Zero, PhaseMode::Random];
 pub const PHASE_NAMES: [&str; 3] = ["Keep", "Zero", "Random"];
@@ -427,12 +426,12 @@ pub fn choices(index: usize) -> &'static [&'static str] {
     if (42..=44).contains(&index) {
         return &[
             "Off",
-            "Distortion",
-            "Delay",
-            "Reverb",
             "Chorus",
-            "Phaser",
             "Compressor",
+            "Delay",
+            "Distortion",
+            "Phaser",
+            "Reverb",
         ];
     }
     match control_kind(index) {
@@ -442,7 +441,7 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         31 => &CLIPPER_NAMES,
         34 | 108 => &["Off", "On"],
         51 => &DELAY_BEATS,
-        60 => &["Stereo", "Cross", "PP-L", "PP-R"],
+        60 => &["Dual", "Cross", "PP-L", "PP-R"],
         _ => &[],
     }
 }
@@ -454,8 +453,7 @@ pub fn max_tick(index: usize) -> u32 {
         TIME_TICKS
     } else {
         match index {
-            34 | 108 => 1,
-            31 => 2,
+            31 | 34 | 108 => 1,
             51 => 13,
             42 => 6,
             109 => 600,
@@ -574,7 +572,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         return from_normalized(normalized).map_or(0.0, |w| f64::from(waveform_index(w)));
     }
     match index {
-        34 | 108 => return (normalized * 2.0).floor().min(1.0),
+        31 | 34 | 108 => return (normalized * 2.0).floor().min(1.0),
         51 => return (normalized * 14.0).floor().min(13.0),
         42 => return (normalized * 7.0).floor().min(6.0),
         109 => return normalized * 60.0 - 60.0,
@@ -605,7 +603,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         9 => return (normalized * 7.0).floor().min(6.0),
         10 => return normalized * 12000.0 - 2400.0,
         11 => return 0.5 + normalized * 9.5,
-        12 | 31 => return (normalized * 3.0).floor().min(2.0),
+        12 => return (normalized * 3.0).floor().min(2.0),
         24 | 27 => return normalized * 4800.0 - 2400.0,
         19 => return normalized * 9600.0 - 4800.0,
         _ => {}
@@ -633,7 +631,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         return plain.clamp(0.0, 4.0).round() / 4.0;
     }
     match index {
-        34 | 108 => return plain.clamp(0.0, 1.0).round(),
+        31 | 34 | 108 => return plain.clamp(0.0, 1.0).round(),
         51 => return plain.clamp(0.0, 13.0).round() / 13.0,
         42 => return plain.clamp(0.0, 6.0).round() / 6.0,
         109 => return (plain + 60.0) / 60.0,
@@ -664,7 +662,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         9 => return plain.clamp(0.0, 6.0).round() / 6.0,
         10 => return (plain + 2400.0) / 12000.0,
         11 => return (plain - 0.5) / 9.5,
-        12 | 31 => return plain.clamp(0.0, 2.0).round() / 2.0,
+        12 => return plain.clamp(0.0, 2.0).round() / 2.0,
         24 | 27 => return (plain + 2400.0) / 4800.0,
         19 => return (plain + 4800.0) / 9600.0,
         _ => {}
@@ -685,7 +683,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
     }
     match index {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
-        34 | 108 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
+        31 | 34 | 108 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
         51 => (0.0..=13.0).contains(&plain) && plain.fract() == 0.0,
         42 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
         109 => (-60.0..=0.0).contains(&plain),
@@ -715,7 +713,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         9 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
         10 => (-2400.0..=9600.0).contains(&plain),
         11 => (0.5..=10.0).contains(&plain),
-        12 | 31 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
+        12 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
         24 | 27 => (-2400.0..=2400.0).contains(&plain),
         19 => (-4800.0..=4800.0).contains(&plain),
         32 => (0.0..=48.0).contains(&plain),
@@ -774,7 +772,7 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         f64::NEG_INFINITY, // Osc3
         0.0,               // Osc2 Mod
         0.0,               // Osc3 Mod
-        1.0,               // Clipper: Soft（スロット自体はOff）
+        0.0,               // Clipper: Soft（スロット自体はOff）
         0.0,               // Gain: 0 dB
         100.0,             // Mix: 100%
         0.0,
@@ -788,10 +786,10 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         0.0,
         0.0,
         0.0, // 3スロットともOff
-        1.0,
+        0.0,
         0.0,
         100.0, // Effect 2: Soft / 0 dB / 100%
-        1.0,
+        0.0,
         0.0,
         100.0, // Effect 3
         5.0,
@@ -1152,9 +1150,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v32: 固定1044バイト。波形番号u32と、その他の実単位f64を保持する。
+// v33: 固定1044バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x20\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x21\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -1355,7 +1353,7 @@ mod tests {
             (21, 200),
             (29, 200),
             (30, 200),
-            (31, 2),
+            (31, 1),
             (32, 480),
             (33, 100),
         ] {
@@ -1380,7 +1378,7 @@ mod tests {
     fn delay_stereo_switches_at_automation_point_in_each_slot() {
         for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
             let index = indices[7];
-            assert_eq!(choices(index), ["Stereo", "Cross", "PP-L", "PP-R"]);
+            assert_eq!(choices(index), ["Dual", "Cross", "PP-L", "PP-R"]);
             let mut values = defaults();
             for (mode, expected) in DELAY_STEREO_MODES.into_iter().enumerate() {
                 let value = to_normalized(index, mode as f64);
@@ -1496,7 +1494,7 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in (0..=32).filter(|v| *v != STATE_HEADER[4]) {
+                for version in (0..=33).filter(|v| *v != STATE_HEADER[4]) {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
@@ -1564,7 +1562,7 @@ mod tests {
                     (29, f64::NAN),
                     (30, f64::INFINITY),
                     (31, -1.0),
-                    (31, 3.0),
+                    (31, 2.0),
                     (31, 1.5),
                     (32, -0.1),
                     (32, 48.1),

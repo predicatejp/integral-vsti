@@ -357,8 +357,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v32は1044バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/Mix、Limiter、および各スロットのCompressor Threshold/Ratio/Attack/Release/Knee/Makeup/Mixを各f64。little endian）です。
-読み込みは現行形式v32のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v33は1044バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/Mix、Limiter、および各スロットのCompressor Threshold/Ratio/Attack/Release/Knee/Makeup/Mixを各f64。little endian）です。
+読み込みは現行形式v33のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -381,7 +381,7 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
 | Limiter | Off |
 | Osc2/3 Waveform / Tune / Volume / Mod | Sine / 0 cent / −∞ dB / 0% |
-| Clipper / Gain / Mix | Off / 0 dB / 100% |
+| Clipper / Gain / Mix | Soft / 0 dB / 100% |
 
 ノートオン・オフで即時に発音・消音し、最大ベロシティ時の実効値は片チャンネル当たり0.5です。
 選択すると全設定を読み直し、同じ「Sine」の再選択でも編集した値を元に戻します。
@@ -395,7 +395,7 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 ## エフェクタ系列
 
 全Voiceのフィルタ出力を合成した後、**Effector 1 → Effector 2 → Effector 3 → EQ → Limiter → Master Volume**の順に処理します。
-各スロットでOff／Distortion／Delay／Reverb／Chorus／Phaser／Compressorを選択し、Offはそのスロットを素通しにします。初期値はすべてOffです。
+各スロットでOff／Chorus／Compressor／Delay／Distortion／Phaser／Reverbを選択し、Offはそのスロットを素通しにします。初期値はすべてOffです。
 同じエフェクトを複数のスロットで使えます。設定と左右の処理履歴はスロットごとに独立します。
 
 各スロットの↑／↓ボタンで、隣のスロットと種類とDistortion／Delay／Reverb／Chorus／Phaser／Compressorの全設定をまとめて交換します。
@@ -404,7 +404,7 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 
 | 設定 | Effect 1 ParamID | Effect 2 ParamID | Effect 3 ParamID |
 | --- | --- | --- | --- |
-| 種類（Off／Distortion／Delay／Reverb／Chorus／Phaser／Compressor） | `0x45463154` | `0x45463254` | `0x45463354` |
+| 種類（Off／Chorus／Compressor／Delay／Distortion／Phaser／Reverb） | `0x45463154` | `0x45463254` | `0x45463354` |
 | Clipper | `0x43545950` | `0x45463243` | `0x45463343` |
 | Gain | `0x43474149` | `0x45463247` | `0x45463347` |
 | Distortion Mix | `0x434d4958` | `0x4546324d` | `0x4546334d` |
@@ -447,7 +447,7 @@ Delayはステレオ方式を選択できるフィードバックディレイで
 | Time | 1/32、1/16 T、1/16、1/8 T、1/16 D、1/8、1/4 T、1/8 D、1/4、1/2 T、1/4 D、1/2、1/2 D、1/1 | 1/8 |
 | Feedback | 0〜100%、GUIは1%刻み | 35% |
 | Mix | 0〜100%、GUIは1%刻み | 25% |
-| Stereo | Stereo／Cross／PP-L／PP-R | Stereo |
+| Stereo | Dual／Cross／PP-L／PP-R | Dual |
 
 Tは三連、Dは付点です。ホストのBPMと音価から遅延時間を求め、1サンプル〜8秒へクランプします。
 `IProcessContextRequirements::kNeedTempo`を申告し、`ProcessContext::kTempoValid`が設定された有限の正のBPMを使用します。
@@ -457,7 +457,7 @@ Tは三連、Dは付点です。ホストのBPMと音価から遅延時間を求
 Feedback・Mixは変更点間で線形補間し、Time・Stereoは変更点で切り替えます。
 Mixは0%で原音、100%で遅延音。Feedback 100%は減衰なしの反復になります。
 
-Stereoは左右独立に帰還します。Crossは左右を交差して帰還し、最初の反復は入力と同じ配置、以後は左右交互になります。
+Dualは左右独立に帰還します。Crossは左右を交差して帰還し、最初の反復は入力と同じ配置、以後は左右交互になります。
 PP-L／PP-RはWetへの入力を`(L + R) / 2`でモノラル化し、指定側だけへ入れて交差帰還します。PP-Lの反復は左→右→左、PP-Rは右→左→右です。
 どの方式もDryの左右配置を保持します。Stereo方式の変更では履歴を保持し、変更点以降の入力と帰還先を切り替えます。
 
@@ -558,11 +558,11 @@ Mix=0%は原音、100%は残響です。操作ノブは各スロットにDec・D
 
 ### ディストーション
 
-ClipperはOff／Soft／Hard（初期値Soft）、Gainは0〜+48 dB・0.1 dB刻み（初期値0 dB）、Mixは0〜100%・1%刻み（初期値100%）です。
+ClipperはSoft／Hard（初期値Soft）、Gainは0〜+48 dB・0.1 dB刻み（初期値0 dB）、Mixは0〜100%・1%刻み（初期値100%）です。
 Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`をホストレートの2階ADAAで左右独立に処理します。
 Gainの線形倍率は`10^(dB/20)`です。Dryはそのスロットへの入力を1サンプルだけ遅延し、Gainや平均化を掛けません。
 Mixは0%でDry、100%でWetになり、その間を線形混合して次の段へ渡します。Mixは各スロットの出力時点の値を使います。
-Clipper=OffではDryだけを出力します。Gain・Mixはオートメーションの変更点間を線形補間し、種類・Clipperは変更点で切り替えます。
+バイパスはスロットの種類でOffを選択します。Gain・Mixはオートメーションの変更点間を線形補間し、種類・Clipperは変更点で切り替えます。
 
 ADAA2による平均化はWetの高域特性に影響します。Dryは平均化を通しません。
 Softの原始関数は1025点の共有テーブルから整合した多項式で求め、近接入力では差分の桁落ちを避ける式を使います。
@@ -575,14 +575,14 @@ Gain・Mixはホストから届いた変更点間をホストレートで補間�
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3つのスロット、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトル・↑／↓の交換ボタン・種類の選択欄を同じ行に置き、交換ボタンのX座標を3スロットで揃えます。Distortionは次の段にClipper選択欄、その下にGain・Mixを配置します。Delayは次の段にStereo方式の選択欄、その下にTime・Fdbk・Mixの3ノブを横一列に均等配置し、Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phase・Limiterはそれぞれラベルと選択欄を上下に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3つのスロット、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトル・種類の選択欄・↑／↓の交換ボタンを同じ行に置き、交換ボタンは右端に配置しX座標を3スロットで揃えます。DistortionはClipper選択欄とGain・Mix、DelayはStereo方式の選択欄とTime・Fdbk・Mixをそれぞれ同じ行に配置します。内部選択欄は行の左側、ノブは右側に均等配置し、選択欄の直上にタイトルを中央揃えで表示します。Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phase・Limiter・Clipper・Stereoのタイトルは共通の描画処理で、選択欄の直上に中央揃え・同じ文字サイズ・同じ間隔で表示します。MasterのPhase・Limiterは縦に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 タイトルバーの発音数インジケータの上に、同じ幅の出力ピークメータを表示します。Master音量適用後の左右最大サンプルピークを−60〜＋12 dBFSで表示します。0 dBFSまでの部分は明るい緑、0 dBFSを超えた部分は明るい赤とし、0 dBFSの境界線を示します。描画間のピークを保持し、未点灯部分は白に近い色にします。表示は48 dB/秒で減衰します。
 
 Osc1にはWaveform・Unison・Detune・Width・Vol、Osc2/3にはWaveform・Tune・Vol・Mod、Masterには共通Phase・Polyphony・Volume・Panを配置します。
 ノブは行内を均等割りします。ノブ行は80px高、外周・グループ間・枠内の左右余白は8pxで統一します。OscillatorとAmp/Filter列の下端を揃え、その下にEQを配置します。見出しの下に残る高さは上余白・行間・下余白へ均等配分します。エフェクト列は列全体を同じ高さの3枠に分け、上からEffect 1・Effect 2・Effect 3を表示します。Masterは列全体を使用し、EQと下端を揃えます。見出し行とドロップダウンは28px高です。
 ノブは直径47.52pxとし、下に省略名A/H/D/S/R・Uni・Det・Poly・Vol・F・Res・Amtを表示します。
-Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。機能を無効にする選択肢は「Off」に統一します。Filter・各エフェクタスロット・EQがOffのときは種類の選択リストと交換ボタンを通常表示とし、枠・見出し・ノブとそのラベルを描画した後、グループ全体を画面背景と50%で合成します。Off中もノブは編集でき、操作中の値は通常のオーバーレイで表示します。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
+Waveform・Filter・Phaseはドロップダウンで選択します。リストは全選択肢が収まる高さとし、スクロールバーを表示しません。その他のパラメーターはノブです。機能を無効にする選択肢は「Off」に統一します。エフェクタ一覧はOffを先頭とし、各エフェクト名をアルファベット順に並べます。スロットがOffのときは種類選択と右端の交換ボタンだけを表示し、内部の選択欄・ノブ・ラベルを表示しません。Filter・EQがOffのときは種類の選択リストと交換ボタンを通常表示とし、枠・見出し・ノブとそのラベルを描画した後、グループ全体を画面背景と50%で合成します。Off中もノブは編集でき、操作中の値は通常のオーバーレイで表示します。ノブの円弧と目盛りが設定位置を示し、Tune・Pan・Cutoff Amountの円弧は中央のゼロを基準に伸びます。
 ノブを左ボタンで押し、上へ動かすと増加、下へ動かすと減少します。1tickに必要な移動量は、Cutoff・Resonance・Cutoff Amount・各Volが2物理px、時間（A/H/D/R）・Tune・Distortion Gainが3物理px、その他が4物理pxです。Uniは32物理px、Polyは8物理pxです。全範囲の移動量が約1200pxに近づくよう、段階数の多いノブほど少ない移動量を割り当てています。1tick未満の移動量は次の操作へ持ち越します。吸着中は0〜80物理pxの内部位置を保持します。小さい値側から進入したら0、大きい値側から進入したら80、吸着点からドラッグを開始したら40に初期化します。増加方向で80へ到達すると大きい側、減少方向で0へ到達すると小さい側へ抜けます。進入直後に方向を戻すと、その側へすぐ抜けます。最大・最小値は通常動作です。吸着対象はCutoff・Tune・Cutoff Amountの1200 cent刻み、Master・Osc1/2/3のVolの6 dB刻み、Panの中央、およびEQ Low/Mid/High Gainの6 dB刻みです。上下どちらにも適用し、大きな移動でも途中の吸着値で必要な距離を消費します。
 目盛り位置は`src/editor.rs`の`knob_marks`でノブごとに整数tickとして定義します。目盛りは円弧ガイドから直接伸ばし、基準点と両端はガイドと同じ色・太さの長い線で示します。
 
