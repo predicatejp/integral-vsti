@@ -127,6 +127,7 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
 const PANEL: egui::Color32 = egui::Color32::from_rgb(248, 249, 245);
 const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(53, 71, 62);
+const SECTION_TITLE: egui::Color32 = egui::Color32::from_rgb(108, 123, 113);
 const LINE: egui::Color32 = egui::Color32::from_rgb(143, 160, 147);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(20, 96, 76);
 const METER_BACKGROUND: egui::Color32 = egui::Color32::from_rgb(224, 230, 224);
@@ -184,7 +185,7 @@ fn panel(painter: &egui::Painter, rect: egui::Rect, title: &str) {
             egui::Align2::LEFT_CENTER,
             title,
             egui::FontId::proportional(FONT_SIZE),
-            MUTED,
+            SECTION_TITLE,
         );
     }
 }
@@ -705,9 +706,9 @@ impl Editor {
                 title,
                 egui::FontId::proportional(FONT_SIZE),
                 if off {
-                    MUTED.gamma_multiply(0.5)
+                    SECTION_TITLE.gamma_multiply(0.5)
                 } else {
-                    MUTED
+                    SECTION_TITLE
                 },
             );
         } else {
@@ -834,7 +835,7 @@ impl Editor {
                 egui::Align2::LEFT_CENTER,
                 label,
                 egui::FontId::proportional(FONT_SIZE),
-                MUTED,
+                SECTION_TITLE,
             );
         }
         if off && effect.is_none() {
