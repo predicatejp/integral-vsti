@@ -583,10 +583,11 @@ impl Editor {
         } else {
             0.0
         };
-        let choice_rows = if stacked_choices {
-            choices.len()
+        let choice_rows = if stacked_choices { choices.len() } else { 0 };
+        let internal_choice_width = if effect.is_some() && choices.len() > 1 {
+            130.0 + GAP
         } else {
-            usize::from(effect.is_some())
+            0.0
         };
         let choice_height = (CHOICE_HEIGHT + choice_label_height) * choice_rows as f32;
         let row_header_height = if choices.len() > 1 && effect.is_none() && !stacked_choices {
@@ -643,8 +644,8 @@ impl Editor {
                     egui::Stroke::new(1.0, LINE),
                 );
             }
-            let width = (rect.width() - GAP * 2.0) / knobs.len() as f32;
-            let mut left = GAP;
+            let width = (rect.width() - GAP * 2.0 - internal_choice_width) / knobs.len() as f32;
+            let mut left = GAP + internal_choice_width;
             for &index in *knobs {
                 let area = egui::Rect::from_min_size(
                     rect.min + egui::vec2(left, row_top + row_header_height),
@@ -661,6 +662,12 @@ impl Editor {
             }
         }
         let choice_rect = |row: usize| {
+            if effect.is_some() && row > 0 {
+                return egui::Rect::from_min_size(
+                    rect.min + egui::vec2(GAP, body_y + 30.0 - CHOICE_HEIGHT / 2.0),
+                    egui::vec2(internal_choice_width - GAP, CHOICE_HEIGHT),
+                );
+            }
             let top = if effect.is_some() && row == 0 {
                 rect.top() + GAP
             } else if row_header_height > 0.0 {
@@ -700,13 +707,22 @@ impl Editor {
             )
         };
         for (row, &index) in choices.iter().enumerate() {
+            if effect.is_some() && row > 0 {
+                painter.text(
+                    choice_rect(row).center_top() - egui::vec2(0.0, GAP),
+                    egui::Align2::CENTER_BOTTOM,
+                    KNOB_NAMES[index],
+                    egui::FontId::proportional(18.0),
+                    MUTED,
+                );
+                continue;
+            }
             let label = match index {
                 0 => "Osc1",
                 23 => "Osc2",
                 26 => "Osc3",
                 12 => "Phase",
                 108 => "Limiter",
-                31 | 45 | 48 => "",
                 _ => continue,
             };
             painter.text(
