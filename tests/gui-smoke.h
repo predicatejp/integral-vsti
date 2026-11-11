@@ -303,7 +303,7 @@ public:
         assert(!GuiReentry::insideDraw);
 #endif
         assert(std::this_thread::get_id() == uiThread);
-        assert((id >= 0x43500100 && id <= 0x43500306) || id == 0x4c490000 || (id >= 0x50314346 && id <= 0x50335254) || (id >= 0x43314450 && id <= 0x4333544d) || (id >= 0x52314443 && id <= 0x5233535a) || (id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463142 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(id == 0x4153454e || id == 0x4653454e || (id >= 0x43500100 && id <= 0x43500306) || id == 0x4c490000 || (id >= 0x50314346 && id <= 0x50335254) || (id >= 0x43314450 && id <= 0x4333544d) || (id >= 0x52314443 && id <= 0x5233535a) || (id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463142 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -332,7 +332,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1172 && rect.getHeight() == 728);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1240 && rect.getHeight() == 728);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -345,7 +345,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1172);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1240);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -441,29 +441,29 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
-    std::array<std::pair<int, int>, 130> controls {{
+    std::array<std::pair<int, int>, 132> controls {{
         {175, 124}, {292, 146}, {348, 146}, {404, 146}, {460, 146}, {516, 146},
-        {44, 174}, {100, 174}, {904, 524}, {479, 242}, {311, 314}, {404, 314},
-        {904, 133}, {904, 317}, {292, 409}, {348, 409}, {404, 409}, {460, 409},
-        {516, 409}, {497, 314}, {156, 174}, {904, 420}, {212, 174}, {175, 245},
+        {44, 174}, {100, 174}, {960, 524}, {535, 242}, {306, 314}, {390, 314},
+        {960, 133}, {960, 317}, {298, 409}, {365, 409}, {432, 409}, {499, 409},
+        {566, 409}, {474, 314}, {156, 174}, {960, 420}, {212, 174}, {175, 245},
         {53, 295}, {128, 295}, {175, 367}, {53, 417}, {128, 417}, {203, 295},
-        {203, 417}, {613, 150}, {709, 150}, {796, 150}, {479, 505}, {54, 555},
-        {129, 555}, {205, 555}, {280, 555}, {355, 555}, {431, 555}, {506, 555},
-        {689, 66}, {689, 251}, {689, 436}, {613, 335}, {709, 335}, {796, 335},
-        {613, 520}, {709, 520}, {796, 520}, {709, 115}, {709, 186}, {796, 150},
-        {709, 300}, {709, 371}, {796, 335}, {709, 485}, {709, 556}, {796, 520},
-        {613, 150}, {613, 335}, {613, 520}, {660, 150}, {721, 150}, {599, 150},
-        {796, 150}, {660, 335}, {721, 335}, {599, 335}, {796, 335}, {660, 520},
-        {721, 520}, {599, 520}, {796, 520}, {599, 115}, {660, 115}, {614, 186},
-        {706, 186}, {721, 115}, {796, 150}, {599, 300}, {660, 300}, {614, 371},
-        {706, 371}, {721, 300}, {796, 335}, {599, 485}, {660, 485}, {614, 556},
-        {706, 556}, {721, 485}, {796, 520}, {614, 115}, {706, 115}, {614, 186},
-        {706, 186}, {796, 150}, {614, 300}, {706, 300}, {614, 371}, {706, 371},
-        {796, 335}, {614, 485}, {706, 485}, {614, 556}, {706, 556}, {796, 520},
-        {904, 236}, {599, 115}, {660, 115}, {599, 186}, {660, 186}, {721, 115},
-        {721, 186}, {796, 150}, {599, 300}, {660, 300}, {599, 371}, {660, 371},
-        {721, 300}, {721, 371}, {796, 335}, {599, 485}, {660, 485}, {599, 556},
-        {660, 556}, {721, 485}, {721, 556}, {796, 520},
+        {203, 417}, {669, 150}, {765, 150}, {852, 150}, {535, 505}, {58, 555},
+        {141, 555}, {225, 555}, {308, 555}, {391, 555}, {475, 555}, {558, 555},
+        {745, 66}, {745, 251}, {745, 436}, {669, 335}, {765, 335}, {852, 335},
+        {669, 520}, {765, 520}, {852, 520}, {765, 115}, {765, 186}, {852, 150},
+        {765, 300}, {765, 371}, {852, 335}, {765, 485}, {765, 556}, {852, 520},
+        {669, 150}, {669, 335}, {669, 520}, {716, 150}, {777, 150}, {655, 150},
+        {852, 150}, {716, 335}, {777, 335}, {655, 335}, {852, 335}, {716, 520},
+        {777, 520}, {655, 520}, {852, 520}, {655, 115}, {716, 115}, {670, 186},
+        {762, 186}, {777, 115}, {852, 150}, {655, 300}, {716, 300}, {670, 371},
+        {762, 371}, {777, 300}, {852, 335}, {655, 485}, {716, 485}, {670, 556},
+        {762, 556}, {777, 485}, {852, 520}, {670, 115}, {762, 115}, {670, 186},
+        {762, 186}, {852, 150}, {670, 300}, {762, 300}, {670, 371}, {762, 371},
+        {852, 335}, {670, 485}, {762, 485}, {670, 556}, {762, 556}, {852, 520},
+        {960, 236}, {655, 115}, {716, 115}, {655, 186}, {716, 186}, {777, 115},
+        {777, 186}, {852, 150}, {655, 300}, {716, 300}, {655, 371}, {716, 371},
+        {777, 300}, {777, 371}, {852, 335}, {655, 485}, {716, 485}, {655, 556},
+        {716, 556}, {777, 485}, {777, 556}, {852, 520}, {572, 146}, {558, 314},
     }};
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
     auto choose = [&](int index, int item) {
@@ -483,7 +483,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(1172, 728); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(1240, 728); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         if (cycle == 0) {
@@ -513,7 +513,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
             auto meter = [&](int count) {
                 for (int i = 0; i < 32; ++i) {
-                    if (parent.pixel(uiPixel(293 + i * 8), uiPixel(32)) != (i < count ? lit : unlit)) return false;
+                    if (parent.pixel(uiPixel(349 + i * 8), uiPixel(32)) != (i < count ? lit : unlit)) return false;
                 }
                 return true;
             };
@@ -524,7 +524,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             for (int i = 0; i < 16; ++i) assert(processor->process(audio) == kResultOk);
             waitFor([&] {
                 assert(processor->process(audio) == kResultOk);
-                return parent.pixel(uiPixel(376), uiPixel(20)) == lit && parent.pixel(uiPixel(542), uiPixel(20)) == over;
+                return parent.pixel(uiPixel(432), uiPixel(20)) == lit && parent.pixel(uiPixel(598), uiPixel(20)) == over;
             }, "peak at +12 dBFS: green below zero, red above");
             parent.screenshot("target/gui-voices.ppm");
             audio.inputEvents = &events;
@@ -540,7 +540,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return meter(3); }, "voices before stop");
             assert(processor->setProcessing(false) == kResultOk);
             waitFor([&] { return meter(0); }, "voices after stop");
-            waitFor([&] { return parent.pixel(uiPixel(293), uiPixel(20)) == unlit; }, "peak decays to silence");
+            waitFor([&] { return parent.pixel(uiPixel(349), uiPixel(20)) == unlit; }, "peak decays to silence");
             assert(component->setActive(false) == kResultOk);
             assert(component->setState(&original) == kResultOk);
         }
@@ -647,7 +647,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
             assert(controller->setParamNormalized(info.id, beforeSwap[i]) == kResultOk);
         }
-        pump(); parent.click(uiPixel(804), uiPixel(66));
+        pump(); parent.click(uiPixel(860), uiPixel(66));
         waitFor([&] { return handler.sequence.size() == 180; }, "adjacent effect swap");
         for (size_t i = 0; i < swappedIndices.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
@@ -692,22 +692,22 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             choose(42 + slot, 0);
             parent.movePointer(4, 4); pump();
             const int y = controls[53 + slot * 3].second;
-            const auto empty = parent.pixel(uiPixel(578), uiPixel(y - 40));
-            for (int x : {578, 600, 632, 664, 696, 728, 760, 792, 814}) {
+            const auto empty = parent.pixel(uiPixel(634), uiPixel(y - 40));
+            for (int x : {634, 656, 688, 720, 752, 784, 816, 848, 870}) {
                 assert(parent.pixel(uiPixel(x), uiPixel(y)) == empty);
                 assert(parent.pixel(uiPixel(x), uiPixel(y + 40)) == empty);
             }
-            assert(parent.pixel(uiPixel(613), uiPixel(y)) == empty);
-            parent.movePointer(uiPixel(664), uiPixel(y)); pump(); parent.knobButton(true); pump();
+            assert(parent.pixel(uiPixel(669), uiPixel(y)) == empty);
+            parent.movePointer(uiPixel(720), uiPixel(y)); pump(); parent.knobButton(true); pump();
             assert(handler.sequence.empty() && parent.cursorVisible());
             parent.knobButton(false); pump();
         }
         parent.movePointer(4, 4); pump(); parent.screenshot("target/gui-effects-off.ppm");
         // Offのグループを含む全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());
-        for (int i = 1; i < 130; ++i) {
+        for (int i = 1; i < 132; ++i) {
             if (i == 108 || i == 9 || i == 12 || i == 23 || i == 26 || i == 31 || i == 34 || (i >= 42 && i <= 45) || i == 48 || (i >= 60 && i <= 62)) continue;
-            if (i >= 51 || i == 32 || i == 33 || i == 46 || i == 47 || i == 49 || i == 50) {
+            if ((i >= 51 && i < 130) || i == 32 || i == 33 || i == 46 || i == 47 || i == 49 || i == 50) {
                 const int slot = i >= 109 ? (i - 109) / 7 : i >= 93 ? (i - 93) / 5 : i >= 75 ? (i - 75) / 6 : i >= 63 ? (i - 63) / 4 : i >= 51 ? (i - 51) / 3 : (i < 45 ? 0 : (i - 45) / 3 + 1);
                 ParameterInfo kind; assert(controller->getParameterInfo(42 + slot, kind) == kResultOk);
                 assert(controller->setParamNormalized(kind.id, i >= 109 ? 2./6 : i >= 93 ? 5./6 : i >= 75 ? 1./6 : i >= 63 ? 1.0 : i >= 51 ? 3./6 : 4./6) == kResultOk);
@@ -726,7 +726,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0}));
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(logicalX - 112, 0, 753);
+            const int overlayX = std::clamp(logicalX - 112, 0, 809);
             const int overlayY = std::clamp(logicalY - 91, 0, 547);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
@@ -742,7 +742,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
 #endif
-            const int pixelsPerTick = i >= 109 ? std::array<int,7>{2,4,3,3,4,4,4}[(i-109)%7] : (i >= 93 && ((i-93)%5 == 0 || (i-93)%5 == 2)) ? 3 : (i == 76 || i == 82 || i == 88) ? 2 : (i == 77 || i == 83 || i == 89) ? 3 : (i == 6 || i == 51 || i == 54 || i == 57) ? 32 : i == 8 ? 8 :
+            const int pixelsPerTick = i >= 130 ? 4 : i >= 109 ? std::array<int,7>{2,4,3,3,4,4,4}[(i-109)%7] : (i >= 93 && ((i-93)%5 == 0 || (i-93)%5 == 2)) ? 3 : (i == 76 || i == 82 || i == 88) ? 2 : (i == 77 || i == 83 || i == 89) ? 3 : (i == 6 || i == 51 || i == 54 || i == 57) ? 32 : i == 8 ? 8 :
                 (i == 10 || i == 11 || i == 13 || i == 19 || i == 22 || i == 25 || i == 28) ? 2 :
                 (i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 ||
                  i == 18 || i == 24 || i == 27 || i == 32 || i == 46 || i == 49) ? 3 : 4;
@@ -753,7 +753,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return handler.sequence.size() == 2; }, "knob integer tick");
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
-            const double plain = i >= 109 ? std::array<double,7>{-59.9,1.1,1,1,.1,.1,1}[(i-109)%7] : i >= 93 ? std::array<double,5>{100.*std::pow(40.,1./400.),10.,.06,-94.,1.}[(i-93)%5] : i >= 75 ? std::array<double,6>{.2, .01, .06, -.099, -94., 1.}[(i-75)%6] : i >= 63 ? std::array<double,4>{.1 * std::pow(100.,1./200.), 500. * std::pow(40.,1./300.), 51., 1.}[(i-63)%4] : (i == 35 || i == 37 || i == 40) ? 20. * std::pow(1000., 1./300.) : (i == 36 || i == 38 || i == 41) ? -17.9 : i == 39 ? .1 * std::pow(100., 1./200.) : time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
+            const double plain = i >= 130 ? 1.0 : i >= 109 ? std::array<double,7>{-59.9,1.1,1,1,.1,.1,1}[(i-109)%7] : i >= 93 ? std::array<double,5>{100.*std::pow(40.,1./400.),10.,.06,-94.,1.}[(i-93)%5] : i >= 75 ? std::array<double,6>{.2, .01, .06, -.099, -94., 1.}[(i-75)%6] : i >= 63 ? std::array<double,4>{.1 * std::pow(100.,1./200.), 500. * std::pow(40.,1./300.), 51., 1.}[(i-63)%4] : (i == 35 || i == 37 || i == 40) ? 20. * std::pow(1000., 1./300.) : (i == 36 || i == 38 || i == 41) ? -17.9 : i == 39 ? .1 * std::pow(100., 1./200.) : time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
                                  i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -59.9 : (i == 24 || i == 27) ? -2390.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : (i >= 51 || i == 29 || i == 30 || i == 33 || i == 47 || i == 50) ? 1.0 : (i == 32 || i == 46 || i == 49) ? .1 : .01;
             assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
             assert(parent.pointerAt(x, y));

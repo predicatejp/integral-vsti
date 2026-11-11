@@ -130,6 +130,11 @@ impl Synthesizer {
             self.state.used_voices = self.state.used_voices.min(count);
             self.state.next_oscillator_id %= count;
         }
+        if expanded || values[130..132] != previous[130..132] {
+            for voice in &mut self.state.voices[..self.state.polyphony] {
+                voice.set_velocity_sensitivity([values[130], values[131]]);
+            }
+        }
         // 変更のないグループの時間換算（pow）なども省く。
         if oscillator_changed || envelope_changed {
             // Voice 0は常に有効で、適用済みの実単位を保持している。
@@ -678,6 +683,8 @@ mod tests {
             (31, 1.),
             (32, 18.),
             (33, 75.),
+            (130, 25.),
+            (131, 75.),
         ] {
             values[i] = parameters::to_normalized(i, plain);
         }
@@ -851,7 +858,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // 全パラメーター・端点・枠数の音声照合は実CPUで行う。
     fn individual_parameter_updates_reach_current_and_future_voices() {
-        for index in (0..34).filter(|&i| i != 8 && i != 12) {
+        for index in (0..34).chain([130, 131]).filter(|&i| i != 8 && i != 12) {
             for value in [0.0, 1.0] {
                 for count in [1, 32] {
                     let mut synth = Synthesizer::new();
@@ -899,9 +906,10 @@ mod tests {
                         );
                     }
                     reference.set_phase_modulation([values[29] * 2.0, values[30] * 2.0]);
-                    reference.note_on(note(0, 0, 69), 0.0, 1.0);
+                    reference.set_velocity_sensitivity([values[130], values[131]]);
+                    reference.note_on(note(0, 0, 69), 0.0, 0.25);
                     for id in 0..count {
-                        synth.note_on(note(id, 0, 69), 0.0, 1.0);
+                        synth.note_on(note(id, 0, 69), 0.0, 0.25);
                     }
                     for _ in 0..96 {
                         let sample = reference.generate_sample(

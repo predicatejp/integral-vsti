@@ -11,7 +11,7 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 130;
+pub const COUNT: usize = 132;
 /// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo、ReverbのDecay/Damping/Size/Mix、ChorusのTime/Depth/Rate/Detune/Feedback/Mix、PhaserのCenter/Depth/Rate/Feedback/Mix、CompressorのThreshold/Ratio/Attack/Release/Knee/Makeup/Mix。IDは位置に固定する。
 pub const EFFECT_SLOTS: [[usize; 30]; 3] = [
     [
@@ -288,6 +288,8 @@ pub const IDS: [u32; COUNT] = [
     0x43500304,  // Compressor 3: Knee
     0x43500305,  // Compressor 3: Makeup
     0x43500306,  // Compressor 3: Mix
+    0x4153_454e, // ASEN: Amp velocity sensitivity
+    0x4653_454e, // FSEN: Filter Amount velocity sensitivity
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -420,6 +422,8 @@ pub const NAMES: [&str; COUNT] = [
     "Effect 3 Compressor Knee",
     "Effect 3 Compressor Makeup",
     "Effect 3 Compressor Mix",
+    "Amp Sensitivity",
+    "Filter Amount Sensitivity",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -505,7 +509,7 @@ pub fn unit(index: usize) -> &'static str {
             65 => "%",
             36 | 38 | 41 | 109 | 113 | 114 => "dB",
             13 | 22 | 25 | 28 | 32 => "dB",
-            20 | 21 | 29 | 30 | 33 | 52 | 79 => "%",
+            20 | 21 | 29 | 30 | 33 | 52 | 79 | 130 | 131 => "%",
             7 | 10 | 19 | 24 | 27 | 94 => "cent",
             _ => "",
         }
@@ -595,7 +599,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         39 => return 0.1 * 100_f64.powf(normalized),
         4 | 17 => return normalized,
         6 => return (normalized * 7.0).floor().min(6.0) + 1.0,
-        7 | 20 | 33 => return normalized * 100.0,
+        7 | 20 | 33 | 130 | 131 => return normalized * 100.0,
         32 => return normalized * 48.0,
         29 | 30 => return normalized * 200.0,
         21 => return normalized * 200.0 - 100.0,
@@ -654,7 +658,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         39 => return (plain / 0.1).log(100.0),
         4 | 17 => return plain,
         6 => return (plain.clamp(1.0, 7.0).round() - 1.0) / 6.0,
-        7 | 20 | 33 => return plain / 100.0,
+        7 | 20 | 33 | 130 | 131 => return plain / 100.0,
         32 => return plain / 48.0,
         29 | 30 => return plain / 200.0,
         21 => return (plain + 100.0) / 200.0,
@@ -706,7 +710,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         39 => (0.1..=10.0).contains(&plain),
         4 | 17 => (0.0..=1.0).contains(&plain),
         6 => (1.0..=7.0).contains(&plain) && plain.fract() == 0.0,
-        7 | 20 | 33 => (0.0..=100.0).contains(&plain),
+        7 | 20 | 33 | 130 | 131 => (0.0..=100.0).contains(&plain),
         29 | 30 => (0.0..=200.0).contains(&plain),
         21 => (-100.0..=100.0).contains(&plain),
         8 => (1.0..=32.0).contains(&plain) && plain.fract() == 0.0,
@@ -871,6 +875,8 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         6.0,
         0.0,
         100.0,
+        100.0, // Amp velocity sensitivity
+        0.0,   // Filter Amount velocity sensitivity
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -1150,9 +1156,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v33: 固定1044バイト。波形番号u32と、その他の実単位f64を保持する。
+// v34: 固定1060バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x21\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x22\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -1334,6 +1340,8 @@ mod tests {
         assert_eq!(to_plain(11, values[11]), 1.0);
         assert_eq!(to_plain(13, values[13]), 0.0);
         assert_eq!(to_plain(19, values[19]), 0.0);
+        assert_eq!(to_plain(130, values[130]), 100.0);
+        assert_eq!(to_plain(131, values[131]), 0.0);
         // 対数換算した正規化値は、演算の丸め誤差を許容して比較する。
         for i in 0..5 {
             assert!((values[14 + i] - values[1 + i]).abs() < 1e-12);
@@ -1370,6 +1378,27 @@ mod tests {
                     assert_eq!(max_tick(index), max);
                     assert_eq!(to_tick(index, normalized), tick);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn velocity_sensitivity_accepts_percentages_and_linear_automation() {
+        for index in [130, 131] {
+            for plain in [0.0, 37.25, 100.0] {
+                assert!(valid_plain(index, plain));
+                assert!((to_plain(index, to_normalized(index, plain)) - plain).abs() < 1e-12);
+            }
+            for plain in [-0.1, 100.1, f64::NAN, f64::INFINITY] {
+                assert!(!valid_plain(index, plain));
+            }
+            let mut points = ParameterPoints::empty(8, index, 1.0);
+            points.next = Some((3, 0.0));
+            for expected in [0.75, 0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0]
+                .into_iter()
+                .enumerate()
+            {
+                assert_eq!(points.value_at(expected.0 as i32), expected.1);
             }
         }
     }
@@ -1494,7 +1523,7 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in (0..=33).filter(|v| *v != STATE_HEADER[4]) {
+                for version in (0..=34).filter(|v| *v != STATE_HEADER[4]) {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));

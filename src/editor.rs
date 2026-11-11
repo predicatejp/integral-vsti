@@ -37,7 +37,7 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Center", "Depth", "Rate", "Fdbk", "Mix", "Center", "Depth", "Rate", "Fdbk", "Mix", "Center",
     "Depth", "Rate", "Fdbk", "Mix", "Limiter", "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix",
     "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix", "Thrs", "Ratio", "A", "R", "Knee", "Gain",
-    "Mix",
+    "Mix", "Sens", "Sens",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -57,6 +57,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     2, 4, 3, 3, 4, 4, 4, // Compressor
     2, 4, 3, 3, 4, 4, 4, // Compressor
     2, 4, 3, 3, 4, 4, 4, // Compressor
+    4, 4, // Velocity sensitivity
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -83,7 +84,7 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 401], 0),
         4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
         6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
-        7 | 20 | 33 | 52 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
+        7 | 20 | 33 | 52 | 130 | 131 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
         8 => (&[0, 7, 15, 23, 31], 0),          // Polyphony: 1/8/16/24/32
         // Cutoff: −2〜+8 oct、0 centを強調。
         10 => (
@@ -954,7 +955,7 @@ impl WindowHandler for Editor {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
-            let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
+            let filter_width = GAP * 2.0 + KNOB_CELL.x * 6.0;
             let center_x = GAP + oscillator_width + GAP;
             let effects_x = center_x + filter_width + GAP;
             let title = egui::Rect::from_min_size(
@@ -1050,13 +1051,13 @@ impl WindowHandler for Editor {
                 (
                     "Amp",
                     &[],
-                    &[&[1, 2, 3, 4, 5][..]][..],
+                    &[&[1, 2, 3, 4, 5, 130][..]][..],
                     [center_x, left_top, filter_width, amp_height],
                 ),
                 (
                     "Filter",
                     &[9],
-                    &[&[10, 11, 19][..], &[14, 15, 16, 17, 18][..]][..],
+                    &[&[10, 11, 19, 131][..], &[14, 15, 16, 17, 18][..]][..],
                     [
                         center_x,
                         left_top + amp_height + GAP,
