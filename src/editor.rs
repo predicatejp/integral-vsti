@@ -619,10 +619,15 @@ impl Editor {
         } else {
             (None, rows[0])
         };
-        let split = knobs.len().min(3);
+        let columns = match knobs.first().map(|&index| parameters::control_kind(index)) {
+            Some(51) => 1, // Delay: Time / Feedbackを縦に並べる。
+            Some(93) => 2, // Phaser: Center / Depth、Rate / Feedbackの2×2。
+            _ => 3,
+        };
+        let split = knobs.len().min(columns);
         let two_rows = [&knobs[..split], &knobs[split..]];
         let rows = if effect.is_some() {
-            &two_rows[..if knobs.len() > 3 { 2 } else { 1 }]
+            &two_rows[..if knobs.len() > split { 2 } else { 1 }]
         } else {
             rows
         };
@@ -659,6 +664,7 @@ impl Editor {
                 0.0
             };
         let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
+        let centered_row_y = (height + GAP + HEADER_HEIGHT - KNOB_CELL.y) / 2.0;
         let off = choices.iter().any(|&index| {
             matches!(index, 9 | 34 | 42..=44) && parameters::to_tick(index, selected[index]) == 0
         });
@@ -697,17 +703,16 @@ impl Editor {
                     egui::Stroke::new(1.0, LINE),
                 );
             }
-            let columns = if effect.is_some() && rows.len() == 2 {
-                3
-            } else {
-                knobs.len()
-            };
             let width = (rect.width()
                 - GAP * 2.0
                 - internal_choice_width
                 - if effect.is_some() { KNOB_CELL.x } else { 0.0 })
-                / columns as f32;
+                / knobs.len() as f32;
             let mut left = GAP + internal_choice_width;
+            if effect.is_some() && rows.len() == 1 && internal_choice_width == 0.0 {
+                // 1段のノブ列は、右端に固定したMixまで同じ中心間隔に揃える。
+                left += (KNOB_CELL.x - width) / 2.0;
+            }
             for &index in *knobs {
                 let area = egui::Rect::from_min_size(
                     rect.min + egui::vec2(left, row_top + row_header_height),
@@ -727,7 +732,7 @@ impl Editor {
             let area = egui::Rect::from_min_size(
                 egui::pos2(
                     rect.right() - GAP - KNOB_CELL.x,
-                    rect.top() + (height + GAP + HEADER_HEIGHT - KNOB_CELL.y) / 2.0,
+                    rect.top() + centered_row_y,
                 ),
                 KNOB_CELL,
             );
@@ -738,7 +743,8 @@ impl Editor {
         let choice_rect = |row: usize| {
             if effect.is_some() && row > 0 {
                 return egui::Rect::from_min_size(
-                    rect.min + egui::vec2(GAP, body_y + KNOB_CENTER_Y - CHOICE_HEIGHT / 2.0),
+                    rect.min
+                        + egui::vec2(GAP, centered_row_y + KNOB_CENTER_Y - CHOICE_HEIGHT / 2.0),
                     egui::vec2(internal_choice_width - GAP, CHOICE_HEIGHT),
                 );
             }
@@ -1065,7 +1071,7 @@ impl WindowHandler for Editor {
                         2 => &[109, 110, 113, 111, 112, 114, 115][..],
                         3 => &[51, 52, 53][..],
                         4 => &[32, 33][..],
-                        5 => &[93, 94, 96, 95, 97][..],
+                        5 => &[93, 94, 95, 96, 97][..],
                         6 => &[65, 63, 64, 66][..],
                         _ => &[],
                     }][..],
@@ -1083,7 +1089,7 @@ impl WindowHandler for Editor {
                         2 => &[116, 117, 120, 118, 119, 121, 122][..],
                         3 => &[54, 55, 56][..],
                         4 => &[46, 47][..],
-                        5 => &[98, 99, 101, 100, 102][..],
+                        5 => &[98, 99, 100, 101, 102][..],
                         6 => &[69, 67, 68, 70][..],
                         _ => &[],
                     }][..],
@@ -1106,7 +1112,7 @@ impl WindowHandler for Editor {
                         2 => &[123, 124, 127, 125, 126, 128, 129][..],
                         3 => &[57, 58, 59][..],
                         4 => &[49, 50][..],
-                        5 => &[103, 104, 106, 105, 107][..],
+                        5 => &[103, 104, 105, 106, 107][..],
                         6 => &[73, 71, 72, 74][..],
                         _ => &[],
                     }][..],
