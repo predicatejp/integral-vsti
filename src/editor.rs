@@ -736,6 +736,11 @@ impl Editor {
                 ),
                 KNOB_CELL,
             );
+            painter.vline(
+                area.left() - GAP / 2.0,
+                rect.top() + HEADER_HEIGHT + GAP * 2.0..=rect.bottom() - GAP,
+                egui::Stroke::new(1.0, LINE),
+            );
             ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
                 self.knob(ui, index, selected[index], KNOB_CELL.x);
             });
