@@ -8,6 +8,8 @@ use std::{collections::hash_map::RandomState as SeedSource, hash::BuildHasher};
 struct RandomState {
     /// 256bitの状態語。
     words: [u64; 4],
+    /// 作成時の状態語。DSPリセットで再シードせず巻き戻す。
+    initial_words: [u64; 4],
 }
 
 /// 位相とノイズで共用する乱数生成器。各用途は独立したインスタンスを所有する。
@@ -30,8 +32,15 @@ impl Random {
             words[0] = 1;
         }
         Self {
-            state: RandomState { words },
+            state: RandomState {
+                words,
+                initial_words: words,
+            },
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.state.words = self.state.initial_words;
     }
 
     /// xoshiro256+ 1.0の上位53bitを[0,1)へ換算し、次の乱数へ進める。
@@ -81,6 +90,11 @@ mod tests {
         assert_eq!(
             std::array::from_fn::<_, 7, _>(|_| random.next_f64()),
             expected
+        );
+        random.reset();
+        assert_eq!(
+            random.next_f64(),
+            5441996726197760_u64 as f64 / (1_u64 << 53) as f64
         );
     }
 

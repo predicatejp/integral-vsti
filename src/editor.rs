@@ -19,7 +19,7 @@ use std::{
     cell::{Cell, RefCell},
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -169,7 +169,7 @@ fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
     )
 }
 
-/// OscillatorとEffectsを含む各パネルで共通の枠と見出し。
+/// 各パネルの共通枠。見出しはOsc1・Eff 1と同じ小さいスタイル。
 fn panel(painter: &egui::Painter, rect: egui::Rect, title: &str) {
     painter.rect_filled(rect, 8.0, PANEL);
     painter.rect_stroke(
@@ -178,18 +178,15 @@ fn panel(painter: &egui::Painter, rect: egui::Rect, title: &str) {
         egui::Stroke::new(1.0, LINE),
         egui::StrokeKind::Inside,
     );
-    painter.rect_filled(
-        egui::Rect::from_min_size(rect.min + egui::vec2(GAP, GAP + 6.0), egui::vec2(3.0, 16.0)),
-        1.0,
-        ACCENT,
-    );
-    painter.text(
-        rect.min + egui::vec2(GAP + 10.0, GAP + HEADER_HEIGHT / 2.0),
-        egui::Align2::LEFT_CENTER,
-        title,
-        egui::FontId::proportional(HEADING_FONT_SIZE),
-        INK,
-    );
+    if !title.is_empty() {
+        painter.text(
+            rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT / 2.0),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(FONT_SIZE),
+            MUTED,
+        );
+    }
 }
 
 struct EditorState {
@@ -286,6 +283,8 @@ pub(super) struct Editor {
     active_voices: Arc<AtomicU32>,
     /// GUIが受け取るまでの左右最大サンプルピーク。非負f32のビット表現。
     output_peak: Arc<AtomicU32>,
+    /// 描画側から音声側へ渡すDSPリセット要求。
+    reset_requested: Arc<AtomicBool>,
     /// 最後に描画した発音数。変化した場合だけ再描画する。
     displayed_voices: Cell<u32>,
     /// 最後に描画した正規化値。ホスト更新時だけ再描画する。
@@ -303,6 +302,7 @@ impl Editor {
         parameters: Arc<SharedParameters>,
         active_voices: Arc<AtomicU32>,
         output_peak: Arc<AtomicU32>,
+        reset_requested: Arc<AtomicBool>,
         edits: Arc<Edits>,
         #[cfg(target_os = "windows")] view: std::rc::Weak<super::gui::EditorView>,
     ) -> Result<Self, HandlerError> {
@@ -338,6 +338,7 @@ impl Editor {
             parameters,
             active_voices,
             output_peak,
+            reset_requested,
             displayed_voices: Cell::new(u32::MAX),
             displayed: Cell::new([f64::NAN; parameters::COUNT]),
             edits,
@@ -652,7 +653,9 @@ impl Editor {
             0.0
         };
         let row_height = KNOB_CELL.y + row_header_height;
-        let header_height = if title == "Amp" {
+        let header_height = if title.is_empty() {
+            0.0
+        } else if title == "Amp" {
             KNOB_CELL.y
         } else {
             HEADER_HEIGHT
@@ -661,14 +664,27 @@ impl Editor {
         let row_gap =
             (height - GAP - header_height - choice_height - row_height * rows.len() as f32)
                 / (content_rows + 1) as f32;
-        let body_y = GAP
-            + header_height
-            + row_gap
-            + if choice_height > 0.0 {
-                choice_height + row_gap * choice_rows as f32
-            } else {
-                0.0
-            };
+        let body_y = if row_header_height > 0.0 {
+            GAP
+        } else {
+            GAP + header_height
+                + row_gap
+                + if choice_height > 0.0 {
+                    choice_height + row_gap * choice_rows as f32
+                } else {
+                    0.0
+                }
+        };
+        let row_step = if row_header_height > 0.0 {
+            height / rows.len() as f32
+        } else {
+            row_height + row_gap
+        };
+        let knob_offset = if row_header_height > 0.0 {
+            (row_step - GAP * 2.0 - row_height) / 2.0
+        } else {
+            0.0
+        };
         let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
         let centered_row_y = (height + GAP + HEADER_HEIGHT - KNOB_CELL.y) / 2.0;
         let off = choices.iter().any(|&index| {
@@ -710,11 +726,11 @@ impl Editor {
             if knobs.is_empty() {
                 continue;
             }
-            let row_top = body_y + row as f32 * (row_height + row_gap);
+            let row_top = body_y + row as f32 * row_step;
             if row > 0 && row_header_height > 0.0 {
                 painter.hline(
                     rect.left() + GAP..=rect.right() - GAP,
-                    rect.top() + row_top - row_gap * 0.5,
+                    rect.top() + row_top - GAP,
                     egui::Stroke::new(1.0, LINE),
                 );
             }
@@ -730,7 +746,7 @@ impl Editor {
             let mut left = GAP + internal_choice_width;
             for &index in *knobs {
                 let area = egui::Rect::from_min_size(
-                    rect.min + egui::vec2(left, row_top + row_header_height),
+                    rect.min + egui::vec2(left, row_top + row_header_height + knob_offset),
                     egui::vec2(width, KNOB_CELL.y),
                 );
                 // EQのMid・Highの手前で帯域を区切る。
@@ -771,7 +787,7 @@ impl Editor {
             let top = if effect.is_some() && row == 0 {
                 rect.top() + GAP
             } else if row_header_height > 0.0 {
-                rect.top() + body_y + row as f32 * (row_height + row_gap)
+                rect.top() + body_y + row as f32 * row_step
             } else if choice_height > 0.0 {
                 rect.top()
                     + GAP
@@ -974,9 +990,9 @@ impl WindowHandler for Editor {
             let effects_x = center_x + filter_width + GAP;
             let title = egui::Rect::from_min_size(
                 egui::vec2(GAP, GAP).to_pos2(),
-                egui::vec2(effects_x - GAP * 2.0, TITLE_BAR_HEIGHT),
+                egui::vec2(size.width as f32 / UI_SCALE - GAP * 2.0, TITLE_BAR_HEIGHT),
             );
-            let painter = ui.painter();
+            let painter = ui.painter().clone();
             painter.rect_filled(title, 8.0, PANEL);
             painter.text(
                 title.left_center() + egui::vec2(GAP, 0.0),
@@ -986,6 +1002,16 @@ impl WindowHandler for Editor {
                 INK,
             );
             let meter_x = title.right() - GAP - 254.0;
+            let reset_rect = egui::Rect::from_min_size(
+                egui::pos2(meter_x - GAP - 64.0, title.center().y - HEADER_HEIGHT / 2.0),
+                egui::vec2(64.0, HEADER_HEIGHT),
+            );
+            let reset = ui.put(reset_rect, egui::Button::new("Reset"));
+            if reset.clicked() {
+                self.reset_requested.store(true, Ordering::Relaxed);
+                self.state.borrow_mut().peak_db = -60.0;
+                reset.surrender_focus();
+            }
             let peak_db = self.state.borrow().peak_db;
             let peak_rect = egui::Rect::from_min_size(
                 egui::pos2(meter_x, title.center().y - 10.0),
@@ -1026,10 +1052,10 @@ impl WindowHandler for Editor {
                     },
                 );
             }
-            let full_height = size.height as f32 / UI_SCALE - GAP * 2.0;
             let left_top = title.bottom() + GAP;
+            let full_height = size.height as f32 / UI_SCALE - left_top - GAP;
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
-            let panel_height = full_height - TITLE_BAR_HEIGHT - GAP * 2.0 - eq_height;
+            let panel_height = full_height - GAP - eq_height;
             // 2段配置の最大4ノブと、種類選択・交換ボタンが収まる幅。
             let side_width = GAP * 2.0 + 64.0 * 4.0;
             let master_x = effects_x + side_width + GAP;
@@ -1037,21 +1063,21 @@ impl WindowHandler for Editor {
             // AmpはタイトルとSensで1行を共有し、AHDSRとの間隔も標準余白に揃える。
             let amp_height = KNOB_CELL.y * 2.0 + GAP * 3.0;
             let filter_height = panel_height - amp_height - GAP;
-            let effects_body_y = GAP * 2.0 + HEADER_HEIGHT;
-            let effect_height = (full_height - GAP - HEADER_HEIGHT) / 3.0;
+            let effects_body_y = left_top;
+            let effect_height = full_height / 3.0;
             panel(
                 ui.painter(),
                 egui::Rect::from_min_size(
-                    egui::pos2(effects_x, GAP),
+                    egui::pos2(effects_x, left_top),
                     egui::vec2(side_width, full_height),
                 ),
-                "Effects",
+                "",
             );
             let effect_kinds = parameters::EFFECT_SLOTS
                 .map(|[kind, ..]| parameters::to_plain(kind, selected[kind]) as usize);
             let groups = [
                 (
-                    "Oscillator",
+                    "",
                     &[0_usize, 23, 26] as &[usize],
                     &[
                         &[6_usize, 7, 20, 22][..],
@@ -1156,7 +1182,7 @@ impl WindowHandler for Editor {
                     "Master",
                     &[12, 108],
                     &[&[13][..], &[21][..], &[8][..]][..],
-                    [master_x, GAP, master_width, full_height],
+                    [master_x, left_top, master_width, full_height],
                 ),
             ];
             for (title, choices, rows, rect) in groups {
