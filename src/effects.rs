@@ -4,6 +4,7 @@
 //! Voice合成後、EQ前に置く3つの独立した直列エフェクタ。
 
 use crate::chorus::{Chorus, ChorusParameters};
+use crate::compressor::{Compressor, CompressorParameters};
 use crate::delay::{Delay, DelayParameters};
 use crate::distortion::{ClipperType, Distortion, DistortionParameters};
 use crate::parameters::{self, EFFECT_SLOTS};
@@ -21,6 +22,7 @@ pub enum EffectType {
     Reverb,
     Chorus,
     Phaser,
+    Compressor,
 }
 
 #[cfg_attr(test, derive(Clone))]
@@ -35,6 +37,8 @@ struct EffectState {
     chorus: Chorus,
     /// 左右独立の6段allpassと共通LFO。
     phaser: Phaser,
+    /// 左右共通の減衰dBを保持するコンプレッサー。
+    compressor: Compressor,
     /// このスロットだけの設定と左右独立のADAA履歴。
     parameters: DistortionParameters,
     distortion: Distortion,
@@ -60,6 +64,7 @@ impl Effect {
         reverb_parameters: ReverbParameters,
         chorus_parameters: ChorusParameters,
         phaser_parameters: PhaserParameters,
+        compressor_parameters: CompressorParameters,
     ) -> Self {
         Self {
             state: EffectState {
@@ -68,6 +73,7 @@ impl Effect {
                 reverb: Reverb::new(reverb_parameters),
                 chorus: Chorus::new(chorus_parameters),
                 phaser: Phaser::new(phaser_parameters),
+                compressor: Compressor::new(compressor_parameters),
                 parameters,
                 distortion: Distortion::new(),
                 processing: parameters.clipper,
@@ -100,6 +106,7 @@ impl Effect {
         self.state.reverb.reset();
         self.state.chorus.reset();
         self.state.phaser.reset();
+        self.state.compressor.reset();
         self.state.previous_dry = [0.0; 2];
         self.state.processing = self.state.parameters.clipper;
         self.state.transition = 0;
@@ -167,6 +174,13 @@ impl Effect {
                 self.state.started = true;
                 return;
             }
+            EffectType::Compressor => {
+                for sample in samples {
+                    *sample = self.state.compressor.process_sample(*sample);
+                }
+                self.state.started = true;
+                return;
+            }
             EffectType::Distortion => {}
         }
         if self.state.transition != 0 || self.state.processing != self.state.parameters.clipper {
@@ -227,6 +241,7 @@ impl Effects {
                         parameters::reverb(&values, slot),
                         parameters::chorus(&values, slot),
                         parameters::phaser(&values, slot),
+                        parameters::compressor(&values, slot),
                     )
                 }),
                 padding: LATENCY,
@@ -269,6 +284,7 @@ impl Effects {
             .zip(choruses)
         {
             slot.state.phaser.prepare(sample_rate);
+            slot.state.compressor.prepare(sample_rate);
             slot.state.delay = delay;
             slot.state.reverb = reverb;
             slot.state.chorus = chorus;
@@ -304,11 +320,17 @@ impl Effects {
                         .chorus
                         .set_parameters(parameters::chorus(values, slot));
                 }
-                if indices[18..].iter().any(|&i| values[i] != previous[i]) {
+                if indices[18..23].iter().any(|&i| values[i] != previous[i]) {
                     self.state.slots[slot]
                         .state
                         .phaser
                         .set_parameters(parameters::phaser(values, slot));
+                }
+                if indices[23..].iter().any(|&i| values[i] != previous[i]) {
+                    self.state.slots[slot]
+                        .state
+                        .compressor
+                        .set_parameters(parameters::compressor(values, slot));
                 }
                 // 他のエフェクト設定変更でDistortionのGain換算をやり直さない。
                 let distortion = if indices[1..4].iter().any(|&i| values[i] != previous[i]) {
@@ -359,6 +381,10 @@ impl Effects {
                 EffectType::Phaser => {
                     slot.state.started = true;
                     slot.state.phaser.process_sample(sample)
+                }
+                EffectType::Compressor => {
+                    slot.state.started = true;
+                    slot.state.compressor.process_sample(sample)
                 }
                 EffectType::Reverb => {
                     slot.state.started = true;
@@ -541,7 +567,80 @@ mod tests {
             let previous = p;
             for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
                 p[indices[0]] = parameters::to_normalized(indices[0], 5.0);
-                for (j, &i) in indices[18..].iter().enumerate() {
+                for (j, &i) in indices[18..23].iter().enumerate() {
+                    p[i] = ((step + j + slot) % 11) as f64 / 10.0;
+                }
+            }
+            scalar.set_parameters(&p, &previous);
+            blocks.set_parameters(&p, &previous);
+            let len = [0, 1, 17, 63, 64, 65, 257][step % 7];
+            let mut samples: Vec<_> = (0..len)
+                .map(|n| [(n as f64 * 0.2).sin(), (n as f64 * 0.07).cos()])
+                .collect();
+            let expected: Vec<_> = samples.iter().map(|&x| scalar.process_sample(x)).collect();
+            blocks.process_samples(&mut samples);
+            assert_eq!(samples, expected);
+            assert!(samples.iter().flatten().all(|x| x.is_finite()));
+        }
+        blocks.reset();
+        assert_eq!(blocks.process_sample([0.0; 2]), [0.0; 2]);
+    }
+
+    #[test]
+    fn compressors_have_independent_history_and_follow_slot_order() {
+        let mut values = parameters::defaults();
+        for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
+            values[indices[0]] = parameters::to_normalized(indices[0], 6.0);
+            for (&index, plain) in indices[23..].iter().zip([
+                -24.0 + slot as f64 * 6.0,
+                2.0 + slot as f64,
+                3.0 + slot as f64 * 7.0,
+                50.0,
+                6.0,
+                slot as f64 * 3.0,
+                75.0,
+            ]) {
+                values[index] = parameters::to_normalized(index, plain);
+            }
+        }
+        let mut effects = Effects::new();
+        assert!(effects.prepare(48000.0, &values));
+        effects.set_parameters(&values, &parameters::defaults());
+        let mut reference: [Compressor; 3] = std::array::from_fn(|slot| {
+            let mut c = Compressor::new(parameters::compressor(&values, slot));
+            assert!(c.prepare(48000.0));
+            c
+        });
+        let mut delayed = [[0.0; 2]; LATENCY];
+        for n in 0..4096 {
+            let input = [(n as f64 * 0.17).sin(), (n as f64 * 0.11).cos()];
+            let expected = reference.iter_mut().fold(input, |x, c| c.process_sample(x));
+            assert_eq!(effects.process_sample(input), delayed[n % LATENCY]);
+            delayed[n % LATENCY] = expected;
+        }
+        let before = values;
+        parameters::swap_effects(&mut values, 0);
+        for (&a, &b) in EFFECT_SLOTS[0].iter().zip(&EFFECT_SLOTS[1]) {
+            assert_eq!(values[a], before[b]);
+            assert_eq!(values[b], before[a]);
+        }
+        effects.reset();
+        for _ in 0..128 {
+            assert_eq!(effects.process_sample([0.0; 2]), [0.0; 2]);
+        }
+    }
+
+    #[test]
+    fn compressor_automation_matches_sample_and_block_paths() {
+        let mut p = parameters::defaults();
+        let mut scalar = Effects::new();
+        assert!(scalar.prepare(96000.0, &p));
+        let mut blocks = scalar.clone();
+        for step in 0..40 {
+            let previous = p;
+            for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
+                p[indices[0]] = parameters::to_normalized(indices[0], 6.0);
+                for (j, &i) in indices[23..].iter().enumerate() {
                     p[i] = ((step + j + slot) % 11) as f64 / 10.0;
                 }
             }
@@ -592,6 +691,7 @@ mod tests {
             parameters::reverb(&parameters::defaults(), 0),
             parameters::chorus(&parameters::defaults(), 0),
             parameters::phaser(&parameters::defaults(), 0),
+            parameters::compressor(&parameters::defaults(), 0),
         );
         effect.set_parameters(EffectType::Distortion, p, delay_parameters);
         let mut dry = [0.0; 2];
