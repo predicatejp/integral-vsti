@@ -447,7 +447,7 @@ Delayはステレオ方式を選択できるフィードバックディレイで
 | Time | 1/32、1/16 T、1/16、1/8 T、1/16 D、1/8、1/4 T、1/8 D、1/4、1/2 T、1/4 D、1/2、1/2 D、1/1 | 1/8 |
 | Feedback | 0〜100%、GUIは1%刻み | 35% |
 | Mix | 0〜100%、GUIは1%刻み | 25% |
-| Stereo | Stereo／Cross／PP-L／PP-R | Stereo |
+| Stereo | Dual／Cross／PP-L／PP-R | Dual |
 
 Tは三連、Dは付点です。ホストのBPMと音価から遅延時間を求め、1サンプル〜8秒へクランプします。
 `IProcessContextRequirements::kNeedTempo`を申告し、`ProcessContext::kTempoValid`が設定された有限の正のBPMを使用します。
@@ -457,7 +457,7 @@ Tは三連、Dは付点です。ホストのBPMと音価から遅延時間を求
 Feedback・Mixは変更点間で線形補間し、Time・Stereoは変更点で切り替えます。
 Mixは0%で原音、100%で遅延音。Feedback 100%は減衰なしの反復になります。
 
-Stereoは左右独立に帰還します。Crossは左右を交差して帰還し、最初の反復は入力と同じ配置、以後は左右交互になります。
+Dualは左右独立に帰還します。Crossは左右を交差して帰還し、最初の反復は入力と同じ配置、以後は左右交互になります。
 PP-L／PP-RはWetへの入力を`(L + R) / 2`でモノラル化し、指定側だけへ入れて交差帰還します。PP-Lの反復は左→右→左、PP-Rは右→左→右です。
 どの方式もDryの左右配置を保持します。Stereo方式の変更では履歴を保持し、変更点以降の入力と帰還先を切り替えます。
 

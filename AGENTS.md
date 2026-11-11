@@ -161,7 +161,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 
 - テンポ同期Delayは各エフェクタスロットで選択する。Timeは1/32〜全音符の14択（三連・付点を含む、初期値1/8）、Feedbackは0〜100%（初期値35%）、Mixは0〜100%（初期値25%）。FeedbackとMixのGUIは整数1%刻み。Delayのパラメーターも隣接スロットの交換対象とする。
 - VST3のkNeedTempoを申告し、ProcessContextのkTempoValidがある有限の正のBPMだけを受理する。取得前は120 BPM、欠測・不正値では直前値を保持する。遅延時間は1サンプル〜8秒へ制限し、分数位置は線形補間、テンポ・音価の変更は50msでクロスフェードする。音価は変更点で切り替え、Feedback・Mixは線形補間する。
-- DelayのStereo方式はStereo（初期値）／Cross／PP-L／PP-Rの4択。Stereoは左右独立帰還、Crossは入力の左右を保ち交差帰還する。PP-L／PP-RはWet入力を`(L + R) / 2`として指定側だけへ入れ、交差帰還する。Dryは左右を保持する。方式は変更点で切り替え、履歴を保持する。保存と隣接スロット交換にも含める。
+- DelayのStereo方式はDual（初期値）／Cross／PP-L／PP-Rの4択。Dualは左右独立帰還、Crossは入力の左右を保ち交差帰還する。PP-L／PP-RはWet入力を`(L + R) / 2`として指定側だけへ入れ、交差帰還する。Dryは左右を保持する。方式は変更点で切り替え、履歴を保持する。保存と隣接スロット交換にも含める。
 - Delayの左右履歴はsetupProcessing時に全3スロット分を確保する（各64 MiB以下）。再生停止・シークでは維持し、処理停止・再設定・スロット種類変更で初期化する。Delayは追加の処理遅延を持たず、エフェクタ系列の申告遅延はDistortion段数に応じた補償で3サンプルを維持する。
 
 - Reverbは各スロットで選択する8線のHouseholder FDN。Decayは0.1〜10秒（初期2秒）、Dampingは500〜20,000Hz（初期6,000Hz）、Sizeは50〜200%（初期100%）、Mixは0〜100%（初期25%）。GUIはDec・Damp・Size・Mixを横一列に配置し、Decay/Dampingは対数200/300tick、Size/Mixは1%刻みの整数で操作する。

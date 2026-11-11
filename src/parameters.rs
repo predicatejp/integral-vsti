@@ -441,7 +441,7 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         31 => &CLIPPER_NAMES,
         34 | 108 => &["Off", "On"],
         51 => &DELAY_BEATS,
-        60 => &["Stereo", "Cross", "PP-L", "PP-R"],
+        60 => &["Dual", "Cross", "PP-L", "PP-R"],
         _ => &[],
     }
 }
@@ -1378,7 +1378,7 @@ mod tests {
     fn delay_stereo_switches_at_automation_point_in_each_slot() {
         for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
             let index = indices[7];
-            assert_eq!(choices(index), ["Stereo", "Cross", "PP-L", "PP-R"]);
+            assert_eq!(choices(index), ["Dual", "Cross", "PP-L", "PP-R"]);
             let mut values = defaults();
             for (mode, expected) in DELAY_STEREO_MODES.into_iter().enumerate() {
                 let value = to_normalized(index, mode as f64);
