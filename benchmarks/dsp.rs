@@ -8,6 +8,8 @@ mod limiter;
 mod phaser;
 #[path = "../src/chorus.rs"]
 mod chorus;
+#[path = "../src/compressor.rs"]
+mod compressor;
 #[path = "../src/abi.rs"]
 mod abi;
 #[path = "../src/distortion.rs"]

@@ -58,7 +58,7 @@
 - 音源方式・主要機能: 各3発振器を持つ1〜32個の独立Voiceによる多声音音源。サイン波・三角波・矩形波・ノコギリ波・ホワイトノイズに対応。既定はサイン波。音量・カットオフ用の独立した線形AHDSRエンベロープ。同一ノートの1〜7ボイスユニゾン。
 - 現在の入出力: 音声入力なし、ステレオ出力1バス、イベント入力1バス（Note On / Note Off）。float32/float64対応。
 - サンプルレートは44.1 kHz以上の有限値を受理し、範囲外はVST3の`setupProcessing`で拒否する。フィルタも同じ下限を検証し、カットオフは内部で20〜20,000 Hzにクランプする。
-- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・Modも公開する。3スロットの種類（Off／Distortion／Delay／Reverb／Chorus／Phaser）と個別のClipper type・Gain・Mix、Delay Time・Feedback・Mix・Stereo、Reverb Decay・Damping・Size・Mix、Chorus Time・Depth・Rate・Detune・Feedback・Mix、Phaser Center・Depth・Rate・Feedback・Mix、およびEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainも公開する。MasterのLimiter Off/Onも公開する。eguiで109パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計110パラメーター）。
+- 現在の操作・保存: VST3のWaveform（5択）、AHDSRの5パラメーター、Unison、Detune、Polyphony、Filter、Cutoff、Resonance、Phase（3択）、Volume、Cutoff AHDSRとAmount、Width、Pan。Osc1 Volume、Osc2/3のWaveform・Tune・Volume・Modも公開する。3スロットの種類（Off／Distortion／Delay／Reverb／Chorus／Phaser／Compressor）と個別のClipper type・Gain・Mix、Delay Time・Feedback・Mix・Stereo、Reverb Decay・Damping・Size・Mix、Chorus Time・Depth・Rate・Detune・Feedback・Mix、Phaser Center・Depth・Rate・Feedback・Mix、Compressor Threshold・Ratio・Attack・Release・Knee・Makeup・Mix、およびEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainも公開する。MasterのLimiter Off/Onも公開する。eguiで130パラメーターを操作し、IBStreamで保存・復元。内蔵SineはIUnitInfoとProgram選択パラメーターでDAWへ公開する（ホスト公開は計131パラメーター）。
 
 このプロジェクトの開発対象は音源プラグイン。ホストの実装を開発範囲へ追加しないこと。
 バス構成、最大同時発音数、サンプル精度、対応サンプルレート、MIDI機能、独自GUIの有無は、実装時に対応範囲を明記すること。
@@ -153,7 +153,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper typeの変更点では直前の値を保持してから切り替え、同位置ではパラメーターをキュー順に適用してからノートを処理すること。音量／カットオフ用AHDSR・Cutoff Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mixの変更キューは正規化値を前ブロック末尾（offset=-1）から各点まで線形補間し、最終値を保持すること。停止中の0サンプルフラッシュでも変更を受理すること。
 - GUIからの編集は `beginEdit` / `performEdit` / `endEdit` など規定の通知を使うこと。ホストからの値更新を再通知して循環させず、GUIを開かなくてもDSPへ更新が反映される構成にすること。
 
-- 全体エフェクトの挿入位置は全Voiceの合成後・EQ前とする。SynthesizerはEffectsを所有し、独立した3スロットを上から直列に通す。各スロットはOff（初期値）／Distortion／Delay／Reverb／Chorus／Phaserを選択し、Offは素通しとする。Clipper typeはOff/Soft（tanh・初期値）/Hard（±1）。Gainは0〜48 dB（初期値0）、GUIは0.1 dB刻み。Mixは原音と処理音の線形混合で0〜100%（初期値100）、GUIは1%刻み。原音側へGainを掛けない。Distortionが左右ごとのADAA履歴を所有する。Gainの線形換算は設定変更時だけ行う。GUIはAmp/Filter列とMaster列の間のエフェクト列に配置し、タイプは選択リスト、Gain・Mixは整数tickのノブとする。
+- 全体エフェクトの挿入位置は全Voiceの合成後・EQ前とする。SynthesizerはEffectsを所有し、独立した3スロットを上から直列に通す。各スロットはOff（初期値）／Distortion／Delay／Reverb／Chorus／Phaser／Compressorを選択し、Offは素通しとする。Clipper typeはOff/Soft（tanh・初期値）/Hard（±1）。Gainは0〜48 dB（初期値0）、GUIは0.1 dB刻み。Mixは原音と処理音の線形混合で0〜100%（初期値100）、GUIは1%刻み。原音側へGainを掛けない。Distortionが左右ごとのADAA履歴を所有する。Gainの線形換算は設定変更時だけ行う。GUIはAmp/Filter列とMaster列の間のエフェクト列に配置し、タイプは選択リスト、Gain・Mixは整数tickのノブとする。
 
 - Distortionはホストレートの2階ADAAに固定する。各スロットへの入力にGain・Clipper・ADAAを適用する。Dryは同じ入力を1サンプルの純遅延だけに通し、出力時点のMixでWetと混合する。混合後にEQ、Master Volumeの順に適用する。系列の末尾でDistortion以外のスロット数に相当する純遅延を補い、申告遅延を常に3サンプルとする。Clipper変更はWetの32サンプルのフェードアウト・2サンプルの履歴充填・32サンプルのフェードインとし、Dryとノートの時間を継続する。履歴は初期化時に確保し、処理中に確保しない。GUIには各スロットの種類、Clipper type・Gain・Mixと隣接交換の↑／↓を配置する。交換は種類と全設定を一緒に行い、IDとオートメーションはスロット位置に固定する。
 
@@ -174,6 +174,8 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 
 - LimiterはEQ直後・Master Volume直前に1個置く。Master内にOff/Onのみを配置し、既定はOff。先読み5 ms、プリゲイン0 dB、シーリング0 dBFS、Release時定数100 msに固定する。左右ピークを共通検出し、最大値窓→指数Release→先読み長の矩形平均→逆数ゲインの順で処理する。Releaseの平均はサンプル区間の積分から求める。音声の純遅延は`ceil(sample_rate * 0.005)`サンプルとし、Offでも遅延と検出履歴を維持する。処理中に確保せず、処理停止で履歴を消去する。申告遅延はエフェクタ系列の3サンプルと合計し、サンプルレート設定成功時に更新する。
 
+- Compressorは各エフェクタスロットの選択肢とする。左右最大ピークから二次soft kneeで目標減衰dBを求め、Attack/Releaseで平滑化した共通ゲインを掛ける。Thresholdは−60〜0 dB（既定−18）、Ratioは1〜20（4）、Attack/Releaseは0〜10,000 ms（10/100）、Kneeは0〜24 dB（6）、Makeupは0〜24 dB（0）、Mixは0〜100%（100）。MakeupはWetだけに適用する。各スロットが独立した履歴を持ち、処理停止・種類変更でリセットする。7設定は連続補間・保存復元・スロット交換の対象とし、UIはThrs/Ratio/A/R/Knee/Gain/Mixの整数ノブを横一列に配置する。Makeupは6 dBごとに吸着する。追加遅延は0。
+
 ### 状態保存とGUI
 
 - 内蔵音色は編集値と独立して定義し、IUnitInfoの一覧とkIsProgramChangeのProgramパラメーターで公開する。SineはOsc1のみ0 dB、Osc2/3はSine・Tune=0・−∞・Mod=0とし、1ボイス・ユニゾン1・フィルタ無効・定位中央・Volume=0 dB、両AHDSRはA/H/D/R=0 ms・S=1・Cutoff Amount=0とする。同じ番号の再選択でも読み直す。同位置ではProgram→個別パラメーター→ノートの順に適用し、保存時には編集後の実際の音色設定を保持する。
@@ -188,7 +190,7 @@ MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済
 - 機能を無効にするリスト選択肢の表示は「Off」に統一する。Filter・各エフェクタスロット・EQがOffのときは種類の選択リストと交換ボタンを通常表示とし、枠・見出し・ノブとそのラベルを通常描画してから、一様な画面背景色を50%で重ね、グループ全体を半透明にする。個々の図形を透過して隠れた影を露出させない。Off中もノブは編集可能とし、操作中の値のオーバーレイは通常表示とする。
 - GUIの編集通知はホストのUIスレッドに配送し、描画処理中にはホストを呼ばない。UI専用の32件キューは1件をノブの終了通知用に予約する。途中の値変更が満杯で破棄されても、終了時に最終値とendEditを通知する。
 - ノブの目盛り位置と強調する基準点は`src/editor.rs`の`knob_marks`でノブごとに整数tickとして定義する。時間の桁・オクターブ・0 dB・定位中央など実単位の意味に沿わせ、目盛りは円弧ガイドから直接伸ばす。基準点と両端の目盛りはガイドと同じ色・太さの長い線で示す。値と目盛りの角度は同じtick軸で計算する。
-- ノブの1tickに必要な上下移動量は`src/editor.rs`の`KNOB_PIXELS_PER_TICK`でノブごとの正の整数として定義する。Cutoff・Resonance・Cutoff Amount・各Volは2物理px、時間（A/H/D/R）・Tune・Distortion Gainは3物理px、その他は4物理pxを使う。Uniは32物理px、Polyは8物理pxとする。1tick未満の移動量を蓄積する。吸着対象はCutoff・Tune・Cutoff Amountの1200 cent刻み、Master・Osc1/2/3のVolの6 dB刻み、Panの中央、およびEQ Low/Mid/High Gainの6 dB刻みに限定し、`is_detent`で定義する。全ての吸着位置に描画目盛りを設ける。最大・最小値には吸着させない。吸着中の内部位置は0〜`KNOB_DETENT_PIXELS`（80物理px）とし、小さい側から進入したら0、大きい側から進入したら80、吸着点から操作を開始したら中間の40で初期化する。減少方向で0へ到達すると小さい側、増加方向で80へ到達すると大きい側へ抜ける。方向反転時も内部位置を継続し、入った側へすぐ戻せるようにする。大きな移動でも途中の吸着値で必要な距離を消費する。調整中はノブ中央直上に「正式名称\n現在値」の2行オーバーレイを中央揃えで表示する。全パラメーターで268.8×72 pxに固定し、画面外へ出る場合は枠全体が画面内に収まる位置へ補正する。Unison・Polyphonyのオーバーレイは整数、連続パラメーターは小数点以下最大3桁と単位を表示し、不要な末尾のゼロを省く。カーソル操作はドラッグ期間に限定し、復帰をホストへのendEdit通知の成否に依存させない。Windowsのノブ操作ではキーボードフォーカスを取得・変更しない。開始時のフォーカスと前面ウィンドウをStateへ記録し、既存タイマーでその変化・Esc・キャプチャ解除を検出して終了する。Linuxでは終了時に子が保持しているフォーカスをホストの親へ戻す。他へ移ったフォーカスは奪わない。
+- ノブの1tickに必要な上下移動量は`src/editor.rs`の`KNOB_PIXELS_PER_TICK`でノブごとの正の整数として定義する。Cutoff・Resonance・Cutoff Amount・各Volは2物理px、時間（A/H/D/R）・Tune・Distortion Gainは3物理px、その他は4物理pxを使う。Uniは32物理px、Polyは8物理pxとする。1tick未満の移動量を蓄積する。吸着対象はCutoff・Tune・Cutoff Amountの1200 cent刻み、Master・Osc1/2/3のVolの6 dB刻み、Panの中央、およびEQ Low/Mid/High Gain・Compressor Makeupの6 dB刻みに限定し、`is_detent`で定義する。全ての吸着位置に描画目盛りを設ける。最大・最小値には吸着させない。吸着中の内部位置は0〜`KNOB_DETENT_PIXELS`（80物理px）とし、小さい側から進入したら0、大きい側から進入したら80、吸着点から操作を開始したら中間の40で初期化する。減少方向で0へ到達すると小さい側、増加方向で80へ到達すると大きい側へ抜ける。方向反転時も内部位置を継続し、入った側へすぐ戻せるようにする。大きな移動でも途中の吸着値で必要な距離を消費する。調整中はノブ中央直上に「正式名称\n現在値」の2行オーバーレイを中央揃えで表示する。全パラメーターで268.8×72 pxに固定し、画面外へ出る場合は枠全体が画面内に収まる位置へ補正する。Unison・Polyphonyのオーバーレイは整数、連続パラメーターは小数点以下最大3桁と単位を表示し、不要な末尾のゼロを省く。カーソル操作はドラッグ期間に限定し、復帰をホストへのendEdit通知の成否に依存させない。Windowsのノブ操作ではキーボードフォーカスを取得・変更しない。開始時のフォーカスと前面ウィンドウをStateへ記録し、既存タイマーでその変化・Esc・キャプチャ解除を検出して終了する。Linuxでは終了時に子が保持しているフォーカスをホストの親へ戻す。他へ移ったフォーカスは奪わない。
 - 独自GUIを実装する場合は、表示・取り外し・再表示、サイズ変更、スケーリング、フォーカスと入力の扱いを確認すること。GUIを閉じても音源の処理を継続できるようにすること。
 
 ## 検証方針

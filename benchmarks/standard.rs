@@ -8,6 +8,8 @@ mod limiter;
 mod phaser;
 #[path = "../src/chorus.rs"]
 mod chorus;
+#[path = "../src/compressor.rs"]
+mod compressor;
 #[path = "../src/abi.rs"]
 mod abi;
 #[path = "../src/distortion.rs"]
@@ -101,6 +103,9 @@ const BASE: [f64; parameters::COUNT] = [
     1000., 1200., 0.5, 50., 50.,
     1000., 1200., 0.5, 50., 50.,
     0., // Limiter Off
+    -18., 4., 10., 100., 6., 0., 100.,
+    -18., 4., 10., 100., 6., 0., 100.,
+    -18., 4., 10., 100., 6., 0., 100.,
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),
@@ -276,6 +281,27 @@ fn cases() -> Vec<Case> {
             extra: &[],
             automation: None,
         },
+        Case {
+            name: "compressor-bass",
+            phrase: Phrase::Bass,
+            settings: BASS,
+            extra: &[(42, 6.)],
+            automation: None,
+        },
+        Case {
+            name: "compressor-chords",
+            phrase: Phrase::Chord,
+            settings: CHORD,
+            extra: &[(42, 6.)],
+            automation: None,
+        },
+        Case {
+            name: "auto-compressor-threshold",
+            phrase: Phrase::Chord,
+            settings: CHORD,
+            extra: &[(42, 6.)],
+            automation: Some(Automation { index: 109, low: -30., high: -12., period_seconds: 4. }),
+        },
     ];
     for (name, index, low, high, seconds) in [
         ("auto-cutoff", 10, 1200., 4800., 4.),
@@ -333,7 +359,9 @@ fn scenario(case: &Case, rate: usize, block: usize, length: usize) -> Scenario {
     if let Some(a) = case.automation {
         plain[a.index] = a.low;
     }
-    plain[42] = f64::from(plain[31] != 0.0); // Distortionのケースだけ先頭スロットを使う。
+    if plain[31] != 0.0 {
+        plain[42] = 1.0; // Distortionのケースは先頭スロットを使う。
+    }
     assert!(
         plain
             .iter()

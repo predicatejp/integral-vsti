@@ -11,28 +11,30 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 109;
-/// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo、ReverbのDecay/Damping/Size/Mix、ChorusのTime/Depth/Rate/Detune/Feedback/Mix、PhaserのCenter/Depth/Rate/Feedback/Mix。IDは位置に固定する。
-pub const EFFECT_SLOTS: [[usize; 23]; 3] = [
+pub const COUNT: usize = 130;
+/// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo、ReverbのDecay/Damping/Size/Mix、ChorusのTime/Depth/Rate/Detune/Feedback/Mix、PhaserのCenter/Depth/Rate/Feedback/Mix、CompressorのThreshold/Ratio/Attack/Release/Knee/Makeup/Mix。IDは位置に固定する。
+pub const EFFECT_SLOTS: [[usize; 30]; 3] = [
     [
         42, 31, 32, 33, 51, 52, 53, 60, 63, 64, 65, 66, 75, 76, 77, 78, 79, 80, 93, 94, 95, 96, 97,
+        109, 110, 111, 112, 113, 114, 115,
     ],
     [
         43, 45, 46, 47, 54, 55, 56, 61, 67, 68, 69, 70, 81, 82, 83, 84, 85, 86, 98, 99, 100, 101,
-        102,
+        102, 116, 117, 118, 119, 120, 121, 122,
     ],
     [
         44, 48, 49, 50, 57, 58, 59, 62, 71, 72, 73, 74, 87, 88, 89, 90, 91, 92, 103, 104, 105, 106,
-        107,
+        107, 123, 124, 125, 126, 127, 128, 129,
     ],
 ];
-pub const EFFECT_TYPES: [crate::effects::EffectType; 6] = [
+pub const EFFECT_TYPES: [crate::effects::EffectType; 7] = [
     crate::effects::EffectType::Off,
     crate::effects::EffectType::Distortion,
     crate::effects::EffectType::Delay,
     crate::effects::EffectType::Reverb,
     crate::effects::EffectType::Chorus,
     crate::effects::EffectType::Phaser,
+    crate::effects::EffectType::Compressor,
 ];
 pub const DELAY_STEREO_MODES: [crate::delay::StereoMode; 4] = [
     crate::delay::StereoMode::Stereo,
@@ -71,6 +73,12 @@ pub fn control_kind(index: usize) -> usize {
         95 | 100 | 105 => 77,
         96 | 101 | 106 => 79,
         97 | 102 | 107 => 33,
+        109..=129 => match (index - 109) % 7 {
+            2 => 1,  // Attack: 既存の時間軸を共用する。
+            3 => 5,  // Release
+            6 => 33, // Mix
+            kind => 109 + kind,
+        },
         _ => index,
     }
 }
@@ -260,6 +268,27 @@ pub const IDS: [u32; COUNT] = [
     0x50334642,  // P3FB
     0x50334d58,  // P3MX
     0x4c490000,  // Limiter
+    0x43500100,  // Compressor 1: Threshold
+    0x43500101,  // Compressor 1: Ratio
+    0x43500102,  // Compressor 1: Attack
+    0x43500103,  // Compressor 1: Release
+    0x43500104,  // Compressor 1: Knee
+    0x43500105,  // Compressor 1: Makeup
+    0x43500106,  // Compressor 1: Mix
+    0x43500200,  // Compressor 2: Threshold
+    0x43500201,  // Compressor 2: Ratio
+    0x43500202,  // Compressor 2: Attack
+    0x43500203,  // Compressor 2: Release
+    0x43500204,  // Compressor 2: Knee
+    0x43500205,  // Compressor 2: Makeup
+    0x43500206,  // Compressor 2: Mix
+    0x43500300,  // Compressor 3: Threshold
+    0x43500301,  // Compressor 3: Ratio
+    0x43500302,  // Compressor 3: Attack
+    0x43500303,  // Compressor 3: Release
+    0x43500304,  // Compressor 3: Knee
+    0x43500305,  // Compressor 3: Makeup
+    0x43500306,  // Compressor 3: Mix
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -371,11 +400,40 @@ pub const NAMES: [&str; COUNT] = [
     "Effect 3 Phaser Feedback",
     "Effect 3 Phaser Mix",
     "Limiter",
+    "Effect 1 Compressor Threshold",
+    "Effect 1 Compressor Ratio",
+    "Effect 1 Compressor Attack",
+    "Effect 1 Compressor Release",
+    "Effect 1 Compressor Knee",
+    "Effect 1 Compressor Makeup",
+    "Effect 1 Compressor Mix",
+    "Effect 2 Compressor Threshold",
+    "Effect 2 Compressor Ratio",
+    "Effect 2 Compressor Attack",
+    "Effect 2 Compressor Release",
+    "Effect 2 Compressor Knee",
+    "Effect 2 Compressor Makeup",
+    "Effect 2 Compressor Mix",
+    "Effect 3 Compressor Threshold",
+    "Effect 3 Compressor Ratio",
+    "Effect 3 Compressor Attack",
+    "Effect 3 Compressor Release",
+    "Effect 3 Compressor Knee",
+    "Effect 3 Compressor Makeup",
+    "Effect 3 Compressor Mix",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
     if (42..=44).contains(&index) {
-        return &["Off", "Distortion", "Delay", "Reverb", "Chorus", "Phaser"];
+        return &[
+            "Off",
+            "Distortion",
+            "Delay",
+            "Reverb",
+            "Chorus",
+            "Phaser",
+            "Compressor",
+        ];
     }
     match control_kind(index) {
         0 | 23 | 26 => &WAVEFORM_NAMES,
@@ -399,7 +457,10 @@ pub fn max_tick(index: usize) -> u32 {
             34 | 108 => 1,
             31 => 2,
             51 => 13,
-            42 => 5,
+            42 => 6,
+            109 => 600,
+            110 => 190,
+            113 | 114 => 240,
             93 => 400,
             94 => 240,
             60 => 3,
@@ -444,7 +505,7 @@ pub fn unit(index: usize) -> &'static str {
             63 => "s",
             75 | 76 => "ms",
             65 => "%",
-            36 | 38 | 41 => "dB",
+            36 | 38 | 41 | 109 | 113 | 114 => "dB",
             13 | 22 | 25 | 28 | 32 => "dB",
             20 | 21 | 29 | 30 | 33 | 52 | 79 => "%",
             7 | 10 | 19 | 24 | 27 | 94 => "cent",
@@ -459,7 +520,7 @@ pub fn index(id: u32) -> Option<usize> {
     IDS.iter().position(|&candidate| candidate == id)
 }
 pub fn is_time(index: usize) -> bool {
-    matches!(index, 1 | 2 | 3 | 5 | 14 | 15 | 16 | 18)
+    matches!(control_kind(index), 1 | 2 | 3 | 5 | 14 | 15 | 16 | 18)
 }
 /// 変更点まで直前の値を保持するパラメーター。Cutoffは連続値だが補間しない。
 pub fn holds_between_points(index: usize) -> bool {
@@ -515,7 +576,10 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
     match index {
         34 | 108 => return (normalized * 2.0).floor().min(1.0),
         51 => return (normalized * 14.0).floor().min(13.0),
-        42 => return (normalized * 6.0).floor().min(5.0),
+        42 => return (normalized * 7.0).floor().min(6.0),
+        109 => return normalized * 60.0 - 60.0,
+        110 => return 1.0 + normalized * 19.0,
+        113 | 114 => return normalized * 24.0,
         93 => return 100.0 * 40_f64.powf(normalized),
         94 => return 2400.0 * normalized,
         60 => return (normalized * 4.0).floor().min(3.0),
@@ -571,7 +635,10 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
     match index {
         34 | 108 => return plain.clamp(0.0, 1.0).round(),
         51 => return plain.clamp(0.0, 13.0).round() / 13.0,
-        42 => return plain.clamp(0.0, 5.0).round() / 5.0,
+        42 => return plain.clamp(0.0, 6.0).round() / 6.0,
+        109 => return (plain + 60.0) / 60.0,
+        110 => return (plain - 1.0) / 19.0,
+        113 | 114 => return plain / 24.0,
         93 => return (plain / 100.0).log(40.0),
         94 => return plain / 2400.0,
         60 => return plain.clamp(0.0, 3.0).round() / 3.0,
@@ -620,7 +687,10 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         0 | 23 | 26 => (0.0..=4.0).contains(&plain) && plain.fract() == 0.0,
         34 | 108 => (0.0..=1.0).contains(&plain) && plain.fract() == 0.0,
         51 => (0.0..=13.0).contains(&plain) && plain.fract() == 0.0,
-        42 => (0.0..=5.0).contains(&plain) && plain.fract() == 0.0,
+        42 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
+        109 => (-60.0..=0.0).contains(&plain),
+        110 => (1.0..=20.0).contains(&plain),
+        113 | 114 => (0.0..=24.0).contains(&plain),
         93 => (100.0..=4000.0).contains(&plain),
         94 => (0.0..=2400.0).contains(&plain),
         60 => (0.0..=3.0).contains(&plain) && plain.fract() == 0.0,
@@ -782,6 +852,27 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         50.0,
         50.0,
         0.0, // Limiter: Off
+        -18.0,
+        4.0,
+        10.0,
+        100.0,
+        6.0,
+        0.0,
+        100.0,
+        -18.0,
+        4.0,
+        10.0,
+        100.0,
+        6.0,
+        0.0,
+        100.0,
+        -18.0,
+        4.0,
+        10.0,
+        100.0,
+        6.0,
+        0.0,
+        100.0,
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -837,12 +928,25 @@ pub fn chorus(values: &[f64; COUNT], slot: usize) -> crate::chorus::ChorusParame
 }
 
 pub fn phaser(values: &[f64; COUNT], slot: usize) -> crate::phaser::PhaserParameters {
-    let [.., center, depth, rate, feedback, mix] = EFFECT_SLOTS[slot];
+    let [center, depth, rate, feedback, mix] = [18, 19, 20, 21, 22].map(|i| EFFECT_SLOTS[slot][i]);
     crate::phaser::PhaserParameters {
         center_hz: to_plain(center, values[center]),
         depth_cents: to_plain(depth, values[depth]),
         rate_hz: to_plain(rate, values[rate]),
         feedback: to_plain(feedback, values[feedback]) / 100.0,
+        mix: values[mix],
+    }
+}
+
+pub fn compressor(values: &[f64; COUNT], slot: usize) -> crate::compressor::CompressorParameters {
+    let [.., threshold, ratio, attack, release, knee, makeup, mix] = EFFECT_SLOTS[slot];
+    crate::compressor::CompressorParameters {
+        threshold_db: to_plain(threshold, values[threshold]),
+        ratio: to_plain(ratio, values[ratio]),
+        attack_ms: to_plain(attack, values[attack]),
+        release_ms: to_plain(release, values[release]),
+        knee_db: to_plain(knee, values[knee]),
+        makeup_db: to_plain(makeup, values[makeup]),
         mix: values[mix],
     }
 }
@@ -1048,9 +1152,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v31: 固定876バイト。波形番号u32と、その他の実単位f64を保持する。
+// v32: 固定1044バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x1f\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x20\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {

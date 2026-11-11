@@ -348,7 +348,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 | パラメーター | 変更点の間の処理 |
 | --- | --- |
 | Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper type・Effect種類・Delay Time・Stereo・Reverb Size・Limiter | 直前の値を保持し、変更点で切り替える |
-| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mix・Reverb Decay/Damping | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
+| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mix・Reverb Decay/Damping・Compressor全7設定 | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
 
 最後の点以降は値を保持します。同位置ではパラメーターをキュー順に適用した後、ノートをイベントリスト順に処理します。
 
@@ -357,8 +357,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v31は876バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/MixとLimiterを各f64。little endian）です。
-読み込みは現行形式v31のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v32は1044バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/Mix、Limiter、および各スロットのCompressor Threshold/Ratio/Attack/Release/Knee/Makeup/Mixを各f64。little endian）です。
+読み込みは現行形式v32のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -367,7 +367,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定109個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定130個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -388,23 +388,23 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
 音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
 連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
-編集内容は実際の109設定として保存し、復元時にも編集後の値を保持します。
+編集内容は実際の130設定として保存し、復元時にも編集後の値を保持します。
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
 
 ## エフェクタ系列
 
 全Voiceのフィルタ出力を合成した後、**Effector 1 → Effector 2 → Effector 3 → EQ → Limiter → Master Volume**の順に処理します。
-各スロットでOff／Distortion／Delay／Reverb／Chorus／Phaserを選択し、Offはそのスロットを素通しにします。初期値はすべてOffです。
+各スロットでOff／Distortion／Delay／Reverb／Chorus／Phaser／Compressorを選択し、Offはそのスロットを素通しにします。初期値はすべてOffです。
 同じエフェクトを複数のスロットで使えます。設定と左右の処理履歴はスロットごとに独立します。
 
-各スロットの↑／↓ボタンで、隣のスロットと種類とDistortion／Delay／Reverb／Chorus／Phaserの全設定をまとめて交換します。
+各スロットの↑／↓ボタンで、隣のスロットと種類とDistortion／Delay／Reverb／Chorus／Phaser／Compressorの全設定をまとめて交換します。
 パラメーターIDとオートメーションはスロット位置に対応します。交換はVST3の編集通知を通してホストへ伝えます。
 種類の変更時は対象スロットの履歴を初期化します。全設定を音色として保存・復元します。
 
 | 設定 | Effect 1 ParamID | Effect 2 ParamID | Effect 3 ParamID |
 | --- | --- | --- | --- |
-| 種類（Off／Distortion／Delay／Reverb／Chorus／Phaser） | `0x45463154` | `0x45463254` | `0x45463354` |
+| 種類（Off／Distortion／Delay／Reverb／Chorus／Phaser／Compressor） | `0x45463154` | `0x45463254` | `0x45463354` |
 | Clipper | `0x43545950` | `0x45463243` | `0x45463343` |
 | Gain | `0x43474149` | `0x45463247` | `0x45463347` |
 | Distortion Mix | `0x434d4958` | `0x4546324d` | `0x4546334d` |
@@ -427,6 +427,13 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 | Phaser Rate | `0x50315254` | `0x50325254` | `0x50335254` |
 | Phaser Feedback | `0x50314642` | `0x50324642` | `0x50334642` |
 | Phaser Mix | `0x50314d58` | `0x50324d58` | `0x50334d58` |
+| Compressor Threshold | `0x43500100` | `0x43500200` | `0x43500300` |
+| Compressor Ratio | `0x43500101` | `0x43500201` | `0x43500301` |
+| Compressor Attack | `0x43500102` | `0x43500202` | `0x43500302` |
+| Compressor Release | `0x43500103` | `0x43500203` | `0x43500303` |
+| Compressor Knee | `0x43500104` | `0x43500204` | `0x43500304` |
+| Compressor Makeup | `0x43500105` | `0x43500205` | `0x43500305` |
+| Compressor Mix | `0x43500106` | `0x43500206` | `0x43500306` |
 
 Distortionは1段につき1サンプル遅延します。系列の末尾で不足分の純遅延を補い、エフェクタ系列の遅延を3サンプルに揃えます。ホストへはLimiterの先読みと合計した遅延を申告します。
 全スロットがOffの場合も3サンプルの純遅延になり、原信号の周波数特性を変えません。
@@ -485,6 +492,28 @@ Chorusは左右1本ずつの可変遅延で、短いTimeとFeedbackによるフ�
 1スロットの上限は16 MiBとし、処理中の設定変更では確保・解放しません。
 スロット種類変更・処理停止・再設定で履歴とLFOを初期化し、再生停止・シークでは継続します。
 Chorus自体の追加レイテンシーは0、エフェクタ系列は3サンプルです。
+
+### Compressor
+
+各スロットでCompressorを選択すると、左右の最大絶対振幅を共通検出し、左右に同じゲインを掛けます。
+
+| 設定 | 範囲・GUI刻み | 初期値 |
+| --- | --- | --- |
+| Threshold | −60〜0 dBFS、0.1 dB | −18 dBFS |
+| Ratio | 1〜20、0.1 | 4 |
+| Attack | 0〜10,000 ms、エンベロープと同じ対数軸 | 10 ms |
+| Release | 0〜10,000 ms、エンベロープと同じ対数軸 | 100 ms |
+| Knee | 0〜24 dB、0.1 dB | 6 dB |
+| Makeup | 0〜24 dB、0.1 dB | 0 dB |
+| Mix | 0〜100%、1% | 100% |
+
+Thresholdを中心とする二次soft kneeで目標減衰dBを求め、Attack／Releaseの1極応答で平滑化します。
+時間設定は目標差の63.2%へ到達する時定数で、0 msなら即時に追従します。
+Makeupは処理音だけに適用し、Mixは原音0%・処理音100%の線形混合です。
+UIはThrs・Ratio・A・R・Knee・Gain・Mixを横一列に置き、Makeupは6 dBごとに吸着します。
+7設定はオートメーションの変更点間で補間し、保存・復元と隣接スロット交換に含めます。
+各スロットの減衰履歴は独立し、種類変更・処理停止・再設定で初期化します。
+音声処理中のメモリ確保はなく、Compressorによる追加レイテンシーは0です。
 
 ### Phaser
 
@@ -778,7 +807,7 @@ Linuxでの確認済み環境: Linux x86_64、Rust 1.95.0 / 1.99.1、GCC 12.2、
 参照した公式SDKヘッダのライセンスはMITです。出典とライセンス全文は [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) を参照してください。
 FL Studioで発音とGUI操作の動作報告があります。
 GUIの自動検証にはLinuxのXvfbとMesaを使用します。
-通常演奏19ケースの標準性能回帰スイートは、検証用Python環境を準備し、`scripts/bench-standard.py --before <変更前worktree> --after <変更後worktree>`で実行します。無作為化ブロックによる対応比較・統計検定とDSP単体の測定手順は[benchmarks/README.md](benchmarks/README.md)、比較実験の結果は[Wiki](https://github.com/predicatejp/sample-vsti/wiki)にまとめています。
+通常演奏22ケースの標準性能回帰スイートは、検証用Python環境を準備し、`scripts/bench-standard.py --before <変更前worktree> --after <変更後worktree>`で実行します。無作為化ブロックによる対応比較・統計検定とDSP単体の測定手順は[benchmarks/README.md](benchmarks/README.md)、比較実験の結果は[Wiki](https://github.com/predicatejp/sample-vsti/wiki)にまとめています。
 
 ## PRのテスト用ZIP
 
@@ -893,6 +922,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/envelope.rs`: 音量とカットオフで共用する正規化AHDSR計算と経過時間・再トリガー管理。
 - `src/filter.rs`: TPT SVFの3出力と、フィルタタイプによる出力選択・多段化。
 - `src/delay.rs`: テンポ同期ステレオディレイと読出し位置のクロスフェード。
+- `src/compressor.rs`: 左右ピーク連動のsoft knee・Attack/ReleaseとWet/Dry混合。
 - `src/phaser.rs`: 6段正規化ラティスallpass、共通LFOと帰還によるPhaser。
 - `src/effects.rs`: 3スロットの直列処理、個別のDry/Mix・切り替え、全体の固定遅延。
 - `src/distortion.rs`: プリゲイン・クリップ・2階ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。

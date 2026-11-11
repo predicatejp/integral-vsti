@@ -35,7 +35,9 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Size", "Mix", "Dec", "Damp", "Size", "Mix", "Time", "Depth", "Rate", "Det", "Fdbk", "Mix",
     "Time", "Depth", "Rate", "Det", "Fdbk", "Mix", "Time", "Depth", "Rate", "Det", "Fdbk", "Mix",
     "Center", "Depth", "Rate", "Fdbk", "Mix", "Center", "Depth", "Rate", "Fdbk", "Mix", "Center",
-    "Depth", "Rate", "Fdbk", "Mix", "Limiter",
+    "Depth", "Rate", "Fdbk", "Mix", "Limiter", "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix",
+    "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix", "Thrs", "Ratio", "A", "R", "Knee", "Gain",
+    "Mix",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -52,6 +54,9 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     4, 2, 3, 4, 4, 4, 4, 2, 3, 4, 4, 4, 4, 2, 3, 4, 4, 4, // Chorus
     3, 4, 3, 4, 4, 3, 4, 3, 4, 4, 3, 4, 3, 4, 4, // Phaser
     4, // Limiter
+    2, 4, 3, 3, 4, 4, 4, // Compressor
+    2, 4, 3, 3, 4, 4, 4, // Compressor
+    2, 4, 3, 3, 4, 4, 4, // Compressor
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -65,7 +70,7 @@ fn is_detent(index: usize, tick: u32) -> bool {
     match index {
         10 | 19 | 24 | 27 => tick.is_multiple_of(120), // Cutoff / Amount / Tune: 1200 cent
         13 | 22 | 25 | 28 => tick.is_multiple_of(60),  // Volume: 6 dB
-        36 | 38 | 41 => tick.is_multiple_of(60),       // EQ Gain: 6 dB
+        36 | 38 | 41 | 114 | 121 | 128 => tick.is_multiple_of(60), // EQ Gain / Makeup: 6 dB
         21 => tick == 100,                             // Pan: 中央
         _ => false,
     }
@@ -99,6 +104,9 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         35 | 37 | 40 => (&[0, 100, 200, 300], 100),
         36 | 38 | 41 => (&[0, 60, 120, 180, 240, 300, 360], 180),
         39 => (&[0, 50, 100, 150, 200], 100),
+        109 => (&[0, 120, 240, 360, 480, 600], 600), // Threshold: −60〜0 dB
+        110 => (&[0, 10, 30, 70, 190], 0),           // Ratio: 1/2/4/8/20
+        113 | 114 => (&[0, 60, 120, 180, 240], 0),   // Knee / Makeup: 6 dB
         93 => (&[0, 100, 200, 300, 400], 0),
         94 => (&[0, 60, 120, 180, 240], 0),
         75 => (&[0, 9, 99, 199, 399], 199), // Time: 1/10/20/40ms
@@ -677,7 +685,11 @@ impl Editor {
             } else {
                 rect.top() + GAP + (HEADER_HEIGHT - CHOICE_HEIGHT) / 2.0
             };
-            let width = (rect.width() - GAP * 2.0).min(130.0);
+            let width = (rect.width() - GAP * 2.0).min(if effect.is_some() && row == 0 {
+                150.0
+            } else {
+                130.0
+            });
             egui::Rect::from_min_size(
                 egui::pos2(rect.right() - GAP - width, top),
                 egui::vec2(width, CHOICE_HEIGHT),
@@ -858,7 +870,8 @@ impl WindowHandler for Editor {
                     2 => &indices[4..7],
                     3 => &indices[8..12],
                     4 => &indices[12..18],
-                    5 => &indices[18..],
+                    5 => &indices[18..23],
+                    6 => &indices[23..],
                     _ => &indices[2..4],
                 };
                 indices.contains(&drag.index) && !visible.contains(&drag.index)
@@ -978,7 +991,7 @@ impl WindowHandler for Editor {
                     "Eff 1",
                     match effect_kinds[0] {
                         2 => &[42, 60][..],
-                        3..=5 => &[42][..],
+                        3..=6 => &[42][..],
                         _ => &[42, 31][..],
                     },
                     &[match effect_kinds[0] {
@@ -986,6 +999,7 @@ impl WindowHandler for Editor {
                         3 => &[63, 64, 65, 66][..],
                         4 => &[75, 76, 77, 78, 79, 80][..],
                         5 => &[93, 94, 95, 96, 97][..],
+                        6 => &[109, 110, 111, 112, 113, 114, 115][..],
                         _ => &[32, 33][..],
                     }][..],
                     [effects_x, GAP, side_width, effect_height],
@@ -994,7 +1008,7 @@ impl WindowHandler for Editor {
                     "Eff 2",
                     match effect_kinds[1] {
                         2 => &[43, 61][..],
-                        3..=5 => &[43][..],
+                        3..=6 => &[43][..],
                         _ => &[43, 45][..],
                     },
                     &[match effect_kinds[1] {
@@ -1002,6 +1016,7 @@ impl WindowHandler for Editor {
                         3 => &[67, 68, 69, 70][..],
                         4 => &[81, 82, 83, 84, 85, 86][..],
                         5 => &[98, 99, 100, 101, 102][..],
+                        6 => &[116, 117, 118, 119, 120, 121, 122][..],
                         _ => &[46, 47][..],
                     }][..],
                     [
@@ -1015,7 +1030,7 @@ impl WindowHandler for Editor {
                     "Eff 3",
                     match effect_kinds[2] {
                         2 => &[44, 62][..],
-                        3..=5 => &[44][..],
+                        3..=6 => &[44][..],
                         _ => &[44, 48][..],
                     },
                     &[match effect_kinds[2] {
@@ -1023,6 +1038,7 @@ impl WindowHandler for Editor {
                         3 => &[71, 72, 73, 74][..],
                         4 => &[87, 88, 89, 90, 91, 92][..],
                         5 => &[103, 104, 105, 106, 107][..],
+                        6 => &[123, 124, 125, 126, 127, 128, 129][..],
                         _ => &[49, 50][..],
                     }][..],
                     [
@@ -1289,6 +1305,7 @@ mod tests {
                     19 => &[120, 240, 360, 480, 600, 720, 840],
                     21 => &[100],
                     36 | 38 | 41 => &[60, 120, 180, 240, 300],
+                    114 | 121 | 128 => &[60, 120, 180],
                     _ => &[],
                 };
                 if is_detent(index, tick) {

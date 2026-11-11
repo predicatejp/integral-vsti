@@ -11,7 +11,7 @@ void checkPhaser(IComponent* component, IAudioProcessor* processor, IEditControl
             assert(processor->setupProcessing(setup) == kResultOk);
             std::array<Points, 20> points;
             Changes changes;
-            const std::array<int, 20> indices {109,12,42,43,44,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107};
+            const std::array<int, 20> indices {130,12,42,43,44,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107};
             const std::array<double, 20> plain {0,1,slots>=3?5.:0.,slots>=2?5.:0.,slots>=1?5.:0.,
                 1000,1200,.5,50,100,400,2400,1,-50,100,2000,600,.3,60,100};
             for (size_t i=0;i<points.size();++i) {

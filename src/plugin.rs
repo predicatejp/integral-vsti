@@ -981,6 +981,8 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     OK
 }
 
+type AutomationMask = [u64; (parameters::COUNT + 1).div_ceil(64)];
+
 // SAFETY契約: channelsの各要素はnum_samples個の書き込み領域。rangeは範囲内。
 // changesはこのprocessから借用し、
 // これまでの区間と順に処理する。同時刻の変更をすべて適用してからノートを処理する。
@@ -993,9 +995,10 @@ unsafe fn generate_samples(
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
     peak: &mut f32,
 ) -> u64 {
-    let automated = changes.iter().enumerate().fold(0_u128, |mask, (i, point)| {
-        mask | (u128::from(point.automated) << i)
-    });
+    let mut automated: AutomationMask = [0; (parameters::COUNT + 1).div_ceil(64)];
+    for (i, point) in changes.iter().enumerate() {
+        automated[i / 64] |= u64::from(point.automated) << (i % 64);
+    }
     // バッファの有無と精度は区間ごとに選び、サンプルループ内では分岐しない。
     let nonzero = match channels {
         Some(channels) if data.symbolic_sample_size == SAMPLE32 => {
@@ -1047,12 +1050,12 @@ fn generate_output_samples(
     plugin: &Plugin,
     synth: &mut Synthesizer,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
-    automated: u128,
+    automated: AutomationMask,
     range: std::ops::Range<i32>,
     mut write: impl FnMut(usize, [f64; 2]) -> u64,
 ) -> u64 {
     let mut nonzero = 0;
-    if automated != 0 {
+    if automated.iter().any(|&word| word != 0) {
         for offset in range {
             apply_parameters(plugin, synth, changes, automated, offset);
             nonzero |= write(offset as usize, synth.generate_sample());
@@ -1074,11 +1077,12 @@ fn apply_parameters(
     plugin: &Plugin,
     synth: &mut Synthesizer,
     changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
-    automated: u128,
+    automated: AutomationMask,
     offset: i32,
 ) {
-    let loaded = automated & (1 << parameters::PROGRAM_INDEX) != 0
-        && changes[parameters::PROGRAM_INDEX].take_program_at(offset);
+    let loaded =
+        automated[parameters::PROGRAM_INDEX / 64] & (1 << (parameters::PROGRAM_INDEX % 64)) != 0
+            && changes[parameters::PROGRAM_INDEX].take_program_at(offset);
     let mut values = synth.parameters();
     if loaded {
         values = parameters::sine_preset();
@@ -1086,22 +1090,25 @@ fn apply_parameters(
             change.reset_value(offset, value);
         }
     }
-    let controls = automated & ((1_u128 << parameters::COUNT) - 1);
-    let mut pending = controls;
-    while pending != 0 {
-        let i = pending.trailing_zeros() as usize;
-        pending &= pending - 1;
-        values[i] = changes[i].value_at(offset);
+    let mut controls = automated;
+    controls[parameters::PROGRAM_INDEX / 64] &= !(1 << (parameters::PROGRAM_INDEX % 64));
+    for (word, mut pending) in controls.into_iter().enumerate() {
+        while pending != 0 {
+            let i = word * 64 + pending.trailing_zeros() as usize;
+            pending &= pending - 1;
+            values[i] = changes[i].value_at(offset);
+        }
     }
     let changed = synth.set_parameters(values);
     if loaded {
         plugin.processor_parameters.store(values);
     } else if changed {
-        let mut pending = controls;
-        while pending != 0 {
-            let i = pending.trailing_zeros() as usize;
-            pending &= pending - 1;
-            plugin.processor_parameters.set(i, values[i]);
+        for (word, mut pending) in controls.into_iter().enumerate() {
+            while pending != 0 {
+                let i = word * 64 + pending.trailing_zeros() as usize;
+                pending &= pending - 1;
+                plugin.processor_parameters.set(i, values[i]);
+            }
         }
     }
 }
