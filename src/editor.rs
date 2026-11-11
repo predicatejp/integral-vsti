@@ -549,6 +549,15 @@ impl Editor {
     }
 
     fn choice(&self, ui: &mut egui::Ui, index: usize, selected: f64) {
+        if matches!(index, 12 | 31 | 45 | 48 | 60..=62 | 108) {
+            ui.painter().text(
+                ui.max_rect().center_top() - egui::vec2(0.0, GAP),
+                egui::Align2::CENTER_BOTTOM,
+                KNOB_NAMES[index],
+                egui::FontId::proportional(18.0),
+                MUTED,
+            );
+        }
         let names = parameters::choices(index);
         let mut choice = parameters::to_plain(index, selected) as usize;
         if egui::ComboBox::from_id_salt(index)
@@ -707,29 +716,14 @@ impl Editor {
             )
         };
         for (row, &index) in choices.iter().enumerate() {
-            if effect.is_some() && row > 0 {
-                painter.text(
-                    choice_rect(row).center_top() - egui::vec2(0.0, GAP),
-                    egui::Align2::CENTER_BOTTOM,
-                    KNOB_NAMES[index],
-                    egui::FontId::proportional(18.0),
-                    MUTED,
-                );
-                continue;
-            }
             let label = match index {
                 0 => "Osc1",
                 23 => "Osc2",
                 26 => "Osc3",
-                12 => "Phase",
-                108 => "Limiter",
                 _ => continue,
             };
             painter.text(
-                egui::pos2(
-                    rect.left() + GAP,
-                    choice_rect(row).center().y - choice_label_height,
-                ),
+                egui::pos2(rect.left() + GAP, choice_rect(row).center().y),
                 egui::Align2::LEFT_CENTER,
                 label,
                 egui::FontId::proportional(18.0),
