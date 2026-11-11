@@ -115,7 +115,7 @@ fn interfaces_share_identity_and_own_the_instance() {
         assert_eq!((factory_table.unknown.release)(factory), 0);
         assert_eq!(
             (processor_table.get_latency_samples)(processor),
-            crate::effects::LATENCY as u32
+            (crate::effects::LATENCY + 221) as u32
         );
         assert_eq!((processor_table.unknown.release)(processor), 0);
     }
@@ -396,13 +396,14 @@ fn check_host_events(activate_events: bool) {
         assert_eq!(*sample_ptr, 0.0);
         data.input_events = ptr::null_mut();
         data.input_parameter_changes = ptr::null_mut();
-        // 3サンプル遅延後のreleaseと再トリガー開始値を確認する。
-        for n in 0..69 {
+        // 申告遅延後のreleaseと再トリガー開始値を確認する。
+        let limiter_delay = (pt.get_latency_samples)(processor) as usize - crate::effects::LATENCY;
+        for n in 0_usize..69 + limiter_delay {
             assert_eq!((pt.process)(processor, &mut data), OK);
-            let expected = match n {
-                0 => Some(0.5 * step * sine(1.0)),
-                1 => Some(release_start * sine(3.0)),
-                2 => Some(restart * sine(5.0)),
+            let expected = match n.checked_sub(limiter_delay) {
+                Some(0) => Some(0.5 * step * sine(1.0)),
+                Some(1) => Some(release_start * sine(3.0)),
+                Some(2) => Some(restart * sine(5.0)),
                 _ => None,
             };
             if let Some(expected) = expected {
@@ -458,34 +459,25 @@ fn check_host_events(activate_events: bool) {
         data.input_parameter_changes = ptr::from_mut(&mut changes).cast();
         data.input_events = ptr::null_mut();
         assert_eq!((pt.process)(processor, &mut data), OK);
-        let square = |n: usize| {
-            crate::oscillator::reference::audio_sample(
-                crate::oscillator::Waveform::Square,
-                (n + 75) as f64 / 128.0,
-                1.0 / 128.0,
-            ) * n as f64
-                * 0.5
-                * step
-        };
-        let expected = [
-            peak * sine(76.0),
-            2.0 * peak * sine(77.0),
-            3.0 * peak * sine(78.0),
-            square(4),
-        ];
-        for (actual, expected) in sample_ptr
-            .cast::<[f64; 4]>()
-            .read()
-            .into_iter()
-            .zip(expected)
-        {
-            assert!((actual - expected).abs() < 1e-7);
-        }
+        assert_eq!(sample_ptr.cast::<[f64; 4]>().read(), [0.0; 4]);
         data.num_samples = 1;
         data.input_parameter_changes = ptr::null_mut();
-        for n in 5..74 {
+        for n in 5..74 + limiter_delay {
             assert_eq!((pt.process)(processor, &mut data), OK);
-            assert!((sample_ptr.read() - square(n)).abs() < 1e-7);
+            let expected = match n.checked_sub(limiter_delay) {
+                Some(m @ 1..=3) => m as f64 * peak * sine((75 + limiter_delay + m) as f64),
+                Some(m @ 4..) => {
+                    crate::oscillator::reference::audio_sample(
+                        crate::oscillator::Waveform::Square,
+                        (m + 75 + limiter_delay) as f64 / 128.0,
+                        1.0 / 128.0,
+                    ) * m as f64
+                        * 0.5
+                        * step
+                }
+                _ => 0.0,
+            };
+            assert!((sample_ptr.read() - expected).abs() < 1e-7);
         }
         assert_eq!((pt.set_processing)(processor, 0), OK);
         data.num_samples = 0;

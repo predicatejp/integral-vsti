@@ -67,6 +67,8 @@ struct Plugin {
     max_samples: AtomicI32,
     /// 設定済みのサンプル形式（SAMPLE32またはSAMPLE64）。正の長さの処理には一致を要求する。
     sample_size: AtomicI32,
+    /// setupProcessingで確定した総遅延。UIスレッドの照会はatomicだけを読む。
+    latency: AtomicU32,
 }
 
 const UNKNOWN: UnknownVTable = UnknownVTable {
@@ -137,6 +139,8 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
     ) {
         return NO_INTERFACE;
     }
+    let synth = Synthesizer::new();
+    let latency = synth.latency_samples() as u32;
     let plugin = Box::new(Plugin {
         component: Interface {
             vtable: ptr::from_ref(&COMPONENT).cast(),
@@ -169,9 +173,10 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         active_voices: Arc::new(AtomicU32::new(0)),
         output_peak: Arc::new(AtomicU32::new(0)),
         component_handler: RefCell::new(None),
-        synth: UnsafeCell::new(Synthesizer::new()),
+        synth: UnsafeCell::new(synth),
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
+        latency: AtomicU32::new(latency),
     });
     let owner = Box::into_raw(plugin);
     // SAFETY: 公開前のBoxを生ポインター経由で初期化する。以後ownerと各Interfaceの
@@ -736,8 +741,9 @@ unsafe extern "system" fn can_process_sample_size(_: This, size: i32) -> TResult
     }
 }
 
-unsafe extern "system" fn latency_samples(_: This) -> u32 {
-    crate::effects::LATENCY as u32
+unsafe extern "system" fn latency_samples(this: This) -> u32 {
+    // SAFETY: 生存中のIAudioProcessor。音声状態へは触れない。
+    unsafe { instance(this) }.latency.load(Ordering::Relaxed)
 }
 
 unsafe extern "system" fn context_requirements(_: This) -> u32 {
@@ -768,6 +774,11 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
     if !unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) } {
         return FALSE;
     }
+    // SAFETY: setupProcessingは非アクティブ状態で直列化される。
+    plugin.latency.store(
+        unsafe { (*plugin.synth.get()).latency_samples() } as u32,
+        Ordering::Relaxed,
+    );
     plugin
         .max_samples
         .store(setup.max_samples_per_block, Ordering::Relaxed);
@@ -1145,6 +1156,10 @@ mod meter_tests {
             data.num_samples = 64;
             data.num_outputs = 1;
             data.outputs = &mut bus;
+            for _ in 0..latency_samples(component) / 64 + 1 {
+                assert_eq!(process(component, &mut data), OK);
+            }
+            plugin.output_peak.store(0, Ordering::Relaxed);
             assert_eq!(process(component, &mut data), OK);
             assert!(left.iter().all(|&v| v.abs() < 1e-15));
             let expected = right.iter().fold(0.0_f64, |p, v| p.max(v.abs())) as f32;

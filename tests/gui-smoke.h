@@ -303,7 +303,7 @@ public:
         assert(!GuiReentry::insideDraw);
 #endif
         assert(std::this_thread::get_id() == uiThread);
-        assert((id >= 0x50314346 && id <= 0x50335254) || (id >= 0x43314450 && id <= 0x4333544d) || (id >= 0x52314443 && id <= 0x5233535a) || (id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463142 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(id == 0x4c490000 || (id >= 0x50314346 && id <= 0x50335254) || (id >= 0x43314450 && id <= 0x4333544d) || (id >= 0x52314443 && id <= 0x5233535a) || (id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463142 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -441,11 +441,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
-    std::array<std::pair<int, int>, 108> controls {{
+    std::array<std::pair<int, int>, 109> controls {{
         {212, 66}, {328, 93}, {392, 93}, {456, 93}, {520, 93}, {584, 93},
-        {48, 118}, {112, 118}, {1112, 471}, {564, 192}, {349, 256}, {456, 256},
-        {1112, 137}, {1112, 224}, {328, 355}, {392, 355}, {456, 355}, {520, 355},
-        {584, 355}, {563, 256}, {176, 118}, {1112, 348}, {240, 118}, {212, 190},
+        {48, 118}, {112, 118}, {1112, 489}, {564, 192}, {349, 256}, {456, 256},
+        {1112, 119}, {1112, 278}, {328, 355}, {392, 355}, {456, 355}, {520, 355},
+        {584, 355}, {563, 256}, {176, 118}, {1112, 383}, {240, 118}, {212, 190},
         {59, 242}, {144, 242}, {212, 314}, {59, 366}, {144, 366}, {229, 242},
         {229, 366}, {959, 70}, {736, 126}, {928, 126}, {551, 454}, {59, 506},
         {145, 506}, {230, 506}, {316, 506}, {402, 506}, {487, 506}, {573, 506},
@@ -460,7 +460,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {864, 502}, {928, 502}, {992, 502},
         {678,126}, {755,126}, {832,126}, {909,126}, {986,126},
         {678,314}, {755,314}, {832,314}, {909,314}, {986,314},
-        {678,502}, {755,502}, {832,502}, {909,502}, {986,502},
+        {678,502}, {755,502}, {832,502}, {909,502}, {986,502}, {1112, 209},
     }};
     for (auto& [x, y] : controls) y += 44; // タイトルバーと共通間隔。
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
@@ -575,8 +575,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             choose(31, item);
             assert(handler.editedId == 0x43545950 && handler.value == item / 2.0);
         }
-        for (int item : {1, 0}) {
-            choose(34, item);
+        for (int index : {34, 108}) for (int item : {1, 0}) {
+            choose(index, item);
             assert(handler.value == item);
         }
         for (int index : {43, 44}) { choose(index, 1); choose(index, 0); }

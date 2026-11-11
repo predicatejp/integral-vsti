@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! DSP本体を直接コンパイルする計測専用プログラム。プラグインにはリンクしない。
 #![allow(dead_code)] // ABI・保存処理など、計測対象以外の既存定義も読み込む。
+#[path = "../src/limiter.rs"]
+mod limiter;
 #[path = "../src/phaser.rs"]
 mod phaser;
 #[path = "../src/chorus.rs"]

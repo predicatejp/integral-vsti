@@ -18,7 +18,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
 | ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・Mod、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / MixとEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
-| レイテンシー・テール | 3サンプル。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
+| レイテンシー・テール | 3 + ceil(サンプルレート × 0.005)サンプル。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
 ProcessorとControllerは、同一インスタンスから取得できます。
 CC、ピッチベンド、ノートエクスプレッションは未実装です。
@@ -108,7 +108,7 @@ Detune=0ではノイズ源1個にまとめ、Widthは無効です。Detune>0で�
 
 ## Voiceごとのフィルタ
 
-音源は `Synthesizer → Voice → Oscillator` の階層です。各コンポーネントは専用のStateを所有します。各VoiceはOsc1・Osc2・Osc3とそれぞれの定常入力を保持します。Osc1はユニゾンを生成し、Osc2/3は各1発振器です。各発振器のVolumeを適用して加算し、共通の音量AHDSR、フィルタの順に通した後、全Voiceのフィルタ出力を左右別に加算します。合成音はSynthesizerが所有する3スロットのエフェクタ系列、EQ、Master Volumeの順に通します。フィルタの係数は左右で共用し、積分器の履歴は独立させます。
+音源は `Synthesizer → Voice → Oscillator` の階層です。各コンポーネントは専用のStateを所有します。各VoiceはOsc1・Osc2・Osc3とそれぞれの定常入力を保持します。Osc1はユニゾンを生成し、Osc2/3は各1発振器です。各発振器のVolumeを適用して加算し、共通の音量AHDSR、フィルタの順に通した後、全Voiceのフィルタ出力を左右別に加算します。合成音はSynthesizerが所有する3スロットのエフェクタ系列、EQ、Limiter、Master Volumeの順に通します。フィルタの係数は左右で共用し、積分器の履歴は独立させます。
 Stateはデータ保持専用とし、所有コンポーネントのメソッドが処理とStateの更新を担当します。
 音声関数は1サンプルを`*_sample`、サンプル系列を`*_samples`で区別します。
 
@@ -163,6 +163,20 @@ sustainではAmount×Sustainの変化量を保ち、releaseで基本のCutoffへ
 時間ノブは音量用と同じ対数軸、Sustainは線形です。
 Amountは10 cent刻みの整数ノブで操作します。
 6パラメーターは連続値として公開し、VST3の変更点間を正規化値で線形補間します。
+
+## リミッタ
+
+EQ → Limiter → Master Volumeの順に処理します。Masterグループの **Limiter** でOff／Onを選択します。初期値はOffです。
+左右のサンプルピークを共通検出し、同じ倍率を両チャンネルへ適用します。プリゲインは0 dB、シーリングは0 dBFS、Releaseの時定数は100 ms、先読みは5 msに固定します。
+Master VolumeはLimiterの後に作用するため、正のMaster設定では最終出力が0 dBFSを超えます。
+
+先読み窓の最大振幅へ即時追従し、下降時には指数減衰させます。その包絡を先読み長の矩形窓で平均し、1を超える場合にその逆数をゲインとします。
+Releaseはミリ秒から係数を計算し、サンプル区間内の指数減衰を積分して平均することで、サンプルレートによるゲイン推移の差を抑えます。
+音声の遅延長は `ceil(サンプルレート × 0.005)` です。44.1 kHzでは221サンプル（約5.011 ms）、48／96／192 kHzでは240／480／960サンプル（5 ms）になります。
+
+Offでも同じ純遅延と検出履歴を維持します。切替時刻に音量制御だけを切り替え、ホスト申告遅延は変わりません。
+エフェクタ系列の3サンプルを含む総遅延は44.1／48／96／192 kHzで224／243／483／963サンプルです。
+VST3 ParamIDは`0x4c490000`、正規化値0がOff、1がOnです。オートメーションは変更点で切り替え、保存・復元にも対応します。
 
 ## マスターボリューム
 
@@ -333,7 +347,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 
 | パラメーター | 変更点の間の処理 |
 | --- | --- |
-| Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper type・Effect種類・Delay Time・Stereo・Reverb Size | 直前の値を保持し、変更点で切り替える |
+| Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper type・Effect種類・Delay Time・Stereo・Reverb Size・Limiter | 直前の値を保持し、変更点で切り替える |
 | 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mix・Reverb Decay/Damping | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
 
 最後の点以降は値を保持します。同位置ではパラメーターをキュー順に適用した後、ノートをイベントリスト順に処理します。
@@ -343,8 +357,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v30は868バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/Mixを各f64。little endian）です。
-読み込みは現行形式v30のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v31は876バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/MixとLimiterを各f64。little endian）です。
+読み込みは現行形式v31のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -353,7 +367,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定108個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定109個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -365,6 +379,7 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | Filter / Cutoff / Resonance | Off / +4800 cent / Q=1 |
 | カットオフAHDSR / Amount | A/H/D/R=0 ms、S=1 / 0 cent |
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
+| Limiter | Off |
 | Osc2/3 Waveform / Tune / Volume / Mod | Sine / 0 cent / −∞ dB / 0% |
 | Clipper / Gain / Mix | Off / 0 dB / 100% |
 
@@ -373,13 +388,13 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
 音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
 連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
-編集内容は実際の108設定として保存し、復元時にも編集後の値を保持します。
+編集内容は実際の109設定として保存し、復元時にも編集後の値を保持します。
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
 
 ## エフェクタ系列
 
-全Voiceのフィルタ出力を合成した後、**Effector 1 → Effector 2 → Effector 3 → EQ → Master Volume**の順に処理します。
+全Voiceのフィルタ出力を合成した後、**Effector 1 → Effector 2 → Effector 3 → EQ → Limiter → Master Volume**の順に処理します。
 各スロットでOff／Distortion／Delay／Reverb／Chorus／Phaserを選択し、Offはそのスロットを素通しにします。初期値はすべてOffです。
 同じエフェクトを複数のスロットで使えます。設定と左右の処理履歴はスロットごとに独立します。
 
@@ -413,7 +428,7 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 | Phaser Feedback | `0x50314642` | `0x50324642` | `0x50334642` |
 | Phaser Mix | `0x50314d58` | `0x50324d58` | `0x50334d58` |
 
-Distortionは1段につき1サンプル遅延します。系列の末尾で不足分の純遅延を補い、ホストへ常に3サンプルと申告します。
+Distortionは1段につき1サンプル遅延します。系列の末尾で不足分の純遅延を補い、エフェクタ系列の遅延を3サンプルに揃えます。ホストへはLimiterの先読みと合計した遅延を申告します。
 全スロットがOffの場合も3サンプルの純遅延になり、原信号の周波数特性を変えません。
 
 ### テンポ同期ディレイ
@@ -443,7 +458,7 @@ PP-L／PP-RはWetへの入力を`(L + R) / 2`でモノラル化し、指定側�
 各スロットの上限は64 MiBで、8秒分を確保できないサンプルレートや確保失敗を`setupProcessing`で拒否します。
 44.1/48 kHzでは合計24 MiB、96 kHzでは48 MiBです。
 再生停止・シーク・ループで履歴を消さず、処理停止・再設定・スロット種類変更で初期化します。
-音価による遅延はエフェクトの動作であり、ホストへ申告する固定3サンプルの処理遅延に加算しません。
+音価による遅延はエフェクトの動作であり、固定の処理遅延に加算しません。
 
 ### コーラス／フランジャー
 
@@ -469,7 +484,7 @@ Chorusは左右1本ずつの可変遅延で、短いTimeとFeedbackによるフ�
 履歴は最大Time＋Depthの50 ms分を収める2の累乗長で、setup時に各スロットへ確保します。
 1スロットの上限は16 MiBとし、処理中の設定変更では確保・解放しません。
 スロット種類変更・処理停止・再設定で履歴とLFOを初期化し、再生停止・シークでは継続します。
-Chorus自体の追加レイテンシーは0、系列全体の申告遅延は3サンプルです。
+Chorus自体の追加レイテンシーは0、エフェクタ系列は3サンプルです。
 
 ### Phaser
 
@@ -510,7 +525,7 @@ Mix=0%は原音、100%は残響です。操作ノブは各スロットにDec・D
 8本の履歴は最大Sizeを収める領域を`setupProcessing`で全3スロット分確保し、処理中に確保・解放しません。
 上限は1スロット合計16 MiBです。資源上限を超えるレートや確保失敗は`setupProcessing`で拒否します。
 再生停止・シークでは残響を継続し、処理停止・再設定・スロット種類変更でリセットします。
-追加の処理遅延は0サンプルで、エフェクタ系列の申告遅延は固定3サンプルです。
+追加の処理遅延は0サンプルで、エフェクタ系列は固定3サンプルです。
 
 ### ディストーション
 
@@ -531,7 +546,7 @@ Gain・Mixはホストから届いた変更点間をホストレートで補間�
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。上部のタイトルバーにSample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3つのスロット、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトル・↑／↓の交換ボタン・種類の選択欄を同じ行に置き、交換ボタンのX座標を3スロットで揃えます。Distortionは次の段にClipper選択欄、その下にGain・Mixを配置します。Delayは次の段にStereo方式の選択欄、その下にTime・Fdbk・Mixの3ノブを横一列に均等配置し、Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phaseラベルと選択欄を上下に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3つのスロット、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトル・↑／↓の交換ボタン・種類の選択欄を同じ行に置き、交換ボタンのX座標を3スロットで揃えます。Distortionは次の段にClipper選択欄、その下にGain・Mixを配置します。Delayは次の段にStereo方式の選択欄、その下にTime・Fdbk・Mixの3ノブを横一列に均等配置し、Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは172.8px幅とし、Phase・Limiterはそれぞれラベルと選択欄を上下に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 タイトルバーの発音数インジケータの上に、同じ幅の出力ピークメータを表示します。Master音量適用後の左右最大サンプルピークを−60〜＋12 dBFSで表示します。0 dBFSまでの部分は明るい緑、0 dBFSを超えた部分は明るい赤とし、0 dBFSの境界線を示します。描画間のピークを保持し、未点灯部分は白に近い色にします。表示は48 dB/秒で減衰します。
 
@@ -882,7 +897,8 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/effects.rs`: 3スロットの直列処理、個別のDry/Mix・切り替え、全体の固定遅延。
 - `src/distortion.rs`: プリゲイン・クリップ・2階ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
 - `src/eq.rs`: TPT SVFによるLow shelf・Peak・High shelfの3帯域EQ。
-- `src/synth.rs`: Voiceの循環割り当て・共通の定位係数と、全Voice加算 → Effector 1 → 2 → 3 → EQ → Master Volumeの処理パイプライン。
+- `src/limiter.rs`: 5 ms先読み・100 ms Release・左右連動の固定シーリングと純遅延。
+- `src/synth.rs`: Voiceの循環割り当て・共通の定位係数と、全Voice加算 → Effector 1 → 2 → 3 → EQ → Limiter → Master Volumeの処理パイプライン。
 - `src/voice.rs`: Voiceごとのノート照合と3発振器加算 → 共通音量AHDSR → ステレオFilterの処理パイプライン。
 - `src/float_mode.rs`: 音声処理中の非正規化数処理モードの保存・切り替え・復元。
 - `src/random.rs`: 位相とNoiseで共用するxoshiro256+乱数生成器。
