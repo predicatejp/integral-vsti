@@ -171,6 +171,12 @@ fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
 
 /// OscillatorとEffectsを含む各パネルで共通の枠と見出し。
 fn panel(painter: &egui::Painter, rect: egui::Rect, title: &str) {
+    let title_y = GAP
+        + if title == "Amp" {
+            KNOB_CENTER_Y
+        } else {
+            HEADER_HEIGHT / 2.0
+        };
     painter.rect_filled(rect, 8.0, PANEL);
     painter.rect_stroke(
         rect,
@@ -179,12 +185,15 @@ fn panel(painter: &egui::Painter, rect: egui::Rect, title: &str) {
         egui::StrokeKind::Inside,
     );
     painter.rect_filled(
-        egui::Rect::from_min_size(rect.min + egui::vec2(GAP, GAP + 6.0), egui::vec2(3.0, 16.0)),
+        egui::Rect::from_min_size(
+            rect.min + egui::vec2(GAP, title_y - 8.0),
+            egui::vec2(3.0, 16.0),
+        ),
         1.0,
         ACCENT,
     );
     painter.text(
-        rect.min + egui::vec2(GAP + 10.0, GAP + HEADER_HEIGHT / 2.0),
+        rect.min + egui::vec2(GAP + 10.0, title_y),
         egui::Align2::LEFT_CENTER,
         title,
         egui::FontId::proportional(HEADING_FONT_SIZE),
@@ -652,12 +661,17 @@ impl Editor {
             0.0
         };
         let row_height = KNOB_CELL.y + row_header_height;
+        let header_height = if title == "Amp" {
+            KNOB_CELL.y
+        } else {
+            HEADER_HEIGHT
+        };
         let content_rows = rows.len() + choice_rows;
         let row_gap =
-            (height - GAP - HEADER_HEIGHT - choice_height - row_height * rows.len() as f32)
+            (height - GAP - header_height - choice_height - row_height * rows.len() as f32)
                 / (content_rows + 1) as f32;
         let body_y = GAP
-            + HEADER_HEIGHT
+            + header_height
             + row_gap
             + if choice_height > 0.0 {
                 choice_height + row_gap * choice_rows as f32
@@ -691,6 +705,15 @@ impl Editor {
             );
         } else {
             panel(&painter, rect, title);
+        }
+        if title == "Amp" {
+            let area = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - GAP - KNOB_CELL.x, rect.top() + GAP),
+                KNOB_CELL,
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                self.knob(ui, 130, selected[130], KNOB_CELL.x);
+            });
         }
         for (row, knobs) in rows.iter().enumerate() {
             if knobs.is_empty() {
@@ -1020,10 +1043,8 @@ impl WindowHandler for Editor {
             let side_width = GAP * 2.0 + 64.0 * 4.0;
             let master_x = effects_x + side_width + GAP;
             let master_width = GAP * 2.0 + KNOB_CELL.x * 2.0;
-            // AmpとFilterの上余白・行間・下余白を同じ長さに揃える。
-            let center_gap =
-                (panel_height - GAP - 2.0 * (GAP + HEADER_HEIGHT) - KNOB_CELL.y * 4.0) / 6.0;
-            let amp_height = GAP + HEADER_HEIGHT + KNOB_CELL.y * 2.0 + center_gap * 3.0;
+            // AmpはタイトルとSensで1行を共有し、AHDSRとの間隔も標準余白に揃える。
+            let amp_height = KNOB_CELL.y * 2.0 + GAP * 3.0;
             let filter_height = panel_height - amp_height - GAP;
             let effects_body_y = GAP * 2.0 + HEADER_HEIGHT;
             let effect_height = (full_height - GAP - HEADER_HEIGHT) / 3.0;
@@ -1051,7 +1072,7 @@ impl WindowHandler for Editor {
                 (
                     "Amp",
                     &[],
-                    &[&[130][..], &[1, 2, 3, 4, 5][..]][..],
+                    &[&[1, 2, 3, 4, 5][..]][..],
                     [center_x, left_top, filter_width, amp_height],
                 ),
                 (
