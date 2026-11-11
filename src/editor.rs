@@ -171,12 +171,6 @@ fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
 
 /// OscillatorとEffectsを含む各パネルで共通の枠と見出し。
 fn panel(painter: &egui::Painter, rect: egui::Rect, title: &str) {
-    let title_y = GAP
-        + if title == "Amp" {
-            KNOB_CENTER_Y
-        } else {
-            HEADER_HEIGHT / 2.0
-        };
     painter.rect_filled(rect, 8.0, PANEL);
     painter.rect_stroke(
         rect,
@@ -185,15 +179,12 @@ fn panel(painter: &egui::Painter, rect: egui::Rect, title: &str) {
         egui::StrokeKind::Inside,
     );
     painter.rect_filled(
-        egui::Rect::from_min_size(
-            rect.min + egui::vec2(GAP, title_y - 8.0),
-            egui::vec2(3.0, 16.0),
-        ),
+        egui::Rect::from_min_size(rect.min + egui::vec2(GAP, GAP + 6.0), egui::vec2(3.0, 16.0)),
         1.0,
         ACCENT,
     );
     painter.text(
-        rect.min + egui::vec2(GAP + 10.0, title_y),
+        rect.min + egui::vec2(GAP + 10.0, GAP + HEADER_HEIGHT / 2.0),
         egui::Align2::LEFT_CENTER,
         title,
         egui::FontId::proportional(HEADING_FONT_SIZE),
