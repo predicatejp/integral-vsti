@@ -611,11 +611,18 @@ impl Editor {
         let effect = parameters::EFFECT_SLOTS
             .iter()
             .position(|indices| choices.first() == Some(&indices[0]));
-        let knobs = rows[0];
-        let split = knobs.len().div_ceil(2);
+        // 全エフェクト共通のMixは右端の同じ位置へ分離する。
+        let (mix, knobs) = if effect.is_some() {
+            rows[0]
+                .split_last()
+                .map_or((None, &[][..]), |(mix, knobs)| (Some(*mix), knobs))
+        } else {
+            (None, rows[0])
+        };
+        let split = knobs.len().min(3);
         let two_rows = [&knobs[..split], &knobs[split..]];
-        let rows = if effect.is_some() && knobs.len() > 4 {
-            &two_rows[..]
+        let rows = if effect.is_some() {
+            &two_rows[..if knobs.len() > 3 { 2 } else { 1 }]
         } else {
             rows
         };
@@ -690,7 +697,16 @@ impl Editor {
                     egui::Stroke::new(1.0, LINE),
                 );
             }
-            let width = (rect.width() - GAP * 2.0 - internal_choice_width) / knobs.len() as f32;
+            let columns = if effect.is_some() && rows.len() == 2 {
+                3
+            } else {
+                knobs.len()
+            };
+            let width = (rect.width()
+                - GAP * 2.0
+                - internal_choice_width
+                - if effect.is_some() { KNOB_CELL.x } else { 0.0 })
+                / columns as f32;
             let mut left = GAP + internal_choice_width;
             for &index in *knobs {
                 let area = egui::Rect::from_min_size(
@@ -706,6 +722,18 @@ impl Editor {
                     self.knob(ui, index, selected[index], width);
                 });
             }
+        }
+        if let Some(index) = mix {
+            let area = egui::Rect::from_min_size(
+                egui::pos2(
+                    rect.right() - GAP - KNOB_CELL.x,
+                    rect.top() + (height + GAP + HEADER_HEIGHT - KNOB_CELL.y) / 2.0,
+                ),
+                KNOB_CELL,
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                self.knob(ui, index, selected[index], KNOB_CELL.x);
+            });
         }
         let choice_rect = |row: usize| {
             if effect.is_some() && row > 0 {
@@ -1033,12 +1061,12 @@ impl WindowHandler for Editor {
                         _ => &[42][..],
                     },
                     &[match effect_kinds[0] {
-                        1 => &[75, 76, 77, 78, 79, 80][..],
-                        2 => &[109, 110, 111, 112, 113, 114, 115][..],
+                        1 => &[75, 76, 79, 77, 78, 80][..],
+                        2 => &[109, 110, 113, 111, 112, 114, 115][..],
                         3 => &[51, 52, 53][..],
                         4 => &[32, 33][..],
-                        5 => &[93, 94, 95, 96, 97][..],
-                        6 => &[63, 64, 65, 66][..],
+                        5 => &[93, 94, 96, 95, 97][..],
+                        6 => &[65, 63, 64, 66][..],
                         _ => &[],
                     }][..],
                     [effects_x, effects_body_y, side_width, effect_height],
@@ -1051,12 +1079,12 @@ impl WindowHandler for Editor {
                         _ => &[43][..],
                     },
                     &[match effect_kinds[1] {
-                        1 => &[81, 82, 83, 84, 85, 86][..],
-                        2 => &[116, 117, 118, 119, 120, 121, 122][..],
+                        1 => &[81, 82, 85, 83, 84, 86][..],
+                        2 => &[116, 117, 120, 118, 119, 121, 122][..],
                         3 => &[54, 55, 56][..],
                         4 => &[46, 47][..],
-                        5 => &[98, 99, 100, 101, 102][..],
-                        6 => &[67, 68, 69, 70][..],
+                        5 => &[98, 99, 101, 100, 102][..],
+                        6 => &[69, 67, 68, 70][..],
                         _ => &[],
                     }][..],
                     [
@@ -1074,12 +1102,12 @@ impl WindowHandler for Editor {
                         _ => &[44][..],
                     },
                     &[match effect_kinds[2] {
-                        1 => &[87, 88, 89, 90, 91, 92][..],
-                        2 => &[123, 124, 125, 126, 127, 128, 129][..],
+                        1 => &[87, 88, 91, 89, 90, 92][..],
+                        2 => &[123, 124, 127, 125, 126, 128, 129][..],
                         3 => &[57, 58, 59][..],
                         4 => &[49, 50][..],
-                        5 => &[103, 104, 105, 106, 107][..],
-                        6 => &[71, 72, 73, 74][..],
+                        5 => &[103, 104, 106, 105, 107][..],
+                        6 => &[73, 71, 72, 74][..],
                         _ => &[],
                     }][..],
                     [
