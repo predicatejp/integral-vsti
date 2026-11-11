@@ -914,9 +914,13 @@ impl WindowHandler for Editor {
         let mut output = self.context.run_ui(input, |ui| {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
+            let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
+            let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
+            let center_x = GAP + oscillator_width + GAP;
+            let effects_x = center_x + filter_width + GAP;
             let title = egui::Rect::from_min_size(
                 egui::vec2(GAP, GAP).to_pos2(),
-                egui::vec2(size.width as f32 / UI_SCALE - GAP * 2.0, TITLE_BAR_HEIGHT),
+                egui::vec2(effects_x - GAP * 2.0, TITLE_BAR_HEIGHT),
             );
             let painter = ui.painter();
             painter.rect_filled(title, 8.0, PANEL);
@@ -968,13 +972,10 @@ impl WindowHandler for Editor {
                     },
                 );
             }
-            let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
-            let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
-            let full_height = size.height as f32 / UI_SCALE - TITLE_BAR_HEIGHT - GAP * 3.0;
+            let full_height = size.height as f32 / UI_SCALE - GAP * 2.0;
+            let left_top = title.bottom() + GAP;
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
-            let panel_height = full_height - GAP - eq_height;
-            let center_x = GAP + oscillator_width + GAP;
-            let effects_x = center_x + filter_width + GAP;
+            let panel_height = full_height - TITLE_BAR_HEIGHT - GAP * 2.0 - eq_height;
             // 2段配置の最大4ノブと、種類選択・交換ボタンが収まる幅。
             let side_width = GAP * 2.0 + 64.0 * 4.0;
             let master_x = effects_x + side_width + GAP;
@@ -989,7 +990,7 @@ impl WindowHandler for Editor {
             panel(
                 ui.painter(),
                 egui::Rect::from_min_size(
-                    egui::pos2(effects_x, TITLE_BAR_HEIGHT + GAP * 2.0),
+                    egui::pos2(effects_x, GAP),
                     egui::vec2(side_width, full_height),
                 ),
                 "Effects",
@@ -1005,13 +1006,13 @@ impl WindowHandler for Editor {
                         &[24, 25, 29][..],
                         &[27, 28, 30][..],
                     ][..],
-                    [GAP, GAP, oscillator_width, panel_height],
+                    [GAP, left_top, oscillator_width, panel_height],
                 ),
                 (
                     "Amp",
                     &[],
                     &[&[1, 2, 3, 4, 5][..]][..],
-                    [center_x, GAP, filter_width, amp_height],
+                    [center_x, left_top, filter_width, amp_height],
                 ),
                 (
                     "Filter",
@@ -1019,7 +1020,7 @@ impl WindowHandler for Editor {
                     &[&[10, 11, 19][..], &[14, 15, 16, 17, 18][..]][..],
                     [
                         center_x,
-                        GAP + amp_height + GAP,
+                        left_top + amp_height + GAP,
                         filter_width,
                         filter_height,
                     ],
@@ -1094,7 +1095,7 @@ impl WindowHandler for Editor {
                     &[&[35, 36, 37, 38, 39, 40, 41][..]][..],
                     [
                         GAP,
-                        GAP + panel_height + GAP,
+                        left_top + panel_height + GAP,
                         effects_x - GAP * 2.0,
                         eq_height,
                     ],
@@ -1106,15 +1107,8 @@ impl WindowHandler for Editor {
                     [master_x, GAP, master_width, full_height],
                 ),
             ];
-            for (title, choices, rows, [x, y, width, height]) in groups {
-                self.group(
-                    ui,
-                    title,
-                    choices,
-                    rows,
-                    [x, y + TITLE_BAR_HEIGHT + GAP, width, height],
-                    &selected,
-                );
+            for (title, choices, rows, rect) in groups {
+                self.group(ui, title, choices, rows, rect, &selected);
             }
         });
         let shapes = self
