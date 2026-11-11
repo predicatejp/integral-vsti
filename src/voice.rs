@@ -44,6 +44,10 @@ pub struct VoiceState {
     sample_rate: f64,
     /// ベロシティを反映した共通AHDSRの目標実効振幅。
     amplitude: f64,
+    /// 現在のノートのベロシティ（0〜1）。release中も保持する。
+    velocity: f64,
+    /// 音量・カットオフAmountそれぞれのベロシティ感度（0〜1）。
+    velocity_sensitivity: [f64; 2],
     /// 発振器の加算出力へ適用する音量AHDSRの設定。
     pub(super) envelope_parameters: EnvelopeParameters,
     /// 3発振器に共通の音量AHDSRと時間履歴。
@@ -64,6 +68,8 @@ pub struct VoiceState {
     cutoff_envelope: Envelope,
     /// エンベロープ値1に対応するカットオフ変化量（−4800〜4800 cent）。
     cutoff_amount_cents: f64,
+    /// ベロシティと感度を反映したAmount。ノート・設定変更時だけ計算する。
+    velocity_cutoff_amount: f64,
     /// 直近の変調量centと周波数倍率。同じ値では指数計算を省く。
     cutoff_modulation: (f64, f64),
 }
@@ -105,6 +111,8 @@ impl Voice {
                 note_generation: 0,
                 sample_rate: MIN_SAMPLE_RATE,
                 amplitude: 0.0,
+                velocity: 0.0,
+                velocity_sensitivity: [values[130], values[131]],
                 envelope_parameters: DEFAULT_ENVELOPE,
                 envelope,
                 note: None,
@@ -115,6 +123,7 @@ impl Voice {
                 cutoff_envelope_parameters: DEFAULT_ENVELOPE,
                 cutoff_envelope,
                 cutoff_amount_cents: 0.0,
+                velocity_cutoff_amount: 0.0,
                 cutoff_modulation: (0.0, 1.0),
             },
         }
@@ -144,17 +153,35 @@ impl Voice {
             input.frequency_hz = (frequency_hz * ratio).min(f64::MAX);
             input.note_generation = self.state.note_generation;
         }
-        self.state.amplitude = BASE_RMS_AMPLITUDE * f64::from(velocity);
-        self.state.envelope.set_input(
-            &self.state.envelope_parameters,
-            self.state.sample_rate,
-            self.state.amplitude,
-        );
+        self.state.velocity = f64::from(velocity);
+        self.refresh_velocity();
         self.state.envelope.note_on();
         self.state.cutoff_envelope.note_on();
         self.state.gate = true;
         self.state.note = Some(note);
         true
+    }
+
+    /// 親が検証した感度を反映し、発音中のノートにも適用する。
+    pub fn set_velocity_sensitivity(&mut self, sensitivity: [f64; 2]) {
+        self.state.velocity_sensitivity = sensitivity;
+        self.refresh_velocity();
+    }
+
+    fn refresh_velocity(&mut self) {
+        self.state.amplitude = BASE_RMS_AMPLITUDE
+            * (1.0 - self.state.velocity_sensitivity[0] * (1.0 - self.state.velocity));
+        self.state.envelope.set_input(
+            &self.state.envelope_parameters,
+            self.state.sample_rate,
+            self.state.amplitude,
+        );
+        self.refresh_cutoff_amount();
+    }
+
+    fn refresh_cutoff_amount(&mut self) {
+        self.state.velocity_cutoff_amount = self.state.cutoff_amount_cents
+            * (1.0 - self.state.velocity_sensitivity[1] * (1.0 - self.state.velocity));
     }
 
     pub fn note_off(&mut self, note: Note) {
@@ -207,6 +234,7 @@ impl Voice {
             .cutoff_envelope
             .set_input(&parameters, self.state.sample_rate, 1.0);
         self.state.cutoff_amount_cents = amount_cents;
+        self.refresh_cutoff_amount();
     }
 
     /// 親の差分換算に使う、適用済みの音量・カットオフAHDSR設定。
@@ -346,8 +374,8 @@ impl Voice {
             let mut modulation = [0.0; 32];
             for n in 0..rest.len() {
                 amplitudes[n] = self.state.envelope.generate_sample();
-                cutoffs[n] =
-                    self.state.cutoff_envelope.generate_sample() * self.state.cutoff_amount_cents;
+                cutoffs[n] = self.state.cutoff_envelope.generate_sample()
+                    * self.state.velocity_cutoff_amount;
                 active_count += usize::from(self.state.envelope.is_active());
                 self.state.envelope.update_sample();
                 self.state.cutoff_envelope.update_sample();
@@ -447,7 +475,7 @@ impl Voice {
         }
         let amplitude = self.state.envelope.generate_sample();
         let level = self.state.cutoff_envelope.generate_sample();
-        let cents = level * self.state.cutoff_amount_cents;
+        let cents = level * self.state.velocity_cutoff_amount;
         // バイパス中もEnvelopeは進め、有効化したサンプルで現在値の倍率を求める。
         if !matches!(self.state.filter_type, FilterType::None)
             && cents != self.state.cutoff_modulation.0
@@ -527,6 +555,128 @@ impl Voice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn velocity_response_matches_scaled_inputs_in_sample_and_series_paths() {
+        let shape = EnvelopeParameters {
+            attack_ms: 0.0,
+            hold_ms: 0.0,
+            decay_ms: 0.0,
+            sustain: 1.0,
+            release_ms: 1.0,
+        };
+        let note = Note {
+            id: 1,
+            channel: 0,
+            pitch: 69,
+        };
+        for rate in [44100.0, 48000.0, 96000.0] {
+            for velocity in [0.0_f32, 0.25, 1.0] {
+                for amp in [0.0, 0.5, 1.0] {
+                    for filter in [0.0, 0.5, 1.0] {
+                        for amount in [-2400.0, 2400.0] {
+                            for depth in [0.0, 0.3] {
+                                let mut actual = Voice::new();
+                                let mut reference = Voice::new();
+                                let amp_gain = (1.0 - amp) + amp * f64::from(velocity);
+                                let cutoff_gain = (1.0 - filter) + filter * f64::from(velocity);
+                                for voice in [&mut actual, &mut reference] {
+                                    voice.set_parameters(
+                                        Waveform::Sine,
+                                        shape,
+                                        1,
+                                        0.0,
+                                        PhaseMode::Zero,
+                                    );
+                                    voice.set_filter(FilterType::LowPass2, 0.0, 1.0);
+                                    voice.set_phase_modulation([depth, depth]);
+                                }
+                                actual.set_cutoff_envelope(shape, amount);
+                                actual.set_velocity_sensitivity([amp, filter]);
+                                reference.set_cutoff_envelope(shape, amount * cutoff_gain);
+                                assert!(actual.note_on(note, 0.0, velocity));
+                                assert!(reference.note_on(note, 0.0, amp_gain as f32));
+                                let mut single = actual.clone();
+                                for block in 0..4 {
+                                    if block == 2 {
+                                        for voice in [&mut actual, &mut single, &mut reference] {
+                                            voice.note_off(note);
+                                        }
+                                    }
+                                    let mut output = [[0.0; 2]; 65];
+                                    actual.generate_samples(
+                                        rate,
+                                        &[[1.0; 2]; 7],
+                                        &[1.0; 2],
+                                        &mut output,
+                                    );
+                                    for sample in output {
+                                        let expected = reference.generate_sample(
+                                            rate,
+                                            &[[1.0; 2]; 7],
+                                            &[1.0; 2],
+                                        );
+                                        let one =
+                                            single.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+                                        for ch in 0..2 {
+                                            assert!((sample[ch] - expected[ch]).abs() < 1e-12);
+                                            assert!((one[ch] - expected[ch]).abs() < 1e-12);
+                                        }
+                                        if amp == 1.0 && velocity == 0.0 {
+                                            assert_eq!(sample, [0.0; 2]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sensitivity_updates_keep_attack_time_and_retrigger_from_current_level() {
+        let shape = EnvelopeParameters {
+            attack_ms: 4.0,
+            hold_ms: 0.0,
+            decay_ms: 0.0,
+            sustain: 1.0,
+            release_ms: 4.0,
+        };
+        let note = Note {
+            id: 1,
+            channel: 0,
+            pitch: 69,
+        };
+        let mut voice = Voice::new();
+        voice.set_parameters(Waveform::Sine, shape, 1, 0.0, PhaseMode::Zero);
+        voice.set_cutoff_envelope(shape, 2400.0);
+        voice.note_on(note, 0.0, 0.0);
+        voice.generate_sample(1000.0, &[[1.0; 2]; 7], &[1.0; 2]);
+        voice.set_velocity_sensitivity([0.0, 1.0]);
+        // 1 ms経過したattackを継続する。フィルタAmountだけはゼロになる。
+        assert_eq!(voice.state.envelope.generate_sample(), 0.125);
+        assert_eq!(voice.state.velocity_cutoff_amount, 0.0);
+        for _ in 1..4 {
+            voice.generate_sample(1000.0, &[[1.0; 2]; 7], &[1.0; 2]);
+        }
+        voice.set_velocity_sensitivity([1.0, 0.5]);
+        voice.note_on(note, 0.0, 0.5);
+        // 現在値0.5から新しい目標0.25へ、attack全4 msを使う。
+        for value in [0.5, 0.4375, 0.375, 0.3125, 0.25] {
+            assert_eq!(voice.state.envelope.generate_sample(), value);
+            voice.generate_sample(1000.0, &[[1.0; 2]; 7], &[1.0; 2]);
+        }
+        assert_eq!(voice.state.velocity_cutoff_amount, 1800.0);
+        voice.note_off(note);
+        voice.set_cutoff_envelope(shape, -4800.0);
+        assert_eq!(voice.state.velocity_cutoff_amount, -3600.0);
+        for _ in 0..5 {
+            voice.generate_sample(1000.0, &[[1.0; 2]; 7], &[1.0; 2]);
+        }
+        assert!(!voice.state.envelope.is_active());
+    }
 
     fn audio_values(oscillator: &mut Oscillator, input: &OscillatorInput, rate: f64) -> [f64; 7] {
         oscillator.generate_sample(input, rate).values

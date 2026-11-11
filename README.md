@@ -16,7 +16,7 @@ VST3用のバインディングやC/C++ラッパーは使用しません。GUI�
 | イベント | 入力1バス・16チャンネル。Note On / Note Offを処理（全チャンネル合計で最大32音） |
 | サンプル形式 | float32 / float64 |
 | サンプルレート | 44.1 kHz以上の有限値。範囲外はVST3の`setupProcessing`で拒否 |
-| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・Mod、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Clipper type / Gain / MixとEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainを公開。eguiでも操作可能 |
+| ホスト公開パラメーター・独自GUI | Osc1/2/3 Waveform（5択）・Volume、Osc2/3 Tune・Mod、Attack / Hold / Decay / Sustain / Release、Unison / Detune / Width / Polyphony、Filter / Cutoff / Resonance、Phase（3択）、Volume / Pan、Cutoff AHDSR / Amount、Amp Sensitivity / Filter Amount Sensitivity、Clipper type / Gain / MixとEQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gainを公開。eguiでも操作可能 |
 | 状態保存 | 波形・エンベロープ・ユニゾン・Polyphony・フィルタ・Phase・Volume・カットオフエンベロープ・Width・Pan・3発振器の設定をVST3のIBStreamで保存・復元 |
 | レイテンシー・テール | 3 + ceil(サンプルレート × 0.005)サンプル。IIRフィルタの残響を打ち切らないようテールは保守的にkInfiniteTailを返す |
 
@@ -29,7 +29,7 @@ macOS・Windows ARM64・32ビット環境は未対応です。
 - 有効なNote Onを次のオシレータへ循環順に割り当て、周波数と目標振幅を更新します。枠の再使用時には古いノートを置き換え、古いノートには戻りません。
 - 音程は12平均律（ノート番号69 = 440 Hz）とイベントのtuning（セント）で決めます。
   基準実効値を `BASE_RMS_AMPLITUDE = 0.5` と定義し、全波形で目標実効値を
-  `BASE_RMS_AMPLITUDE × velocity` とします。velocityが0のNote Onもノートを更新し、attack時間をかけて目標振幅0へ移行します。
+  `BASE_RMS_AMPLITUDE × (1 − Amp Sensitivity / 100 × (1 − velocity))` とします。velocityが0のNote Onも受理し、感度に応じた目標振幅へattack時間をかけて移行します。
 - Note Offは、両イベントにnoteIdがあればIDで照合します。どちらかが `-1` の場合はチャンネルと音高で照合します。
   同じID、またはIDがない同チャンネル・同音高が複数枠にあれば、全一致をreleaseします。上書き済みの旧IDへのNote Offは新しいノートを消しません。
 - `OscillatorInput` は発振器回路の定常入力で、波形・位相モード・ユニゾン数・Detune・周波数・位相変調・発音期間・ノート世代番号を持ちます。
@@ -153,7 +153,7 @@ Voiceはカットオフ用エンベロープを毎サンプル計算し、変調
 | Cutoff Release | 0〜10000 ms | 100 ms | `0x4352454c` |
 | Cutoff Amount | −4800〜＋4800 cent | 0 cent | `0x43414d54` |
 
-`変調後のcent = Cutoff + Cutoff Amount × エンベロープ値` とし、
+`変調後のcent = Cutoff + Cutoff Amount × (1 − Filter Amount Sensitivity / 100 × (1 − velocity)) × エンベロープ値` とし、
 `カットオフHz = ノート周波数 × 2^(変調後のcent / 1200)` をフィルタへ渡します。
 Amountはattackの目標値1に対応する変化量で、負なら下方向へ変化します。
 sustainではAmount×Sustainの変化量を保ち、releaseで基本のCutoffへ戻ります。
@@ -294,6 +294,24 @@ GUIでは整数tickで1%刻みに操作し、VST3では連続値として公開�
 オートメーションはAHDSRと同様に正規化空間で線形補間します。
 定位の倍率はSynthesizerStateがOsc1用`PanningGains`とOsc2/3用の共通Pan倍率を保持し、各Voice・Oscillatorへ定常入力として参照で渡します。実発音数・有効なWidth・Panが変わった場合だけ再計算し、1ボイス時のWidth変更や正のDetune間の変更では再計算しません。波形生成・位相更新は各ユニゾン音につき1回です。
 
+## ベロシティ感度
+
+AmpとFilterの**Sens**ノブで、Note Onのベロシティが音量とカットオフAmountへ及ぼす強さを個別に指定します。
+
+| パラメーター | 範囲 | 初期値 | ParamID |
+| --- | --- | --- | --- |
+| Amp Sensitivity | 0〜100% | 100% | `0x4153454e` |
+| Filter Amount Sensitivity | 0〜100% | 0% | `0x4653454e` |
+
+感度を`S = Sensitivity / 100`、ベロシティを`V`（0〜1）として、倍率は`1 − S × (1 − V)`です。
+0%ではベロシティを無視し、100%ではベロシティをそのまま倍率にします。
+たとえば感度50%・ベロシティ0なら倍率0.5、ベロシティ1なら感度によらず倍率1です。
+Ampは音量AHDSRの目標実効振幅へ、Filterは符号を保ったCutoff Amountへ適用します。
+Filter感度100%・ベロシティ0ではAmountが0となり、基準のCutoffで処理します。
+
+GUIは1%刻みの整数tick、VST3は連続値です。発音中・release中にも感度変更を反映し、変更キューの点間を線形補間します。
+再Note On時の音量は現在値から新しい目標へattack時間全体で移行します。ベロシティと計算済み倍率はVoiceごとに保持します。
+
 ## 音量エンベロープ
 
 `src/envelope.rs` の `value` は、`EnvelopeParameters`、ノートオンからの経過ミリ秒、
@@ -348,7 +366,7 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 | パラメーター | 変更点の間の処理 |
 | --- | --- |
 | Osc1/2/3 Waveform・Unison・Polyphony・Filter・Cutoff・Phase・Clipper type・Effect種類・Delay Time・Stereo・Reverb Size・Limiter | 直前の値を保持し、変更点で切り替える |
-| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mix・Reverb Decay/Damping・Compressor全7設定 | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
+| 音量／カットオフ用AHDSR・Amount・Detune・Resonance・全Volume・Osc2/3 Tune・Mod・Width・Pan・Gain・Mix・Reverb Decay/Damping・Compressor全7設定・Amp Sensitivity・Filter Amount Sensitivity | 前ブロック末尾（offset=-1）から各点まで正規化空間で線形補間する |
 
 最後の点以降は値を保持します。同位置ではパラメーターをキュー順に適用した後、ノートをイベントリスト順に処理します。
 
@@ -357,8 +375,8 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v33は1044バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/Mix、Limiter、および各スロットのCompressor Threshold/Ratio/Attack/Release/Knee/Makeup/Mixを各f64。little endian）です。
-読み込みは現行形式v33のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+保存形式v34は1060バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/Mix、Limiter、および各スロットのCompressor Threshold/Ratio/Attack/Release/Knee/Makeup/Mix、Amp Sensitivity・Filter Amount Sensitivityを各f64。little endian）です。
+読み込みは現行形式v34のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
 `setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
@@ -367,7 +385,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定130個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定132個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -378,6 +396,7 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | 音量AHDSR | A/H/D/R=0 ms、S=1 |
 | Filter / Cutoff / Resonance | Off / +4800 cent / Q=1 |
 | カットオフAHDSR / Amount | A/H/D/R=0 ms、S=1 / 0 cent |
+| Amp Sensitivity / Filter Amount Sensitivity | 100% / 0% |
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
 | Limiter | Off |
 | Osc2/3 Waveform / Tune / Volume / Mod | Sine / 0 cent / −∞ dB / 0% |
@@ -388,7 +407,7 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
 音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
 連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
-編集内容は実際の130設定として保存し、復元時にも編集後の値を保持します。
+編集内容は実際の132設定として保存し、復元時にも編集後の値を保持します。
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
 
@@ -576,7 +595,7 @@ Gain・Mixはホストから届いた変更点間をホストレートで補間�
 ## GUI
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。左2列の上部にタイトルバーを配置し、Sample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3スロットをまとめたEffectsパネル、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。AmpのAHDSRは横一列です。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトル・種類の選択欄・↑／↓の交換ボタンを同じ行に置き、交換ボタンは右端に配置しX座標を3スロットで揃えます。DistortionはClipper選択欄とGain・Mixを同じ行に配置します。Delayは左にStereo方式の選択欄、中央にTime・Fdbkの縦列、右端に共通位置のMixを配置します。内部選択欄は縦方向の中央に置きます。選択欄の直上にタイトルを中央揃えで表示します。Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは153.6px幅とし、Phase・Limiter・Clipper・Stereoのタイトルは共通の描画処理で、選択欄の直上に中央揃え・同じ文字サイズ・同じ間隔で表示します。MasterのPhase・Limiterは縦に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3スロットをまとめたEffectsパネル、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。Ampのタイトルは他のパネルと同じ左上位置に固定し、Sensを右上に置き、その直下にAHDSRを横一列で並べます。上下・行間は標準の9.6pxに揃えます。FilterはF・Res・Amt・Sensを同じ行に並べます。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトル・種類の選択欄・↑／↓の交換ボタンを同じ行に置き、交換ボタンは右端に配置しX座標を3スロットで揃えます。DistortionはClipper選択欄とGain・Mixを同じ行に配置します。Delayは左にStereo方式の選択欄、中央にTime・Fdbkの縦列、右端に共通位置のMixを配置します。内部選択欄は縦方向の中央に置きます。選択欄の直上にタイトルを中央揃えで表示します。Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは153.6px幅とし、Phase・Limiter・Clipper・Stereoのタイトルは共通の描画処理で、選択欄の直上に中央揃え・同じ文字サイズ・同じ間隔で表示します。MasterのPhase・Limiterは縦に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 タイトルバーの発音数インジケータの上に、同じ幅の出力ピークメータを表示します。Master音量適用後の左右最大サンプルピークを−60〜＋12 dBFSで表示します。0 dBFSまでの部分は明るい緑、0 dBFSを超えた部分は明るい赤とし、0 dBFSの境界線を示します。描画間のピークを保持し、未点灯部分は白に近い色にします。表示は48 dB/秒で減衰します。
 

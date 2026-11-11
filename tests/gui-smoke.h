@@ -303,7 +303,7 @@ public:
         assert(!GuiReentry::insideDraw);
 #endif
         assert(std::this_thread::get_id() == uiThread);
-        assert((id >= 0x43500100 && id <= 0x43500306) || id == 0x4c490000 || (id >= 0x50314346 && id <= 0x50335254) || (id >= 0x43314450 && id <= 0x4333544d) || (id >= 0x52314443 && id <= 0x5233535a) || (id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463142 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(id == 0x4153454e || id == 0x4653454e || (id >= 0x43500100 && id <= 0x43500306) || id == 0x4c490000 || (id >= 0x50314346 && id <= 0x50335254) || (id >= 0x43314450 && id <= 0x4333544d) || (id >= 0x52314443 && id <= 0x5233535a) || (id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463142 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -441,11 +441,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(false);
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
-    std::array<std::pair<int, int>, 130> controls {{
-        {175, 124}, {292, 146}, {348, 146}, {404, 146}, {460, 146}, {516, 146},
-        {44, 174}, {100, 174}, {904, 524}, {479, 242}, {311, 314}, {404, 314},
-        {904, 133}, {904, 317}, {292, 409}, {348, 409}, {404, 409}, {460, 409},
-        {516, 409}, {497, 314}, {156, 174}, {904, 420}, {212, 174}, {175, 245},
+    std::array<std::pair<int, int>, 132> controls {{
+        {175, 124}, {292, 160}, {348, 160}, {404, 160}, {460, 160}, {516, 160},
+        {44, 174}, {100, 174}, {904, 524}, {479, 234}, {299, 309}, {369, 309},
+        {904, 133}, {904, 317}, {292, 406}, {348, 406}, {404, 406}, {460, 406},
+        {516, 406}, {439, 309}, {156, 174}, {904, 420}, {212, 174}, {175, 245},
         {53, 295}, {128, 295}, {175, 367}, {53, 417}, {128, 417}, {203, 295},
         {203, 417}, {613, 150}, {709, 150}, {796, 150}, {479, 505}, {54, 555},
         {129, 555}, {205, 555}, {280, 555}, {355, 555}, {431, 555}, {506, 555},
@@ -463,7 +463,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {904, 236}, {599, 115}, {660, 115}, {599, 186}, {660, 186}, {721, 115},
         {721, 186}, {796, 150}, {599, 300}, {660, 300}, {599, 371}, {660, 371},
         {721, 300}, {721, 371}, {796, 335}, {599, 485}, {660, 485}, {599, 556},
-        {660, 556}, {721, 485}, {721, 556}, {796, 520},
+        {660, 556}, {721, 485}, {721, 556}, {796, 520}, {516, 88}, {509, 309},
     }};
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
     auto choose = [&](int index, int item) {
@@ -705,9 +705,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         parent.movePointer(4, 4); pump(); parent.screenshot("target/gui-effects-off.ppm");
         // Offのグループを含む全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());
-        for (int i = 1; i < 130; ++i) {
+        for (int i = 1; i < 132; ++i) {
             if (i == 108 || i == 9 || i == 12 || i == 23 || i == 26 || i == 31 || i == 34 || (i >= 42 && i <= 45) || i == 48 || (i >= 60 && i <= 62)) continue;
-            if (i >= 51 || i == 32 || i == 33 || i == 46 || i == 47 || i == 49 || i == 50) {
+            if ((i >= 51 && i < 130) || i == 32 || i == 33 || i == 46 || i == 47 || i == 49 || i == 50) {
                 const int slot = i >= 109 ? (i - 109) / 7 : i >= 93 ? (i - 93) / 5 : i >= 75 ? (i - 75) / 6 : i >= 63 ? (i - 63) / 4 : i >= 51 ? (i - 51) / 3 : (i < 45 ? 0 : (i - 45) / 3 + 1);
                 ParameterInfo kind; assert(controller->getParameterInfo(42 + slot, kind) == kResultOk);
                 assert(controller->setParamNormalized(kind.id, i >= 109 ? 2./6 : i >= 93 ? 5./6 : i >= 75 ? 1./6 : i >= 63 ? 1.0 : i >= 51 ? 3./6 : 4./6) == kResultOk);
@@ -742,7 +742,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
 #endif
-            const int pixelsPerTick = i >= 109 ? std::array<int,7>{2,4,3,3,4,4,4}[(i-109)%7] : (i >= 93 && ((i-93)%5 == 0 || (i-93)%5 == 2)) ? 3 : (i == 76 || i == 82 || i == 88) ? 2 : (i == 77 || i == 83 || i == 89) ? 3 : (i == 6 || i == 51 || i == 54 || i == 57) ? 32 : i == 8 ? 8 :
+            const int pixelsPerTick = i >= 130 ? 4 : i >= 109 ? std::array<int,7>{2,4,3,3,4,4,4}[(i-109)%7] : (i >= 93 && ((i-93)%5 == 0 || (i-93)%5 == 2)) ? 3 : (i == 76 || i == 82 || i == 88) ? 2 : (i == 77 || i == 83 || i == 89) ? 3 : (i == 6 || i == 51 || i == 54 || i == 57) ? 32 : i == 8 ? 8 :
                 (i == 10 || i == 11 || i == 13 || i == 19 || i == 22 || i == 25 || i == 28) ? 2 :
                 (i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 ||
                  i == 18 || i == 24 || i == 27 || i == 32 || i == 46 || i == 49) ? 3 : 4;
@@ -753,7 +753,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return handler.sequence.size() == 2; }, "knob integer tick");
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
-            const double plain = i >= 109 ? std::array<double,7>{-59.9,1.1,1,1,.1,.1,1}[(i-109)%7] : i >= 93 ? std::array<double,5>{100.*std::pow(40.,1./400.),10.,.06,-94.,1.}[(i-93)%5] : i >= 75 ? std::array<double,6>{.2, .01, .06, -.099, -94., 1.}[(i-75)%6] : i >= 63 ? std::array<double,4>{.1 * std::pow(100.,1./200.), 500. * std::pow(40.,1./300.), 51., 1.}[(i-63)%4] : (i == 35 || i == 37 || i == 40) ? 20. * std::pow(1000., 1./300.) : (i == 36 || i == 38 || i == 41) ? -17.9 : i == 39 ? .1 * std::pow(100., 1./200.) : time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
+            const double plain = i >= 130 ? 1.0 : i >= 109 ? std::array<double,7>{-59.9,1.1,1,1,.1,.1,1}[(i-109)%7] : i >= 93 ? std::array<double,5>{100.*std::pow(40.,1./400.),10.,.06,-94.,1.}[(i-93)%5] : i >= 75 ? std::array<double,6>{.2, .01, .06, -.099, -94., 1.}[(i-75)%6] : i >= 63 ? std::array<double,4>{.1 * std::pow(100.,1./200.), 500. * std::pow(40.,1./300.), 51., 1.}[(i-63)%4] : (i == 35 || i == 37 || i == 40) ? 20. * std::pow(1000., 1./300.) : (i == 36 || i == 38 || i == 41) ? -17.9 : i == 39 ? .1 * std::pow(100., 1./200.) : time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
                                  i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -59.9 : (i == 24 || i == 27) ? -2390.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : (i >= 51 || i == 29 || i == 30 || i == 33 || i == 47 || i == 50) ? 1.0 : (i == 32 || i == 46 || i == 49) ? .1 : .01;
             assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
             assert(parent.pointerAt(x, y));

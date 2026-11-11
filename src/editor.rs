@@ -37,7 +37,7 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Center", "Depth", "Rate", "Fdbk", "Mix", "Center", "Depth", "Rate", "Fdbk", "Mix", "Center",
     "Depth", "Rate", "Fdbk", "Mix", "Limiter", "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix",
     "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix", "Thrs", "Ratio", "A", "R", "Knee", "Gain",
-    "Mix",
+    "Mix", "Sens", "Sens",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -57,6 +57,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     2, 4, 3, 3, 4, 4, 4, // Compressor
     2, 4, 3, 3, 4, 4, 4, // Compressor
     2, 4, 3, 3, 4, 4, 4, // Compressor
+    4, 4, // Velocity sensitivity
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -83,7 +84,7 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 401], 0),
         4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
         6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
-        7 | 20 | 33 | 52 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
+        7 | 20 | 33 | 52 | 130 | 131 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
         8 => (&[0, 7, 15, 23, 31], 0),          // Polyphony: 1/8/16/24/32
         // Cutoff: −2〜+8 oct、0 centを強調。
         10 => (
@@ -651,12 +652,17 @@ impl Editor {
             0.0
         };
         let row_height = KNOB_CELL.y + row_header_height;
+        let header_height = if title == "Amp" {
+            KNOB_CELL.y
+        } else {
+            HEADER_HEIGHT
+        };
         let content_rows = rows.len() + choice_rows;
         let row_gap =
-            (height - GAP - HEADER_HEIGHT - choice_height - row_height * rows.len() as f32)
+            (height - GAP - header_height - choice_height - row_height * rows.len() as f32)
                 / (content_rows + 1) as f32;
         let body_y = GAP
-            + HEADER_HEIGHT
+            + header_height
             + row_gap
             + if choice_height > 0.0 {
                 choice_height + row_gap * choice_rows as f32
@@ -690,6 +696,15 @@ impl Editor {
             );
         } else {
             panel(&painter, rect, title);
+        }
+        if title == "Amp" {
+            let area = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - GAP - KNOB_CELL.x, rect.top() + GAP),
+                KNOB_CELL,
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                self.knob(ui, 130, selected[130], KNOB_CELL.x);
+            });
         }
         for (row, knobs) in rows.iter().enumerate() {
             if knobs.is_empty() {
@@ -1019,10 +1034,8 @@ impl WindowHandler for Editor {
             let side_width = GAP * 2.0 + 64.0 * 4.0;
             let master_x = effects_x + side_width + GAP;
             let master_width = GAP * 2.0 + KNOB_CELL.x * 2.0;
-            // AmpとFilterの上余白・行間・下余白を同じ長さに揃える。
-            let center_gap =
-                (panel_height - GAP - 2.0 * (GAP + HEADER_HEIGHT) - KNOB_CELL.y * 3.0) / 5.0;
-            let amp_height = GAP + HEADER_HEIGHT + KNOB_CELL.y + center_gap * 2.0;
+            // AmpはタイトルとSensで1行を共有し、AHDSRとの間隔も標準余白に揃える。
+            let amp_height = KNOB_CELL.y * 2.0 + GAP * 3.0;
             let filter_height = panel_height - amp_height - GAP;
             let effects_body_y = GAP * 2.0 + HEADER_HEIGHT;
             let effect_height = (full_height - GAP - HEADER_HEIGHT) / 3.0;
@@ -1056,7 +1069,7 @@ impl WindowHandler for Editor {
                 (
                     "Filter",
                     &[9],
-                    &[&[10, 11, 19][..], &[14, 15, 16, 17, 18][..]][..],
+                    &[&[10, 11, 19, 131][..], &[14, 15, 16, 17, 18][..]][..],
                     [
                         center_x,
                         left_top + amp_height + GAP,
