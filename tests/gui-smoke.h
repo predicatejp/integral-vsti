@@ -440,6 +440,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
         assert(false);
     };
+    // 固定時間ではなく、プラグインが移動を処理してカーソルを戻すまで待つ。
+    auto moveKnob = [&](int x, int y, int dy) {
+        parent.movePointer(x, y + dy);
+        waitFor([&] { return parent.pointerAt(x, y); }, "knob pointer restored");
+    };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
     std::array<std::pair<int, int>, 132> controls {{
         {175, 74}, {292, 160}, {348, 160}, {404, 160}, {460, 160}, {516, 160},
@@ -634,9 +639,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         size_t edits = 1;
         for (int direction : {-1, 1}) for (int tick = 1; tick <= 13; ++tick) {
             const auto previous = handler.value;
-            parent.movePointer(timeX, timeY + direction * 31); pump();
+            moveKnob(timeX, timeY, direction * 31);
             assert(handler.sequence.size() == edits && handler.value == previous);
-            parent.movePointer(timeX, timeY + direction);
+            moveKnob(timeX, timeY, direction);
             ++edits;
             waitFor([&] { return handler.sequence.size() == edits; }, "time knob step");
             const int expected = direction < 0 ? tick : 13 - tick;
@@ -764,10 +769,10 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 (i == 10 || i == 11 || i == 13 || i == 19 || i == 22 || i == 25 || i == 28) ? 2 :
                 (i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 ||
                  i == 18 || i == 24 || i == 27 || i == 32 || i == 46 || i == 49) ? 3 : 4;
-            parent.movePointer(x, y - (pixelsPerTick - 1)); pump(); // 開始値は吸着しない。
+            moveKnob(x, y, -(pixelsPerTick - 1)); // 開始値は吸着しない。
             assert(handler.sequence.size() == 1 && controller->getParamNormalized(info.id) == 0.0);
             assert(parent.pointerAt(x, y));
-            parent.movePointer(x, y - 1);
+            moveKnob(x, y, -1);
             waitFor([&] { return handler.sequence.size() == 2; }, "knob integer tick");
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
@@ -809,29 +814,29 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 assert(controller->setParamNormalized(info.id, .5) == kResultOk);
                 parent.movePointer(x, y); pump(); parent.knobButton(true);
                 waitFor([&] { return handler.sequence.size() == 1; }, "pan center begin");
-                parent.movePointer(x, y - 39); pump();
+                moveKnob(x, y, -39);
                 assert(handler.sequence.size() == 1 && controller->getParamNormalized(info.id) == .5);
-                parent.movePointer(x, y - 1);
+                moveKnob(x, y, -1);
                 waitFor([&] { return handler.sequence.size() == 2; }, "pan center start");
                 assert(std::abs(handler.value - .505) < 1e-9);
-                parent.movePointer(x, y + 4);
+                moveKnob(x, y, 4);
                 waitFor([&] { return handler.sequence.size() == 3; }, "pan center arrival");
                 assert(handler.value == .5);
                 for (int step : {32, 32, 15}) {
-                    parent.movePointer(x, y + step); pump();
+                    moveKnob(x, y, step);
                 }
                 assert(handler.sequence.size() == 3 && handler.value == .5);
-                parent.movePointer(x, y + 1);
+                moveKnob(x, y, 1);
                 waitFor([&] { return handler.sequence.size() == 4; }, "pan lower detent exit");
                 assert(std::abs(handler.value - .495) < 1e-9);
                 // 小さい側から進入し、20px進んで20px戻ると小さい側へ抜ける。
-                parent.movePointer(x, y - 4);
+                moveKnob(x, y, -4);
                 waitFor([&] { return handler.sequence.size() == 5; }, "pan lower arrival");
                 assert(handler.value == .5);
-                parent.movePointer(x, y - 20); pump();
-                parent.movePointer(x, y + 19); pump();
+                moveKnob(x, y, -20);
+                moveKnob(x, y, 19);
                 assert(handler.sequence.size() == 5 && handler.value == .5);
-                parent.movePointer(x, y + 1);
+                moveKnob(x, y, 1);
                 waitFor([&] { return handler.sequence.size() == 6; }, "pan reversed detent exit");
                 assert(std::abs(handler.value - .495) < 1e-9);
                 parent.knobButton(false);

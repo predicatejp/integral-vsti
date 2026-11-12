@@ -228,6 +228,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxtst6 libxfixes3 libxkbcommon-x11-0 libgl1-mesa-dri libegl1 xvfb xauth
+      - name: Set Windows GUI validation resolution
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Get-DisplayResolution
       - name: Prepare Windows software OpenGL for GUI validation
         if: runner.os == 'Windows'
         run: |
@@ -256,7 +262,7 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then
-            LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a python scripts/check-abi.py --gui
+            LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s "-screen 0 1920x1080x24" python scripts/check-abi.py --gui
           else
             python scripts/check-abi.py --gui
           fi
