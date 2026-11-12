@@ -7,7 +7,7 @@ use crate::parameters::{self, IDS, NAMES, ParameterPoints, SharedParameters};
 use crate::synth::Synthesizer;
 use crate::voice::Note;
 
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{RefCell, UnsafeCell};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -69,10 +69,8 @@ struct Plugin {
     max_samples: AtomicI32,
     /// 設定済みのサンプル形式（SAMPLE32またはSAMPLE64）。正の長さの処理には一致を要求する。
     sample_size: AtomicI32,
-    /// setupProcessing／setActiveで確定した総遅延。照会はatomicだけを読む。
+    /// setupProcessingで確定した総遅延。UIスレッドの照会はatomicだけを読む。
     latency: AtomicU32,
-    /// UIスレッドで最後に要求したRateの選択番号。再入で同じ再起動を重複通知しない。
-    requested_rate: Cell<usize>,
 }
 
 const UNKNOWN: UnknownVTable = UnknownVTable {
@@ -182,7 +180,6 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
         latency: AtomicU32::new(latency),
-        requested_rate: Cell::new(0),
     });
     let owner = Box::into_raw(plugin);
     // SAFETY: 公開前のBoxを生ポインター経由で初期化する。以後ownerと各Interfaceの
@@ -389,26 +386,6 @@ unsafe extern "system" fn set_active(this: This, state: u8) -> TResult {
         return NOT_INITIALIZED;
     }
     let state = state != 0;
-    if state && !plugin.active.load(Ordering::Relaxed) {
-        let values = plugin.processor_parameters.snapshot();
-        let rate = parameters::to_plain(parameters::OVERSAMPLING, values[parameters::OVERSAMPLING])
-            as usize;
-        let mode = [
-            crate::oversampling::Mode::X1,
-            crate::oversampling::Mode::X2,
-            crate::oversampling::Mode::X4,
-        ][rate];
-        // SAFETY: setActive(true)は停止中のUIスレッドで呼ばれる。確保を伴う再構成はここで行う。
-        let synth = unsafe { &mut *plugin.synth.get() };
-        synth.set_parameters(values);
-        if !synth.set_oversampling(mode) {
-            return FALSE;
-        }
-        plugin.requested_rate.set(rate);
-        plugin
-            .latency
-            .store(synth.latency_samples() as u32, Ordering::Relaxed);
-    }
     // 既に同じ有効状態でも成功とする。終了時の重複した無効化も安全に扱う。
     plugin.active.store(state, Ordering::Relaxed);
     if !state {
@@ -453,10 +430,9 @@ unsafe extern "system" fn set_controller_component_state(this: This, stream: Thi
     // SAFETY: ホストの状態を検証し、表示だけへ適用する。編集通知は送らない。
     match unsafe { parameters::read_state(stream) } {
         Ok(values) => {
-            let plugin = unsafe { instance(this) };
-            plugin.controller_parameters.store(values);
-            // SAFETY: setComponentStateはホストのUIスレッドで呼ばれる。
-            unsafe { request_effect_rate(plugin) };
+            unsafe { instance(this) }
+                .controller_parameters
+                .store(values);
             OK
         }
         Err(status) => status,
@@ -504,13 +480,7 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
             },
             default_normalized_value: parameters::defaults()[i],
             unit_id: 0,
-            flags: if i == parameters::OVERSAMPLING {
-                1 << 3 // kIsList。処理再構成を伴うためkCanAutomateは付けない。
-            } else if !choices.is_empty() {
-                1 | (1 << 3)
-            } else {
-                1
-            },
+            flags: if !choices.is_empty() { 1 | (1 << 3) } else { 1 },
         });
     }
     OK
@@ -618,7 +588,6 @@ unsafe extern "system" fn set_parameter(this: This, id: u32, value: f64) -> TRes
         plugin
             .controller_parameters
             .store(parameters::sine_preset());
-        unsafe { request_effect_rate(plugin) };
         let handler = plugin.component_handler.borrow().clone();
         if let Some(handler) = handler {
             let p = handler.as_ptr();
@@ -637,12 +606,9 @@ unsafe extern "system" fn set_parameter(this: This, id: u32, value: f64) -> TRes
         return INVALID_ARGUMENT;
     }
     // SAFETY: thisは生存中。DSPへの配送はホストのVST3キューに任せる。
-    let plugin = unsafe { instance(this) };
-    plugin.controller_parameters.set(i, value);
-    if i == parameters::OVERSAMPLING {
-        // SAFETY: setParamNormalizedはホストUIスレッドのAPI。
-        unsafe { request_effect_rate(plugin) };
-    }
+    unsafe { instance(this) }
+        .controller_parameters
+        .set(i, value);
     OK
 }
 unsafe extern "system" fn set_component_handler(this: This, handler: This) -> TResult {
@@ -694,9 +660,6 @@ pub unsafe fn edit_parameter(this: This, index: usize, value: f64) -> TResult {
     unsafe {
         end_parameter_edit(&handler, index);
     }
-    if index == parameters::OVERSAMPLING {
-        unsafe { request_effect_rate(plugin) };
-    }
     result
 }
 
@@ -723,33 +686,9 @@ pub(crate) unsafe fn perform_parameter_edit(
         return OK;
     }
     plugin.controller_parameters.set(index, value);
-    if index == parameters::OVERSAMPLING {
-        // 再入するホストが再構成を始めても、新しい倍率を停止中に取得できるよう先に共有する。
-        plugin.processor_parameters.set(index, value);
-    }
     let p = handler.as_ptr();
     let table = unsafe { &**p.cast::<*const ComponentHandlerVTable>() };
     unsafe { (table.perform_edit)(p, IDS[index], value) }
-}
-
-/// SAFETY: UIスレッドからのみ呼ぶ。設定要求だけを共有し、稼働中のDSPへ触れない。
-unsafe fn request_effect_rate(plugin: &Plugin) {
-    let value = plugin.controller_parameters.get(parameters::OVERSAMPLING);
-    let rate = parameters::to_plain(parameters::OVERSAMPLING, value) as usize;
-    let previous = plugin.requested_rate.replace(rate);
-    plugin
-        .processor_parameters
-        .set(parameters::OVERSAMPLING, value);
-    if previous != rate && plugin.active.load(Ordering::Relaxed) {
-        let handler = plugin.component_handler.borrow().clone();
-        if let Some(handler) = handler {
-            let p = handler.as_ptr();
-            // SAFETY: UIスレッドで所有参照を保持。再入中にRefCellの借用を持ち越さない。
-            unsafe {
-                ((&**p.cast::<*const ComponentHandlerVTable>()).restart_component)(p, 1 << 3);
-            }
-        }
-    }
 }
 
 /// SAFETY: UIスレッドから、開始済みの編集について一度だけ呼ぶ。

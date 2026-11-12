@@ -11,7 +11,7 @@ void checkDelay(IComponent* component, IAudioProcessor* processor, IEditControll
         const int slots = trial == 0 ? 0 : trial < 5 ? 1 : trial < 7 ? trial - 3 : 1;
         std::array<Points, 15> points;
         Changes changes;
-        const std::array<int, 15> indices {133, 12, 42, 51, 52, 53, 43, 54, 55, 56, 44, 57, 58, 59, 60};
+        const std::array<int, 15> indices {132, 12, 42, 51, 52, 53, 43, 54, 55, 56, 44, 57, 58, 59, 60};
         const std::array<double, 15> values {0, .5, slots > 0 ? 3.0/6.0 : 0.0, 0, 1, 1,
             slots > 1 ? 3.0/6.0 : 0.0, 0, 0, 1, slots > 2 ? 3.0/6.0 : 0.0, 0, 0, 1, trial < 7 ? 0.0 : (trial - 7) / 3.0};
         for (size_t i = 0; i < points.size(); ++i) {

@@ -37,7 +37,7 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Center", "Depth", "Rate", "Fdbk", "Mix", "Center", "Depth", "Rate", "Fdbk", "Mix", "Center",
     "Depth", "Rate", "Fdbk", "Mix", "Limiter", "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix",
     "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix", "Thrs", "Ratio", "A", "R", "Knee", "Gain",
-    "Mix", "Sens", "Sens", "Rate",
+    "Mix", "Sens", "Sens",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -58,7 +58,6 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     2, 4, 3, 3, 4, 4, 4, // Compressor
     2, 4, 3, 3, 4, 4, 4, // Compressor
     4, 4, // Velocity sensitivity
-    4, // Effect Rate
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -579,10 +578,7 @@ impl Editor {
     }
 
     fn choice(&self, ui: &mut egui::Ui, index: usize, selected: f64) {
-        if matches!(
-            index,
-            12 | 31 | 45 | 48 | 60..=62 | 108 | parameters::OVERSAMPLING
-        ) {
+        if matches!(index, 12 | 31 | 45 | 48 | 60..=62 | 108) {
             ui.painter().text(
                 ui.max_rect().center_top() - egui::vec2(0.0, GAP),
                 egui::Align2::CENTER_BOTTOM,
@@ -1181,7 +1177,7 @@ impl WindowHandler for Editor {
                 ),
                 (
                     "Master",
-                    &[12, parameters::OVERSAMPLING, 108],
+                    &[12, 108],
                     &[&[13][..], &[21][..], &[8][..]][..],
                     [master_x, left_top, master_width, full_height],
                 ),

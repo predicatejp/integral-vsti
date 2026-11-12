@@ -15,7 +15,7 @@ void checkLimiter(IComponent* component, IAudioProcessor* processor, IEditContro
             assert(processor->getLatencySamples() == latency);
             std::array<Points, 9> points;
             Changes changes;
-            const std::array<int, 9> indices {133, 12, 8, 34, 35, 36, 21, 13, 108};
+            const std::array<int, 9> indices {132, 12, 8, 34, 35, 36, 21, 13, 108};
             const std::array<double, 9> plain {0, 1, 4, 1, 20000, 12, 25, volume, double(enabled)};
             for (size_t i = 0; i < points.size(); ++i) {
                 ParameterInfo parameter; assert(controller->getParameterInfo(indices[i], parameter) == kResultOk);

@@ -11,7 +11,7 @@ void checkCompressor(IComponent* component, IAudioProcessor* processor, IEditCon
             std::array<Points, 26> points;
             Changes changes;
             for (int i = 0; i < 26; ++i) {
-                const int index = i == 0 ? 133 : i == 1 ? 12 : i < 5 ? 40+i : 104+i;
+                const int index = i == 0 ? 132 : i == 1 ? 12 : i < 5 ? 40+i : 104+i;
                 const double plain = i < 2 ? i : i < 5 ? (i-2 < slots ? 2 : 0) :
                     std::array<double,7>{-18,4,0,0,0,0,100}[(i-5)%7];
                 ParameterInfo info; assert(controller->getParameterInfo(index, info) == kResultOk);
