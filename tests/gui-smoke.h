@@ -33,7 +33,7 @@ struct NativeParent {
         WNDCLASSW cls {};
         cls.lpfnWndProc = procedure;
         cls.hInstance = GetModuleHandleW(nullptr);
-        cls.lpszClassName = L"SampleVstiGuiTest";
+        cls.lpszClassName = L"IntegralGuiTest";
         RegisterClassW(&cls);
         // 検証するクライアント領域全体を画面内に置く。
         window = CreateWindowExW(0, cls.lpszClassName, L"VST3 GUI test", WS_POPUP,

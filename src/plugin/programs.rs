@@ -33,7 +33,7 @@ unsafe extern "system" fn unit_info(_: This, index: i32, out: *mut UnitInfo) -> 
         out.write(UnitInfo {
             id: 0,
             parent_unit_id: -1,
-            name: utf16("SampleVsti"),
+            name: utf16("Integral"),
             program_list_id: 0,
         })
     };

@@ -998,7 +998,7 @@ impl WindowHandler for Editor {
             painter.text(
                 title.left_center() + egui::vec2(GAP, 0.0),
                 egui::Align2::LEFT_CENTER,
-                "Sample VSTi",
+                "Integral",
                 egui::FontId::proportional(HEADING_FONT_SIZE),
                 INK,
             );

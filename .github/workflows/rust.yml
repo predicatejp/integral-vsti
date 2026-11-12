@@ -23,8 +23,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
   RUST_BACKTRACE: '1'
-  SAMPLE_VSTI_COMMIT: ${{ github.sha }}
-  SAMPLE_VSTI_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+  INTEGRAL_COMMIT: ${{ github.sha }}
+  INTEGRAL_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
 
 jobs:
   quality:
@@ -231,7 +231,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $dependencies = & dumpbin /dependents target/vst3/SampleVsti.vst3/Contents/x86_64-win/SampleVsti.vst3
+          $dependencies = & dumpbin /dependents target/vst3/Integral.vst3/Contents/x86_64-win/Integral.vst3
           if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed' }
           $dependencies | Tee-Object -FilePath target/windows-dependencies.log
           if ($dependencies -match '(?i)(VCRUNTIME|MSVCP)\d[^\s]*\.dll') {
@@ -239,7 +239,7 @@ jobs:
           }
       - name: Run Validator
         run: |
-          target/vst3-sdk/bin/Release/validator target/vst3/SampleVsti.vst3 |& tee target/validator.log
+          target/vst3-sdk/bin/Release/validator target/vst3/Integral.vst3 |& tee target/validator.log
           if grep -Eq 'Failed|Error|\[FAILED\]' target/validator.log; then
             echo 'Validator reported an error, including possible teardown failures.' >&2
             exit 1

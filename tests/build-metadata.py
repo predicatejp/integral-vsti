@@ -21,7 +21,7 @@ def run(directory, *args, env=None, succeeds=True):
     return result.stdout.strip() if succeeds else result.stderr
 
 
-with tempfile.TemporaryDirectory(prefix="sample-vsti-version-") as temporary:
+with tempfile.TemporaryDirectory(prefix="integral-version-") as temporary:
     directory = Path(temporary)
     shutil.copy2(ROOT / "build.rs", directory / "build.rs")
     (directory / "Cargo.toml").write_text(
@@ -29,10 +29,10 @@ with tempfile.TemporaryDirectory(prefix="sample-vsti-version-") as temporary:
     )
     (directory / ".gitignore").write_text("/target/\n")
     (directory / "src").mkdir()
-    source = 'fn main() { println!("{}", env!("SAMPLE_VSTI_VERSION")); }\n'
+    source = 'fn main() { println!("{}", env!("INTEGRAL_VERSION")); }\n'
     (directory / "src/main.rs").write_text(source)
     environment = dict(os.environ)
-    for key in ("SAMPLE_VSTI_COMMIT", "SAMPLE_VSTI_RELEASE_VERSION", "CARGO_TARGET_DIR"):
+    for key in ("INTEGRAL_COMMIT", "INTEGRAL_RELEASE_VERSION", "CARGO_TARGET_DIR"):
         environment.pop(key, None)
     run(directory, "cargo", "generate-lockfile", env=environment)
     run(directory, "git", "init", "-b", "main")
@@ -69,12 +69,12 @@ with tempfile.TemporaryDirectory(prefix="sample-vsti-version-") as temporary:
     commit = run(directory, "git", "rev-parse", "HEAD")
     assert cargo() == f"dev-{commit}"
 
-    release_environment = dict(environment, SAMPLE_VSTI_RELEASE_VERSION="1.2.3")
+    release_environment = dict(environment, INTEGRAL_RELEASE_VERSION="1.2.3")
     assert cargo(release_environment) == "1.2.3"
     assert metadata()["official_release"] is True
     assert cargo() == f"dev-{commit}"  # Switching back must invalidate cache too.
     assert "Release version must match" in cargo(
-        dict(environment, SAMPLE_VSTI_RELEASE_VERSION="1.2.4"), succeeds=False
+        dict(environment, INTEGRAL_RELEASE_VERSION="1.2.4"), succeeds=False
     )
     (directory / "src/main.rs").write_text(source + "// Local edit\n")
     assert cargo() == f"dev-{commit}"
@@ -83,15 +83,15 @@ with tempfile.TemporaryDirectory(prefix="sample-vsti-version-") as temporary:
     (directory / "src/main.rs").write_text(source)
     assert cargo(release_environment) == "1.2.3"
     assert "must match Git HEAD" in cargo(
-        dict(environment, SAMPLE_VSTI_COMMIT="0" * 40), succeeds=False
+        dict(environment, INTEGRAL_COMMIT="0" * 40), succeeds=False
     )
 
     # Source archives must declare their provenance instead of guessing a commit.
     (directory / ".git").rename(directory / "git-backup")
     assert "Git checkout required" in cargo(succeeds=False)
-    assert cargo(dict(environment, SAMPLE_VSTI_COMMIT=commit)) == f"dev-{commit}"
+    assert cargo(dict(environment, INTEGRAL_COMMIT=commit)) == f"dev-{commit}"
     assert "40 hexadecimal" in cargo(
-        dict(environment, SAMPLE_VSTI_COMMIT="invalid"), succeeds=False
+        dict(environment, INTEGRAL_COMMIT="invalid"), succeeds=False
     )
 
 print("Build metadata checks passed: cached commits, dev/release, dirty tree, archive provenance")

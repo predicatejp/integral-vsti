@@ -1,4 +1,4 @@
-Third-party notices for sample-vsti
+Third-party notices for Integral
 
 VST3 interface definitions
 
@@ -34,7 +34,7 @@ Referenced headers (relative to pluginterfaces/):
 
 The following original copyright and license notice applies to the portions
 adapted from those headers. It is preserved independently of the AGPL-3.0-only
-license for sample-vsti's original code.
+license for Integral's original code.
 
 MIT License
 

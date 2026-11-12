@@ -34,10 +34,10 @@ def build(target=None):
             raise RuntimeError("Cross builds support Linux to Windows MSVC only")
         cargo.append("xwin")
     if target == "x86_64-pc-windows-msvc":
-        platform_name, binary_name = "windows-x86_64", "SampleVsti.vst3"
+        platform_name, binary_name = "windows-x86_64", "Integral.vst3"
         architecture = "x86_64-win"
     else:
-        platform_name, binary_name = "linux-x86_64", "SampleVsti.so"
+        platform_name, binary_name = "linux-x86_64", "Integral.so"
         architecture = "x86_64-linux"
 
     result = subprocess.run(
@@ -53,7 +53,7 @@ def build(target=None):
             if candidate.is_file():
                 info_path = candidate
         elif (message["reason"] == "compiler-artifact"
-              and message["target"]["name"] == "sample_vsti"
+              and message["target"]["name"] == "integral"
               and "cdylib" in message["target"]["crate_types"]):
             binary = next(Path(p) for p in message["filenames"]
                           if Path(p).suffix in (".dll", ".so"))
@@ -65,7 +65,7 @@ def build(target=None):
     if os.environ.get("GITHUB_ACTIONS") == "true" and info["dirty"]:
         raise RuntimeError("CI bundles must be built from a clean checkout")
 
-    bundle = ROOT / "target/vst3/SampleVsti.vst3"
+    bundle = ROOT / "target/vst3/Integral.vst3"
     if bundle.exists():
         shutil.rmtree(bundle)
     binary_dir = bundle / "Contents" / architecture
@@ -85,7 +85,7 @@ def build(target=None):
     if pr and not pr.isdecimal():
         raise RuntimeError("PR_NUMBER must be numeric")
     identity = f"pr{pr}-{info['commit']}" if pr else info["version"]
-    name = f"SampleVsti-{platform_name}-{identity}"
+    name = f"Integral-{platform_name}-{identity}"
     archive = ROOT / "target/dist" / f"{name}.zip"
     archive.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
