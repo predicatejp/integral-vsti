@@ -118,7 +118,7 @@ unsafe extern "system" fn factory_info(_: This, out: *mut FactoryInfo) -> TResul
     // SAFETY: outはFactoryInfoの書き込み可能な領域。
     unsafe {
         out.write(FactoryInfo {
-            vendor: ascii("sample-vsti"),
+            vendor: ascii("Integral"),
             url: [0; 256],
             email: [0; 128],
             flags: 1 << 4,
@@ -136,7 +136,7 @@ fn metadata() -> ClassInfo {
         cid: COMPONENT_CID,
         cardinality: i32::MAX,
         category: ascii("Audio Module Class"),
-        name: ascii("Sample VSTi"),
+        name: ascii("Integral"),
     }
 }
 
@@ -161,8 +161,8 @@ unsafe extern "system" fn class_info2(_: This, index: i32, out: *mut ClassInfo2)
             base: metadata(),
             class_flags: 0,
             sub_categories: ascii("Instrument|Synth"),
-            vendor: ascii("sample-vsti"),
-            version: ascii(env!("SAMPLE_VSTI_VERSION")),
+            vendor: ascii("Integral"),
+            version: ascii(env!("INTEGRAL_VERSION")),
             sdk_version: ascii("VST 3.8.1"),
         });
     }

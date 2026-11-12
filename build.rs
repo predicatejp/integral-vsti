@@ -18,7 +18,7 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
-    for variable in ["SAMPLE_VSTI_COMMIT", "SAMPLE_VSTI_RELEASE_VERSION"] {
+    for variable in ["INTEGRAL_COMMIT", "INTEGRAL_RELEASE_VERSION"] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
     for path in [
@@ -66,12 +66,12 @@ fn main() {
             }
         }
     }
-    let explicit_commit = env::var("SAMPLE_VSTI_COMMIT").ok();
+    let explicit_commit = env::var("INTEGRAL_COMMIT").ok();
     if let (Some(explicit), Some(actual)) = (&explicit_commit, &git_commit) {
-        assert_eq!(explicit, actual, "SAMPLE_VSTI_COMMIT must match Git HEAD");
+        assert_eq!(explicit, actual, "INTEGRAL_COMMIT must match Git HEAD");
     }
     let commit = git_commit.or(explicit_commit).expect(
-        "Git checkout required; for a source archive, set SAMPLE_VSTI_COMMIT to its full commit ID",
+        "Git checkout required; for a source archive, set INTEGRAL_COMMIT to its full commit ID",
     );
     assert!(
         commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -82,7 +82,7 @@ fn main() {
         && !git(&["status", "--porcelain", "--untracked-files=normal"])
             .expect("Git status")
             .is_empty();
-    let release = env::var("SAMPLE_VSTI_RELEASE_VERSION")
+    let release = env::var("INTEGRAL_RELEASE_VERSION")
         .ok()
         .filter(|v| !v.is_empty())
         .map(|v| v.strip_prefix('v').unwrap_or(&v).to_owned());
@@ -101,7 +101,7 @@ fn main() {
         version.len() < 64,
         "Version exceeds VST3 PClassInfo2 capacity"
     );
-    println!("cargo:rustc-env=SAMPLE_VSTI_VERSION={version}");
+    println!("cargo:rustc-env=INTEGRAL_VERSION={version}");
     let target = env::var("TARGET").unwrap();
     let info = format!(
         "{{\n  \"version\": \"{version}\",\n  \"commit\": \"{commit}\",\n  \"dirty\": {dirty},\n  \"official_release\": {},\n  \"target\": \"{target}\"\n}}\n",

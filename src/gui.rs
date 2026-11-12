@@ -392,7 +392,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
         key
     };
     let settings = baseview::WindowSettings::new()
-        .with_title("Sample VSTi")
+        .with_title("Integral")
         .with_size(baseview::dpi::PhysicalSize::new(
             WIDTH as u32,
             HEIGHT as u32,

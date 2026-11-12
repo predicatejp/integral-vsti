@@ -1620,7 +1620,7 @@ int main(int argc, char** argv) {
     factoryIdentity->release();
     PFactoryInfo vendor;
     assert(factory->getFactoryInfo(&vendor) == kResultOk);
-    assert(std::strcmp(vendor.vendor, "sample-vsti") == 0);
+    assert(std::strcmp(vendor.vendor, "Integral") == 0);
     assert(factory->countClasses() == 1);
     PClassInfo2 info;
     assert(factory2->getClassInfo2(0, &info) == kResultOk);
