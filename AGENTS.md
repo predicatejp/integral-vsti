@@ -77,8 +77,8 @@
 ## 構成・開発環境
 
 製品概要・導入方法・基本ビルドは[README](README.md)で管理すること。
-音源仕様・操作の詳細は[Wikiの音源資料](https://github.com/predicatejp/sample-vsti/wiki/Instrument-Reference)、
-ソース構成、環境構築、ビルド・検証・Rust CIの詳細は[Wikiの開発資料](https://github.com/predicatejp/sample-vsti/wiki/Development)で管理し、変更時も同じ箇所を更新すること。
+音源仕様・操作の詳細は[Wikiの音源資料](https://github.com/predicatejp/integral-vsti/wiki/Instrument-Reference)、
+ソース構成、環境構築、ビルド・検証・Rust CIの詳細は[Wikiの開発資料](https://github.com/predicatejp/integral-vsti/wiki/Development)で管理し、変更時も同じ箇所を更新すること。
 READMEへ実装詳細や開発経緯を追記しないこと。生成物は`target/`以下へ配置する。
 VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体のビルド依存ではない。
 

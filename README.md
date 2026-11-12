@@ -52,13 +52,13 @@ python scripts/build-vst3.py
 ```
 
 `target/vst3/Integral.vst3`にバンドル、`target/dist/`にZIPを生成します。
-クロスコンパイルや正式リリースの手順は[開発資料](https://github.com/predicatejp/sample-vsti/wiki/Development)を参照してください。
+クロスコンパイルや正式リリースの手順は[開発資料](https://github.com/predicatejp/integral-vsti/wiki/Development)を参照してください。
 
 ## ドキュメント
 
-- [音源仕様・操作](https://github.com/predicatejp/sample-vsti/wiki/Instrument-Reference)：パラメーター、発音、信号処理、GUI。
-- [ビルド・検証・開発](https://github.com/predicatejp/sample-vsti/wiki/Development)：環境構築、テスト、CI、ソース構成。
-- [Wiki](https://github.com/predicatejp/sample-vsti/wiki)：技術資料と性能・音響特性の調査。
+- [音源仕様・操作](https://github.com/predicatejp/integral-vsti/wiki/Instrument-Reference)：パラメーター、発音、信号処理、GUI。
+- [ビルド・検証・開発](https://github.com/predicatejp/integral-vsti/wiki/Development)：環境構築、テスト、CI、ソース構成。
+- [Wiki](https://github.com/predicatejp/integral-vsti/wiki)：技術資料と性能・音響特性の調査。
 
 ## ライセンス
 

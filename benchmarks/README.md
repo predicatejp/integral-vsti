@@ -1,7 +1,7 @@
 # DSP速度検証
 
 `dsp.rs`は本体のDSPモジュールを直接コンパイルする計測専用プログラムです。
-プラグインの動作・公開API・依存関係は変更しません。測定結果は[リポジトリのWiki](https://github.com/predicatejp/sample-vsti/wiki)へ記録します。
+プラグインの動作・公開API・依存関係は変更しません。測定結果は[リポジトリのWiki](https://github.com/predicatejp/integral-vsti/wiki)へ記録します。
 
 ## 標準性能回帰スイート
 
@@ -49,7 +49,7 @@ CPUクロック・温度・他プロセスの負荷をできるだけ一定に�
 `--seed`で同じ順序を再現できます。省略時は新しいseedを生成します。実際の全順序も保存します。
 burn-inの10msは実時間の下限で、上限ではありません。最低1周と最終準備を終えるまで処理するため、重いケースほど長くなります。
 音声の4秒分はノートオン／オフ・リリース・4秒周期のオートメーションを測定範囲に含めるため維持します。
-[burn-in短縮の比較実験と実時間の内訳](https://github.com/predicatejp/sample-vsti/wiki/Performance-duration-2026-11-02)を参照してください。
+[burn-in短縮の比較実験と実時間の内訳](https://github.com/predicatejp/integral-vsti/wiki/Performance-duration-2026-11-02)を参照してください。
 
 ### 統計量と解釈
 
@@ -179,7 +179,7 @@ rustc --edition=2024 scripts/generate-oscillator-tables.rs -o target/generate-os
 target/generate-oscillator-tables > src/oscillator_tables.rs
 ```
 
-一度限りのテーブル比較実験の条件・結果は[Wiki](https://github.com/predicatejp/sample-vsti/wiki)に記録しています。
+一度限りのテーブル比較実験の条件・結果は[Wiki](https://github.com/predicatejp/integral-vsti/wiki)に記録しています。
 実験用プログラムはこのディレクトリには含めません。
 
 Width/Panの計測は`synth/p32/u7/width`（Width=100%固定）、`width-changing`（1000サンプルで0〜100%）、`pan-changing`（Width=100%、1000サンプルでPanを−100〜＋100%）です。1/8/32ポリフォニー・1/7ユニゾンの各組み合わせで同じケースを実行できます。
