@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: '検査対象のPR番号（PRの先頭ブランチを選択）'
+        description: 'PR番号'
         required: false
         type: string
 
