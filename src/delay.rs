@@ -93,10 +93,10 @@ impl Delay {
         !self.state.buffer.is_empty() && self.state.sample_rate == sample_rate
     }
 
-    /// 音声処理開始前だけ呼ぶ。1スロットのリングの資源上限は64 MiB。
+    /// 音声処理開始前だけ呼ぶ。x4の内部レートも含め、1スロットの資源上限は256 MiB。
     pub fn prepare(&mut self, sample_rate: f64) -> bool {
         let required = (sample_rate * 8.0).ceil() + 2.0;
-        if !sample_rate.is_finite() || sample_rate < 44100.0 || required > (1 << 22) as f64 {
+        if !sample_rate.is_finite() || sample_rate < 44100.0 || required > (1 << 24) as f64 {
             return false;
         }
         let size = (required as usize).next_power_of_two();

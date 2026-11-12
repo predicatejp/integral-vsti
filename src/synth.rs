@@ -6,6 +6,7 @@ use crate::envelope::DEFAULT_ENVELOPE;
 use crate::eq::Eq;
 use crate::limiter::Limiter;
 use crate::oscillator::{PanningGains, panning_gains};
+use crate::oversampling::{self, Downsampler, Mode, Upsampler};
 use crate::parameters;
 use crate::voice::{Note, Voice};
 
@@ -37,6 +38,13 @@ pub struct SynthesizerState {
     eq: Eq,
     /// EQ後、Master Volume直前の固定5 ms先読みリミッター。
     limiter: Limiter,
+    /// 停止中に準備したエフェクタ系列の内部レート倍率。
+    oversampling: Mode,
+    /// Voice合成後の共有補間器と、Master Volume前の共有間引き器。
+    upsampler: Upsampler,
+    downsampler: Downsampler,
+    /// ADAAとLimiterの合算遅延を整数ホストサンプルへ整合する間引き位相。
+    decimation_phase: usize,
 }
 
 /// Synthesizerの処理を担当し、専用のStateを所有するコンポーネント。
@@ -63,28 +71,50 @@ impl Synthesizer {
                 effects: Effects::new(),
                 eq: Eq::new(44100.0, parameters::eq(&parameters::defaults())),
                 limiter: Limiter::new(),
+                oversampling: Mode::X1,
+                upsampler: Upsampler::new(),
+                downsampler: Downsampler::new(),
+                decimation_phase: 0,
             }),
         }
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: f64) -> bool {
+        self.prepare(sample_rate, self.state.oversampling)
+    }
+
+    /// VST3の停止中の再構成でのみ呼ぶ。処理中の設定配送では資源を確保しない。
+    pub fn set_oversampling(&mut self, mode: Mode) -> bool {
+        mode == self.state.oversampling || self.prepare(self.state.sample_rate, mode)
+    }
+
+    fn prepare(&mut self, sample_rate: f64, mode: Mode) -> bool {
+        let internal_rate = sample_rate * mode.factor() as f64;
         if sample_rate.is_finite()
             && sample_rate >= crate::filter::MIN_SAMPLE_RATE
             && (!self
                 .state
                 .effects
-                .prepare(sample_rate, &self.state.parameters)
-                || !self.state.eq.prepare(sample_rate)
-                || !self.state.limiter.prepare(sample_rate))
+                .prepare(internal_rate, &self.state.parameters)
+                || !self.state.eq.prepare(internal_rate)
+                || !self.state.limiter.prepare(internal_rate))
         {
             return false;
         }
         self.state.sample_rate = sample_rate;
+        self.state.oversampling = mode;
+        self.state.effects.reset();
+        self.state.decimation_phase =
+            (crate::effects::LATENCY + self.state.limiter.latency_samples()) % mode.factor();
+        self.state.upsampler.reset();
+        self.state.downsampler.reset();
         true
     }
 
     pub fn latency_samples(&self) -> usize {
-        crate::effects::LATENCY + self.state.limiter.latency_samples()
+        oversampling::latency_samples(self.state.oversampling)
+            + (crate::effects::LATENCY + self.state.limiter.latency_samples())
+                / self.state.oversampling.factor()
     }
 
     pub fn set_tempo(&mut self, tempo: f64) {
@@ -289,6 +319,8 @@ impl Synthesizer {
         self.state.effects.reset();
         self.state.eq.reset();
         self.state.limiter.reset();
+        self.state.upsampler.reset();
+        self.state.downsampler.reset();
         self.state.used_voices = 0;
         self.state.unused_pending = true;
         for voice in &mut self.state.voices {
@@ -347,8 +379,7 @@ impl Synthesizer {
         } else {
             output.fill([0.0; 2]);
         }
-        self.state.effects.process_samples(output);
-        self.finish_samples(output);
+        self.process_output_samples(output);
     }
 
     pub fn generate_sample(&mut self) -> [f64; 2] {
@@ -356,6 +387,11 @@ impl Synthesizer {
             self.update_unused_sample();
         }
         let sum = self.mix_sample();
+        if self.state.oversampling != Mode::X1 {
+            let mut output = [sum];
+            self.process_oversampled_samples(&mut output);
+            return output[0];
+        }
         let processed = self.state.effects.process_sample(sum);
         let equalized = self.state.eq.process_sample(processed);
         self.state
@@ -364,7 +400,47 @@ impl Synthesizer {
             .map(|value| value * self.state.master_gain)
     }
 
-    /// EQ・Limiter・Masterを系列で適用する。
+    /// x1は既存のブロック処理を直結し、リサンプラを呼ばない。
+    #[inline]
+    fn process_output_samples(&mut self, output: &mut [[f64; 2]]) {
+        if self.state.oversampling == Mode::X1 {
+            self.state.effects.process_samples(output);
+            self.finish_samples(output);
+        } else {
+            self.process_oversampled_samples(output);
+        }
+    }
+
+    /// Voice合成後からMaster直前までを内部レートで処理する。
+    fn process_oversampled_samples(&mut self, output: &mut [[f64; 2]]) {
+        let mode = self.state.oversampling;
+        let factor = mode.factor();
+        for chunk in output.chunks_mut(32) {
+            let mut internal = [[0.0; 2]; 128];
+            let internal = &mut internal[..chunk.len() * factor];
+            for (sample, frame) in chunk.iter().zip(internal.chunks_exact_mut(factor)) {
+                frame.copy_from_slice(
+                    &self.state.upsampler.process_samples(*sample, mode)[..factor],
+                );
+            }
+            self.state.effects.process_samples(internal);
+            for sample in &mut *internal {
+                *sample = self.state.eq.process_sample(*sample);
+            }
+            self.state.limiter.process_samples(internal);
+            for (sample, frame) in chunk.iter_mut().zip(internal.chunks_exact(factor)) {
+                let mut input = [[0.0; 2]; 4];
+                input[..factor].copy_from_slice(frame);
+                *sample = self
+                    .state
+                    .downsampler
+                    .process_sample(input, mode, self.state.decimation_phase)
+                    .map(|value| value * self.state.master_gain);
+            }
+        }
+    }
+
+    /// x1のEQ・Limiter・Masterを系列で適用する。
     #[inline(never)]
     fn finish_samples(&mut self, samples: &mut [[f64; 2]]) {
         for sample in &mut *samples {
@@ -426,6 +502,130 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // 各内部レートの実音声を参照系列と比較する。
+    fn oversampling_covers_effects_eq_and_limiter_after_voice_sum() {
+        for (mode_index, mode) in [Mode::X1, Mode::X2, Mode::X4].into_iter().enumerate() {
+            let rate = [44100.0, 48000.0, 96000.0][mode_index];
+            let factor = mode.factor();
+            for kind in 0..7 {
+                let mut values = parameters::sine_preset();
+                for (index, plain) in [
+                    (0, 3.0),
+                    (8, 3.0),
+                    (12, 1.0),
+                    (13, -6.0),
+                    (34, 1.0),
+                    (36, 6.0),
+                    (38, -3.0),
+                    (108, 1.0),
+                    (parameters::OVERSAMPLING, mode_index as f64),
+                ] {
+                    values[index] = parameters::to_normalized(index, plain);
+                }
+                for [kind_index, _, gain, ..] in parameters::EFFECT_SLOTS {
+                    values[kind_index] = parameters::to_normalized(kind_index, kind as f64);
+                    values[gain] = parameters::to_normalized(gain, 12.0);
+                }
+                let mut synth = Synthesizer::new();
+                synth.set_parameters(values);
+                assert!(synth.set_sample_rate(rate));
+                assert!(synth.set_oversampling(mode));
+                synth.set_tempo(137.0);
+                for id in 0..3 {
+                    assert!(synth.note_on(note(id, 0, 60 + id as i16 * 7), 0.0, 0.8));
+                }
+                let mut voices: Vec<_> = synth.state.voices[..3].to_vec();
+                let internal_rate = rate * factor as f64;
+                let mut effects = Effects::new();
+                assert!(effects.prepare(internal_rate, &values));
+                effects.set_parameters(&values, &parameters::defaults());
+                effects.set_tempo(137.0);
+                let mut eq = Eq::new(internal_rate, parameters::eq(&values));
+                let mut limiter = Limiter::new();
+                assert!(limiter.prepare(internal_rate));
+                limiter.set_enabled(true);
+                let phase = (crate::effects::LATENCY + limiter.latency_samples()) % factor;
+                let mut up = Upsampler::new();
+                let mut down = Downsampler::new();
+                let mut reference = || {
+                    let mut sum = [0.0; 2];
+                    for voice in &mut voices {
+                        let x = voice.generate_sample(
+                            rate,
+                            &synth.state.panning_gains,
+                            &synth.state.mono_gains,
+                        );
+                        for ch in 0..2 {
+                            sum[ch] += x[ch];
+                        }
+                    }
+                    let mut samples = up.process_samples(sum, mode);
+                    for sample in &mut samples[..factor] {
+                        *sample = limiter
+                            .process_sample(eq.process_sample(effects.process_sample(*sample)));
+                    }
+                    down.process_sample(samples, mode, phase)
+                        .map(|x| x * 10.0_f64.powf(-6.0 / 20.0))
+                };
+                let expected: Vec<_> = (0..4096).map(|_| reference()).collect();
+                let mut actual = vec![[0.0; 2]; 4096];
+                for chunk in actual[..3840].chunks_mut(57) {
+                    synth.generate_samples(&mut []);
+                    synth.generate_samples(chunk);
+                }
+                for sample in &mut actual[3840..] {
+                    *sample = synth.generate_sample();
+                }
+                for (a, b) in actual.iter().flatten().zip(expected.iter().flatten()) {
+                    assert!(
+                        a.is_finite() && (a - b).abs() < 1e-4,
+                        "{mode:?}, kind={kind}: {a} != {b}"
+                    );
+                }
+                synth.reset();
+                synth.generate_samples(&mut actual);
+                assert!(actual.iter().flatten().all(|&x| x == 0.0));
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // 準備領域とインパルス応答を実CPUで検証する。
+    fn oversampling_latency_combines_internal_delays_once() {
+        for rate in [44100.0, 48000.0, 96000.0] {
+            let mut synth = Synthesizer::new();
+            assert!(synth.set_sample_rate(rate));
+            for mode in [Mode::X1, Mode::X2, Mode::X4, Mode::X1] {
+                assert!(synth.set_oversampling(mode));
+                let factor = mode.factor();
+                let internal = 3 + (rate * factor as f64 * 0.005).ceil() as usize;
+                let latency = oversampling::latency_samples(mode) + internal / factor;
+                assert_eq!(synth.latency_samples(), latency);
+                let mut impulse = vec![[0.0; 2]; latency + 300];
+                impulse[0] = [0.75, -0.25];
+                synth.process_output_samples(&mut impulse);
+                let peak = impulse
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a[0].abs().total_cmp(&b[0].abs()))
+                    .unwrap()
+                    .0;
+                assert_eq!(peak, latency, "{rate} {mode:?}");
+                for (kind, enabled) in [(4.0, 1.0), (3.0, 0.0), (0.0, 0.0)] {
+                    let mut p = synth.parameters();
+                    for [index, ..] in parameters::EFFECT_SLOTS {
+                        p[index] = parameters::to_normalized(index, kind);
+                    }
+                    p[108] = enabled;
+                    synth.set_parameters(p);
+                    assert_eq!(synth.latency_samples(), latency);
+                }
+                synth.stop();
+            }
+        }
     }
 
     #[test]
