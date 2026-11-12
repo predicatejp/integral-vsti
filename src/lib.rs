@@ -24,7 +24,6 @@ mod gui;
 mod host;
 mod limiter;
 mod oscillator;
-mod oversampling;
 mod parameters;
 mod phaser;
 mod plugin;

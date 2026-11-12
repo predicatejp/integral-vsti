@@ -28,8 +28,6 @@ mod envelope;
 mod filter;
 #[path = "../src/float_mode.rs"]
 mod float_mode;
-#[path = "../src/oversampling.rs"]
-mod oversampling;
 #[path = "../src/oscillator.rs"]
 mod oscillator;
 #[path = "../src/parameters.rs"]
@@ -108,8 +106,6 @@ const BASE: [f64; parameters::COUNT] = [
     -18., 4., 10., 100., 6., 0., 100.,
     -18., 4., 10., 100., 6., 0., 100.,
     -18., 4., 10., 100., 6., 0., 100.,
-    100., 0., // Amp / Filter Amount velocity sensitivity
-    0., // Effect Rate: x1
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),
