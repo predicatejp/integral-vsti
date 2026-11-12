@@ -217,6 +217,14 @@ impl Voice {
         }
     }
 
+    /// 通常の停止で保持する位相と乱数列を、明示的なDSPリセットで初期化する。
+    pub fn reset_oscillators(&mut self) {
+        self.state.oscillators_prepared = 0;
+        for oscillator in &mut self.state.oscillators {
+            oscillator.reset();
+        }
+    }
+
     pub fn set_filter(&mut self, filter_type: FilterType, cutoff_cents: f64, resonance_q: f64) {
         self.state.filter_type = filter_type;
         self.state.cutoff_ratio = 2.0_f64.powf(cutoff_cents / 1200.0);

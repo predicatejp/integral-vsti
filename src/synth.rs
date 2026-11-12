@@ -296,6 +296,15 @@ impl Synthesizer {
         }
     }
 
+    /// 設定・サンプルレート・テンポを保ち、発音と全DSP履歴を初期化する。
+    pub fn reset(&mut self) {
+        self.stop();
+        self.state.next_oscillator_id = 0;
+        for voice in &mut self.state.voices {
+            voice.reset_oscillators();
+        }
+    }
+
     /// 表示用の同時発音数。ブロック末尾で読み、ユニゾンや発振器数は加算しない。
     pub fn active_voice_count(&self) -> u32 {
         self.state.voices[..self.state.used_voices]
@@ -417,6 +426,83 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // 全エフェクトの履歴を充填する音声試験は実CPUで行う。
+    fn reset_clears_history_and_replays_from_initial_state_with_current_settings() {
+        for kind in 0..7 {
+            for phase in 0..3 {
+                let mut synth = Synthesizer::new();
+                let rate = [44100.0, 48000.0, 96000.0][phase];
+                assert!(synth.set_sample_rate(rate));
+                let mut values = parameters::sine_preset();
+                for (index, value) in [
+                    (0, (kind % 5) as f64),
+                    (6, 7.0),
+                    (7, 25.0),
+                    (8, 4.0),
+                    (9, 2.0),
+                    (10, 1200.0),
+                    (31, 1.0),
+                    (32, 12.0),
+                    (12, phase as f64),
+                    (20, 30.0),
+                    (25, -12.0),
+                    (29, 80.0),
+                    (30, 60.0),
+                    (34, 1.0),
+                    (36, 6.0),
+                    (38, -6.0),
+                    (108, 1.0),
+                ] {
+                    values[index] = parameters::to_normalized(index, value);
+                }
+                for indices in parameters::EFFECT_SLOTS {
+                    values[indices[0]] = parameters::to_normalized(indices[0], kind as f64);
+                    values[indices[4]] = 0.0; // 最短音価で再発音後のテンポ依存も照合する。
+                }
+                synth.set_parameters(values);
+                synth.set_tempo(173.0);
+                let mut fresh = synth.clone();
+                for id in 0..3 {
+                    assert!(synth.note_on(note(id, 0, 60 + id as i16 * 7), 0.0, 0.8));
+                }
+                let mut buffer = [[0.0; 2]; 64];
+                for _ in 0..256 {
+                    synth.generate_samples(&mut buffer);
+                }
+                synth.reset();
+                synth.reset(); // 連打しても初期状態を保つ。
+                assert_eq!(synth.parameters(), values);
+                assert_eq!(synth.state.next_oscillator_id, 0);
+                assert_eq!(synth.active_voice_count(), 0);
+                assert_eq!(synth.latency_samples(), fresh.latency_samples());
+                assert_eq!(synth.state.sample_rate, rate);
+                // Keepではリセット直後、Zero/Randomでは無音区間を挟んで再発音する。
+                for _ in 0..if phase == 0 { 0 } else { 256 } {
+                    synth.generate_samples(&mut buffer);
+                    assert_eq!(buffer, [[0.0; 2]; 64], "kind={kind}, phase={phase}");
+                    fresh.generate_samples(&mut buffer);
+                }
+                for id in 0..4 {
+                    for instrument in [&mut synth, &mut fresh] {
+                        assert!(instrument.note_on(note(id, 0, 65 + id as i16), 0.0, 0.7));
+                    }
+                }
+                let mut expected = [[0.0; 2]; 64];
+                for _ in 0..64 {
+                    synth.generate_samples(&mut buffer);
+                    fresh.generate_samples(&mut expected);
+                    for (a, b) in buffer.iter().flatten().zip(expected.iter().flatten()) {
+                        assert!(
+                            (a - b).abs() < 1e-4,
+                            "kind={kind}, phase={phase}: {a} != {b}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

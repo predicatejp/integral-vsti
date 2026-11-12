@@ -224,6 +224,19 @@ impl Oscillator {
         }
     }
 
+    /// 位相・ADAA履歴・乱数列を初期化する。メモリ確保やシード取得は行わない。
+    pub fn reset(&mut self) {
+        self.state.phases = [0.0; 7];
+        self.state.history = [[0.0; 2]; 7];
+        self.state.valid = false;
+        self.state.rendered_count = 0;
+        self.state.unison_input = (0, 0.0);
+        self.state.note_generation = 0;
+        self.state.frequency_input.1 = 0.0;
+        self.state.random.reset();
+        self.state.noise.reset();
+    }
+
     /// 現在の入力・状態でサンプルを生成し、その後で次のサンプルに向けて状態を更新する。
     /// sample_rateは処理環境のサンプルレート（Hz）。不正な入力・レートでは無音を返し、状態を保持する。
     #[allow(dead_code)] // 単体ベンチマークが使う、入力検証付きの入口。

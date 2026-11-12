@@ -57,6 +57,8 @@ struct Plugin {
     active_voices: Arc<AtomicU32>,
     /// GUIが受け取るまでの左右最大サンプルピーク。非負f32のビット表現。
     output_peak: Arc<AtomicU32>,
+    /// GUIからのDSPリセット要求。音声側が消費し、GUIはDSPへ直接触れない。
+    reset_requested: Arc<AtomicBool>,
     /// UIスレッドだけで設定・呼び出し・解放するIComponentHandlerの所有参照。
     component_handler: RefCell<Option<HostRef>>,
     /// オシレータ・現在のノート・サンプルレートを所有する可変DSP状態。
@@ -172,6 +174,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         controller_parameters: Arc::new(SharedParameters::new()),
         active_voices: Arc::new(AtomicU32::new(0)),
         output_peak: Arc::new(AtomicU32::new(0)),
+        reset_requested: Arc::new(AtomicBool::new(false)),
         component_handler: RefCell::new(None),
         synth: UnsafeCell::new(synth),
         max_samples: AtomicI32::new(0),
@@ -629,6 +632,7 @@ unsafe extern "system" fn create_view(this: This, name: *const u8) -> This {
             Arc::clone(&plugin.controller_parameters),
             Arc::clone(&plugin.active_voices),
             Arc::clone(&plugin.output_peak),
+            Arc::clone(&plugin.reset_requested),
         )
     }
 }
@@ -821,6 +825,16 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
         || !matches!(data.symbolic_sample_size, SAMPLE32 | SAMPLE64)
     {
         return INVALID_ARGUMENT;
+    }
+    // 通常ブロックではatomicの読出しだけにし、要求がある場合だけ消費する。
+    if plugin.reset_requested.load(Ordering::Relaxed)
+        && plugin.reset_requested.swap(false, Ordering::Relaxed)
+    {
+        // SAFETY: processとDSPのライフサイクル処理はホストが直列化する。
+        // 設定の共有は既存の経路を使い、このフラグは追加データを運ばない。
+        unsafe { (*plugin.synth.get()).reset() };
+        plugin.active_voices.store(0, Ordering::Relaxed);
+        plugin.output_peak.store(0, Ordering::Relaxed);
     }
     if !data.process_context.is_null() {
         // SAFETY: ProcessContextはホストがこの呼び出し中所有する。未設定の任意フィールドを
@@ -1186,8 +1200,26 @@ mod meter_tests {
             plugin.processor_parameters.store(parameters::sine_preset());
             assert_eq!(process(component, &mut data), OK);
             assert!(plugin.output_peak.load(Ordering::Relaxed) > 0);
+            plugin.reset_requested.store(true, Ordering::Relaxed);
+            data.num_samples = 0;
+            assert_eq!(process(component, &mut data), OK);
+            assert!(!plugin.reset_requested.load(Ordering::Relaxed));
+            assert_eq!(plugin.output_peak.load(Ordering::Relaxed), 0);
+            assert_eq!(plugin.active_voices.load(Ordering::Relaxed), 0);
+            assert_eq!(
+                plugin.processor_parameters.snapshot(),
+                parameters::sine_preset()
+            );
+            data.num_samples = 64;
+            assert_eq!(process(component, &mut data), OK);
+            assert_eq!(left, [0.0; 64]);
+            assert_eq!(right, [0.0; 64]);
             assert_eq!(set_processing(component, 0), OK);
             assert_eq!(plugin.output_peak.load(Ordering::Relaxed), 0);
+            plugin.reset_requested.store(true, Ordering::Relaxed);
+            data.num_samples = 0;
+            assert_eq!(process(component, &mut data), OK);
+            assert!(!plugin.reset_requested.load(Ordering::Relaxed));
             assert_eq!(set_active(component, 0), OK);
             assert_eq!(terminate(component), OK);
             assert_eq!(release(component), 0);

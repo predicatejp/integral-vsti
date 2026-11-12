@@ -17,7 +17,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
@@ -77,6 +77,8 @@ struct ViewState {
     active_voices: Arc<AtomicU32>,
     /// GUIが受け取るまでの左右最大サンプルピーク。非負f32のビット表現。
     output_peak: Arc<AtomicU32>,
+    /// 音声側が次のprocessで消費するリセット要求。
+    reset_requested: Arc<AtomicBool>,
     /// 描画側からの操作の送り口。音声スレッドでは使用しない。
     sender: Arc<Edits>,
     /// 開始が成功した編集先。終了時にtakeし、再入による二重通知を防ぐ。
@@ -248,6 +250,7 @@ pub unsafe fn create(
     parameters: Arc<SharedParameters>,
     active_voices: Arc<AtomicU32>,
     output_peak: Arc<AtomicU32>,
+    reset_requested: Arc<AtomicBool>,
 ) -> This {
     let Some(controller) = (unsafe { HostRef::retain(controller) }) else {
         return ptr::null_mut();
@@ -265,6 +268,7 @@ pub unsafe fn create(
             parameters,
             active_voices,
             output_peak,
+            reset_requested,
             sender,
             editing: RefCell::new(None),
             polling: Cell::new(false),
@@ -399,6 +403,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
     let parameters = Arc::clone(&state.state.parameters);
     let active_voices = Arc::clone(&state.state.active_voices);
     let output_peak = Arc::clone(&state.state.output_peak);
+    let reset_requested = Arc::clone(&state.state.reset_requested);
     let edits = state.state.sender.clone();
     // baseviewが画面作成中に使う一時GLコンテキストも、ホストへ戻る前に復元する。
     #[cfg(target_os = "windows")]
@@ -413,6 +418,7 @@ unsafe extern "system" fn attached(this: This, parent: This, kind: *const u8) ->
             parameters,
             active_voices,
             output_peak,
+            reset_requested,
             edits,
             #[cfg(target_os = "windows")]
             view,
