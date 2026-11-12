@@ -379,10 +379,7 @@ impl Synthesizer {
         } else {
             output.fill([0.0; 2]);
         }
-        self.process_effect_samples(output);
-        for sample in output {
-            *sample = sample.map(|value| value * self.state.master_gain);
-        }
+        self.process_output_samples(output);
     }
 
     pub fn generate_sample(&mut self) -> [f64; 2] {
@@ -392,8 +389,8 @@ impl Synthesizer {
         let sum = self.mix_sample();
         if self.state.oversampling != Mode::X1 {
             let mut output = [sum];
-            self.process_effect_samples(&mut output);
-            return output[0].map(|value| value * self.state.master_gain);
+            self.process_oversampled_samples(&mut output);
+            return output[0];
         }
         let processed = self.state.effects.process_sample(sum);
         let equalized = self.state.eq.process_sample(processed);
@@ -403,14 +400,20 @@ impl Synthesizer {
             .map(|value| value * self.state.master_gain)
     }
 
-    /// Voice合成後からMaster直前までを選択したレートで処理する。
-    fn process_effect_samples(&mut self, output: &mut [[f64; 2]]) {
-        let mode = self.state.oversampling;
-        if mode == Mode::X1 {
+    /// x1は既存のブロック処理を直結し、リサンプラを呼ばない。
+    #[inline]
+    fn process_output_samples(&mut self, output: &mut [[f64; 2]]) {
+        if self.state.oversampling == Mode::X1 {
             self.state.effects.process_samples(output);
             self.finish_samples(output);
-            return;
+        } else {
+            self.process_oversampled_samples(output);
         }
+    }
+
+    /// Voice合成後からMaster直前までを内部レートで処理する。
+    fn process_oversampled_samples(&mut self, output: &mut [[f64; 2]]) {
+        let mode = self.state.oversampling;
         let factor = mode.factor();
         for chunk in output.chunks_mut(32) {
             let mut internal = [[0.0; 2]; 128];
@@ -421,25 +424,32 @@ impl Synthesizer {
                 );
             }
             self.state.effects.process_samples(internal);
-            self.finish_samples(internal);
+            for sample in &mut *internal {
+                *sample = self.state.eq.process_sample(*sample);
+            }
+            self.state.limiter.process_samples(internal);
             for (sample, frame) in chunk.iter_mut().zip(internal.chunks_exact(factor)) {
                 let mut input = [[0.0; 2]; 4];
                 input[..factor].copy_from_slice(frame);
-                *sample =
-                    self.state
-                        .downsampler
-                        .process_sample(input, mode, self.state.decimation_phase);
+                *sample = self
+                    .state
+                    .downsampler
+                    .process_sample(input, mode, self.state.decimation_phase)
+                    .map(|value| value * self.state.master_gain);
             }
         }
     }
 
-    /// EQ・Limiterを内部レートの系列へ適用する。
+    /// x1のEQ・Limiter・Masterを系列で適用する。
     #[inline(never)]
     fn finish_samples(&mut self, samples: &mut [[f64; 2]]) {
         for sample in &mut *samples {
             *sample = self.state.eq.process_sample(*sample);
         }
         self.state.limiter.process_samples(samples);
+        for sample in samples {
+            *sample = sample.map(|value| value * self.state.master_gain);
+        }
     }
 
     /// 未使用枠の遅延停止を消化し、後続ノートと同時刻の停止として残さない。
@@ -596,7 +606,7 @@ mod tests {
                 assert_eq!(synth.latency_samples(), latency);
                 let mut impulse = vec![[0.0; 2]; latency + 300];
                 impulse[0] = [0.75, -0.25];
-                synth.process_effect_samples(&mut impulse);
+                synth.process_output_samples(&mut impulse);
                 let peak = impulse
                     .iter()
                     .enumerate()
