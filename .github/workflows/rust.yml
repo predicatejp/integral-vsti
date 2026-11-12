@@ -34,7 +34,18 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      statuses: write
     steps:
+      - name: Mark PR checks pending
+        if: inputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for context in 'PR target' 'CI result'; do
+            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+              -f state=pending -f context="$context" \
+              -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+          done
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -302,14 +313,31 @@ jobs:
     needs: [target, quality, test, miri, coverage, dependencies, vst3]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      statuses: write
     steps:
-      - name: Require all checks to pass
+      - name: Report and require all checks to pass
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          TARGET_RESULT: ${{ needs.target.result }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
+          state=success
           for result in $RESULTS; do
             if [[ "$result" != success ]]; then
               echo "CI job did not succeed: $result" >&2
-              exit 1
+              state=failure
             fi
           done
+          if [[ -n "$PR_NUMBER" ]]; then
+            [[ "$TARGET_RESULT" == success ]] || TARGET_RESULT=failure
+            for context in 'PR target' 'CI result'; do
+              result="$state"
+              [[ "$context" != 'PR target' ]] || result="$TARGET_RESULT"
+              gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+                -f state="$result" -f context="$context" \
+                -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+            done
+          fi
+          [[ "$state" == success ]]
