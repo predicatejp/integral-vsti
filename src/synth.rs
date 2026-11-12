@@ -103,6 +103,8 @@ impl Synthesizer {
     }
 
     /// 確保済みの領域を使う。Voiceのノート・位相・エンベロープは進行を保つ。
+    #[cold]
+    #[inline(never)]
     fn configure_effect_rate(&mut self) {
         let mode = parameters::OVERSAMPLING_MODES[parameters::to_plain(
             parameters::OVERSAMPLING,
