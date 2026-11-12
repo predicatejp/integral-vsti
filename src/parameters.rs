@@ -11,7 +11,9 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 132;
+pub const COUNT: usize = 133;
+/// エフェクタ系列の処理倍率。停止中の再構成で適用する。
+pub const OVERSAMPLING: usize = 132;
 /// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo、ReverbのDecay/Damping/Size/Mix、ChorusのTime/Depth/Rate/Detune/Feedback/Mix、PhaserのCenter/Depth/Rate/Feedback/Mix、CompressorのThreshold/Ratio/Attack/Release/Knee/Makeup/Mix。IDは位置に固定する。
 pub const EFFECT_SLOTS: [[usize; 30]; 3] = [
     [
@@ -290,6 +292,7 @@ pub const IDS: [u32; COUNT] = [
     0x43500306,  // Compressor 3: Mix
     0x4153_454e, // ASEN: Amp velocity sensitivity
     0x4653_454e, // FSEN: Filter Amount velocity sensitivity
+    0x4658_5254, // FXRT: Effector oversampling rate
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -424,6 +427,7 @@ pub const NAMES: [&str; COUNT] = [
     "Effect 3 Compressor Mix",
     "Amp Sensitivity",
     "Filter Amount Sensitivity",
+    "Effect Rate",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -444,6 +448,7 @@ pub fn choices(index: usize) -> &'static [&'static str] {
         12 => &PHASE_NAMES,
         31 => &CLIPPER_NAMES,
         34 | 108 => &["Off", "On"],
+        OVERSAMPLING => &["x1", "x2", "x4"],
         51 => &DELAY_BEATS,
         60 => &["Dual", "Cross", "PP-L", "PP-R"],
         _ => &[],
@@ -458,6 +463,7 @@ pub fn max_tick(index: usize) -> u32 {
     } else {
         match index {
             31 | 34 | 108 => 1,
+            OVERSAMPLING => 2,
             51 => 13,
             42 => 6,
             109 => 600,
@@ -528,7 +534,7 @@ pub fn is_time(index: usize) -> bool {
 pub fn holds_between_points(index: usize) -> bool {
     matches!(
         index,
-        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 42..=45 | 48 | 51 | 54 | 57 | 60..=62 | 65 | 69 | 73 | 108 | PROGRAM_INDEX
+        0 | 6 | 8 | 9 | 10 | 12 | 23 | 26 | 31 | 34 | 42..=45 | 48 | 51 | 54 | 57 | 60..=62 | 65 | 69 | 73 | 108 | OVERSAMPLING | PROGRAM_INDEX
     )
 }
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
@@ -607,7 +613,7 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         9 => return (normalized * 7.0).floor().min(6.0),
         10 => return normalized * 12000.0 - 2400.0,
         11 => return 0.5 + normalized * 9.5,
-        12 => return (normalized * 3.0).floor().min(2.0),
+        12 | OVERSAMPLING => return (normalized * 3.0).floor().min(2.0),
         24 | 27 => return normalized * 4800.0 - 2400.0,
         19 => return normalized * 9600.0 - 4800.0,
         _ => {}
@@ -666,7 +672,7 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         9 => return plain.clamp(0.0, 6.0).round() / 6.0,
         10 => return (plain + 2400.0) / 12000.0,
         11 => return (plain - 0.5) / 9.5,
-        12 => return plain.clamp(0.0, 2.0).round() / 2.0,
+        12 | OVERSAMPLING => return plain.clamp(0.0, 2.0).round() / 2.0,
         24 | 27 => return (plain + 2400.0) / 4800.0,
         19 => return (plain + 4800.0) / 9600.0,
         _ => {}
@@ -717,7 +723,7 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         9 => (0.0..=6.0).contains(&plain) && plain.fract() == 0.0,
         10 => (-2400.0..=9600.0).contains(&plain),
         11 => (0.5..=10.0).contains(&plain),
-        12 => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
+        12 | OVERSAMPLING => (0.0..=2.0).contains(&plain) && plain.fract() == 0.0,
         24 | 27 => (-2400.0..=2400.0).contains(&plain),
         19 => (-4800.0..=4800.0).contains(&plain),
         32 => (0.0..=48.0).contains(&plain),
@@ -731,7 +737,7 @@ pub fn canonical(index: usize, value: f64) -> f64 {
         normalized(from_normalized(value).expect("validated normalized value"))
     } else if matches!(
         control_kind(index),
-        6 | 8 | 9 | 12 | 31 | 34 | 42 | 51 | 60 | 108
+        6 | 8 | 9 | 12 | 31 | 34 | 42 | 51 | 60 | 108 | OVERSAMPLING
     ) {
         to_normalized(index, to_plain(index, value))
     } else {
@@ -877,6 +883,7 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         100.0,
         100.0, // Amp velocity sensitivity
         0.0,   // Filter Amount velocity sensitivity
+        0.0,   // Effect Rate: x1
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -1156,9 +1163,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v34: 固定1060バイト。波形番号u32と、その他の実単位f64を保持する。
+// v35: 固定1068バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x22\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x23\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {

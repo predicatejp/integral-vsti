@@ -11,7 +11,7 @@ void checkReverb(IComponent* component, IAudioProcessor* processor, IEditControl
             assert(processor->setupProcessing(setup) == kResultOk);
             std::array<Points, 17> points;
             Changes changes;
-            const std::array<int, 17> indices {132,12,42,43,44,63,64,65,66,67,68,69,70,71,72,73,74};
+            const std::array<int, 17> indices {133,12,42,43,44,63,64,65,66,67,68,69,70,71,72,73,74};
             const std::array<double, 17> plain {0,1,slots>=3?6.:0.,slots>=2?6.:0.,slots>=1?6.:0.,
                 2,6000,100,100,2,6000,100,100,2,6000,100,100};
             for (size_t i=0;i<points.size();++i) {

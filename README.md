@@ -172,11 +172,42 @@ Master VolumeはLimiterの後に作用するため、正のMaster設定では最
 
 先読み窓の最大振幅へ即時追従し、下降時には指数減衰させます。その包絡を先読み長の矩形窓で平均し、1を超える場合にその逆数をゲインとします。
 Releaseはミリ秒から係数を計算し、サンプル区間内の指数減衰を積分して平均することで、サンプルレートによるゲイン推移の差を抑えます。
-音声の遅延長は `ceil(サンプルレート × 0.005)` です。44.1 kHzでは221サンプル（約5.011 ms）、48／96／192 kHzでは240／480／960サンプル（5 ms）になります。
+音声の遅延長は内部レートで `ceil(内部サンプルレート × 0.005)` です。x1・44.1 kHzでは221サンプル（約5.011 ms）、48／96／192 kHzでは240／480／960サンプル（5 ms）になります。
 
 Offでも同じ純遅延と検出履歴を維持します。切替時刻に音量制御だけを切り替え、ホスト申告遅延は変わりません。
-エフェクタ系列の3サンプルを含む総遅延は44.1／48／96／192 kHzで224／243／483／963サンプルです。
+エフェクタ系列とリサンプリングを含む総遅延は、下記のRateごとの式でまとめて算出します。
 VST3 ParamIDは`0x4c490000`、正規化値0がOff、1がOnです。オートメーションは変更点で切り替え、保存・復元にも対応します。
+
+## エフェクタのオーバーサンプリング
+
+Masterの **Rate** でx1／x2／x4を選択します。初期値はx1です。
+
+```text
+Voice合成（ホストレート）
+ → 補間 → Eff 1 → Eff 2 → Eff 3 → EQ → Limiter → 間引き → Master Volume
+           └────────── 内部レート：ホストレート × Rate ──────────┘
+```
+
+x2は129タップの対称FIR、x4はさらに17タップのハーフバンドFIRを使います。
+補間・間引きを系列全体で共有し、エフェクトごとの変換は行いません。
+Delayの音価、Reverbの残響時間、Chorus／PhaserのLFO、Compressorの時間設定、Limiterの先読みは内部レートに合わせて計算します。
+
+エフェクト種類やLimiterの切替では遅延を固定します。
+内部の3サンプルと5 ms先読みを先に合算し、間引き位相を剰余に合わせることで、端数を埋める追加遅延を省きます。
+ホストへ申告する遅延は `FIR遅延 + floor((3 + ceil(ホストレート × 倍率 × 0.005)) / 倍率)` です。
+FIR遅延はx1／x2／x4で0／64／68ホストサンプルです。
+
+| ホストレート | x1 | x2 | x4 |
+| --- | ---: | ---: | ---: |
+| 44.1 kHz | 224 | 286 | 289 |
+| 48 kHz | 243 | 305 | 308 |
+| 96 kHz | 483 | 545 | 548 |
+| 192 kHz | 963 | 1025 | 1028 |
+
+RateはVST3 ParamID `0x46585254`、選択番号0／1／2、正規化値0／0.5／1です。
+保存・復元できる非オートメーション設定として公開します。
+変更時はUIスレッドから`restartComponent(kLatencyChanged)`を通知し、ホストが停止・再有効化した際に内部レートと履歴を準備します。
+音声コールバック内ではバッファを確保せず、切替時には発音と残響の履歴を初期化します。
 
 ## マスターボリューム
 
@@ -375,9 +406,9 @@ Sustainも整数tick（0〜100）を保持し、`音量 = tick / 100` に換算�
 Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホストが渡す変更キューを通じて行います。
 
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
-保存形式v34は1060バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/Mix、Limiter、および各スロットのCompressor Threshold/Ratio/Attack/Release/Knee/Makeup/Mix、Amp Sensitivity・Filter Amount Sensitivityを各f64。little endian）です。
-読み込みは現行形式v34のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
-`setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。
+保存形式v35は1068バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/Mix、Limiter、および各スロットのCompressor Threshold/Ratio/Attack/Release/Knee/Makeup/Mix、Amp Sensitivity・Filter Amount Sensitivity・Effect Rate（0／1／2）を各f64。little endian）です。
+読み込みは現行形式v35のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
+`setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。Rateはホストによる停止・再有効化で適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
@@ -385,7 +416,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 ## 内蔵プリセット
 
 DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。`IUnitInfo`でルートユニット0、
-プログラム一覧0、音色番号0の「Sine」を公開します。音色設定132個に加え、
+プログラム一覧0、音色番号0の「Sine」を公開します。音色設定133個に加え、
 `Program`（ParamID `0x50524f47`、`kIsList | kIsProgramChange`）をホストへ公開します。
 一覧は1音色なので選択番号・正規化値は0です。表示方法はDAWのプログラム選択画面に従います。
 
@@ -398,7 +429,7 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 | カットオフAHDSR / Amount | A/H/D/R=0 ms、S=1 / 0 cent |
 | Amp Sensitivity / Filter Amount Sensitivity | 100% / 0% |
 | Width / Pan / Master Volume / Osc1 Volume | 0% / 中央 / 0 dB / 0 dB |
-| Limiter | Off |
+| Limiter / Rate | Off / x1 |
 | Osc2/3 Waveform / Tune / Volume / Mod | Sine / 0 cent / −∞ dB / 0% |
 | Clipper / Gain / Mix | Soft / 0 dB / 100% |
 
@@ -407,7 +438,7 @@ DAWのVST3プログラム一覧で「Factory → Sine」を選択できます。
 ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の再取得を通知します。
 音声側はProgramの変更キューの時刻で切り替えます。同位置ではProgram、個別パラメーター、ノートの順に適用します。
 連続パラメーターに後続の変更点がある場合、切替時のプリセット値からその点まで補間します。
-編集内容は実際の132設定として保存し、復元時にも編集後の値を保持します。
+編集内容は実際の133設定として保存し、復元時にも編集後の値を保持します。
 
 仕様: [VST3 Presets & Program Lists](https://steinbergmedia.github.io/vst3_dev_portal/pages/Technical%2BDocumentation/Presets%2BProgram%2BLists/Index.html)
 
@@ -454,8 +485,8 @@ ControllerはGUI表示を更新し、`kParamValuesChanged`でホストへ値の�
 | Compressor Makeup | `0x43500105` | `0x43500205` | `0x43500305` |
 | Compressor Mix | `0x43500106` | `0x43500206` | `0x43500306` |
 
-Distortionは1段につき1サンプル遅延します。系列の末尾で不足分の純遅延を補い、エフェクタ系列の遅延を3サンプルに揃えます。ホストへはLimiterの先読みと合計した遅延を申告します。
-全スロットがOffの場合も3サンプルの純遅延になり、原信号の周波数特性を変えません。
+Distortionは1段につき内部レートの1サンプル遅延します。系列の末尾で不足分の純遅延を補い、エフェクタ系列の遅延を内部レートの3サンプルに揃えます。ホストへはLimiterの先読み・リサンプリングと統合した遅延を申告します。
+全スロットがOffの場合も、エフェクタ系列自体は内部レートの3サンプルの純遅延になります。
 
 ### テンポ同期ディレイ
 
@@ -480,9 +511,9 @@ Dualは左右独立に帰還します。Crossは左右を交差して帰還し�
 PP-L／PP-RはWetへの入力を`(L + R) / 2`でモノラル化し、指定側だけへ入れて交差帰還します。PP-Lの反復は左→右→左、PP-Rは右→左→右です。
 どの方式もDryの左右配置を保持します。Stereo方式の変更では履歴を保持し、変更点以降の入力と帰還先を切り替えます。
 
-リングバッファは`setupProcessing`で3スロット分を準備し、音声処理中には確保しません。
-各スロットの上限は64 MiBで、8秒分を確保できないサンプルレートや確保失敗を`setupProcessing`で拒否します。
-44.1/48 kHzでは合計24 MiB、96 kHzでは48 MiBです。
+リングバッファは停止中の`setupProcessing`／`setActive`で内部レートに応じて3スロット分を準備し、音声処理中には確保しません。
+各スロットの上限は256 MiBで、8秒分を確保できない内部レートや確保失敗は再構成時に拒否します。
+ホスト44.1/48 kHzでは合計x1=24 MiB、x2=48 MiB、x4=96 MiBです。
 再生停止・シーク・ループで履歴を消さず、処理停止・再設定・スロット種類変更で初期化します。
 音価による遅延はエフェクトの動作であり、固定の処理遅延に加算しません。
 
@@ -571,15 +602,15 @@ Decayは低域の設計残響時間（T60）、Dampingは帰還LPFの設計周�
 Decay・Damping・Mixは変更点間を線形補間し、Sizeは変更点で切り替えて残響をリセットします。
 Mix=0%は原音、100%は残響です。操作ノブは各スロットにSize・Dec・Dampを等間隔で横一列に並べ、縦ディバイダの右側にMixを配置します。
 
-8本の履歴は最大Sizeを収める領域を`setupProcessing`で全3スロット分確保し、処理中に確保・解放しません。
-上限は1スロット合計16 MiBです。資源上限を超えるレートや確保失敗は`setupProcessing`で拒否します。
+8本の履歴は最大Sizeを収める領域を停止中の`setupProcessing`／`setActive`で全3スロット分確保し、処理中に確保・解放しません。
+上限は1スロット合計16 MiBです。資源上限を超える内部レートや確保失敗は再構成時に拒否します。
 再生停止・シークでは残響を継続し、処理停止・再設定・スロット種類変更でリセットします。
-追加の処理遅延は0サンプルで、エフェクタ系列は固定3サンプルです。
+追加の処理遅延は0サンプルで、エフェクタ系列は内部レートの固定3サンプルです。
 
 ### ディストーション
 
 ClipperはSoft／Hard（初期値Soft）、Gainは0〜+48 dB・0.1 dB刻み（初期値0 dB）、Mixは0〜100%・1%刻み（初期値100%）です。
-Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`をホストレートの2階ADAAで左右独立に処理します。
+Softは`tanh(x × gain)`、Hardは`clamp(x × gain, −1, 1)`を内部レートの2階ADAAで左右独立に処理します。
 Gainの線形倍率は`10^(dB/20)`です。Dryはそのスロットへの入力を1サンプルだけ遅延し、Gainや平均化を掛けません。
 Mixは0%でDry、100%でWetになり、その間を線形混合して次の段へ渡します。Mixは各スロットの出力時点の値を使います。
 バイパスはスロットの種類でOffを選択します。Gain・Mixはオートメーションの変更点間を線形補間し、種類・Clipperは変更点で切り替えます。
@@ -599,7 +630,7 @@ Amp・Filter・EQ・Masterの見出しは、Osc1/2/3・Eff 1/2/3と同じ小さ�
 ピークメーター左側の**Reset**ボタンは、音色パラメーター・サンプルレート・テンポを保ったまま、発音中ノート・エンベロープ・発振器位相・位相変調履歴・乱数列・全エフェクト／EQ／Limiterの履歴を初期化します。次のVoice割当は0へ戻ります。GUIはatomicで要求を渡し、次のVST3 `process`（0サンプルのフラッシュを含む）で初期化します。初期化時にメモリ確保や乱数のシード取得は行いません。
 
 ホストのプラグイン画面に、ライトテーマの操作盤を表示します。全幅の上部にタイトルバーを配置し、Sample VSTiと、発音数を示す32枠の点灯インジケーターを表示します。
-左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3スロットをまとめたEffectsパネル、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。Ampのタイトルは他のパネルと同じ左上位置に固定し、Sensを右上に置き、その直下にAHDSRを横一列で並べます。上下・行間は標準の9.6pxに揃えます。FilterはF・Res・Amt・Sensを同じ行に並べます。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトル・種類の選択欄・↑／↓の交換ボタンを同じ行に置き、交換ボタンは右端に配置しX座標を3スロットで揃えます。DistortionはClipper選択欄とGain・Mixを同じ行に配置します。Delayは左にStereo方式の選択欄、中央にTime・Fdbkの縦列、右端に共通位置のMixを配置します。内部選択欄は縦方向の中央に置きます。選択欄の直上にタイトルを中央揃えで表示します。Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは153.6px幅とし、Phase・Limiter・Clipper・Stereoのタイトルは共通の描画処理で、選択欄の直上に中央揃え・同じ文字サイズ・同じ間隔で表示します。MasterのPhase・Limiterは縦に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
+左のOscillatorセクションにOsc1/2/3を縦にまとめ、その右にAmpとカットオフAHDSRを統合したFilter、エフェクト列に3スロットをまとめたEffectsパネル、右端列全体に縦長のMasterを配置します。EQは左2列の下に横長で配置します。Ampのタイトルは他のパネルと同じ左上位置に固定し、Sensを右上に置き、その直下にAHDSRを横一列で並べます。上下・行間は標準の9.6pxに揃えます。FilterはF・Res・Amt・Sensを同じ行に並べます。Waveformは各Oscの行見出し、Filterはタイトルの右にドロップダウンを置きます。各エフェクタスロットはタイトル・種類の選択欄・↑／↓の交換ボタンを同じ行に置き、交換ボタンは右端に配置しX座標を3スロットで揃えます。DistortionはClipper選択欄とGain・Mixを同じ行に配置します。Delayは左にStereo方式の選択欄、中央にTime・Fdbkの縦列、右端に共通位置のMixを配置します。内部選択欄は縦方向の中央に置きます。選択欄の直上にタイトルを中央揃えで表示します。Timeは32物理pxの移動で音価を1段階変更します。Timeの各段階に目盛りを表示し、操作中のオーバーレイに音価名を表示します。EQはLow・Mid・Highの順に7ノブを横一列で均等配置します。Osc1/2/3の間は水平線、EQのLow/Mid/Highの間は垂直線で区切り、色と太さはパネルの枠線に揃えます。Masterは153.6px幅とし、Phase・Rate・Limiter・Clipper・Stereoのタイトルは共通の描画処理で、選択欄の直上に中央揃え・同じ文字サイズ・同じ間隔で表示します。MasterのPhase・Rate・Limiterは縦に並べ、その下にVol・Pan・Polyを縦一列に配置します。淡いグリーンと白を基調とし、文字・指針・目盛りを濃い色で表示します。
 発音数は音量AHDSRのリリース中を含むVoice数です。ユニゾンやOsc1〜3の個数は加算しません。音声ブロック末尾にatomic値を更新し、GUIの既存タイマーで表示へ反映します。処理停止時は0に戻ります。
 タイトルバーの発音数インジケータの上に、同じ幅の出力ピークメータを表示します。Master音量適用後の左右最大サンプルピークを−60〜＋12 dBFSで表示します。0 dBFSまでの部分は明るい緑、0 dBFSを超えた部分は明るい赤とし、0 dBFSの境界線を示します。描画間のピークを保持し、未点灯部分は白に近い色にします。表示は48 dB/秒で減衰します。
 
@@ -948,6 +979,7 @@ GUI・ウィンドウ・描画・フォントの依存ライセンスは `deny.t
 - `src/delay.rs`: テンポ同期ステレオディレイと読出し位置のクロスフェード。
 - `src/compressor.rs`: 左右ピーク連動のsoft knee・Attack/ReleaseとWet/Dry混合。
 - `src/phaser.rs`: 6段正規化ラティスallpass、共通LFOと帰還によるPhaser。
+- `src/oversampling.rs`: エフェクタ系列の共有FIR補間・間引きと倍率ごとの遅延。
 - `src/effects.rs`: 3スロットの直列処理、個別のDry/Mix・切り替え、全体の固定遅延。
 - `src/distortion.rs`: プリゲイン・クリップ・2階ADAA。`src/distortion/`はSoft用の原始関数と共有テーブル。
 - `src/eq.rs`: TPT SVFによるLow shelf・Peak・High shelfの3帯域EQ。
