@@ -46,15 +46,22 @@ jobs:
               -f state=pending -f context="$context" \
               -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
           done
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
       - name: Verify PR target and revision
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
-        run: python3 scripts/pr-ci.py check
+        run: |
+          if [[ -z "$PR_NUMBER" ]]; then
+            [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]]
+            exit
+          fi
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          details=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json state,baseRefName,headRefOid,headRefName,isCrossRepository \
+            --jq '[.state, .baseRefName, .headRefOid, .headRefName, .isCrossRepository] | @tsv')
+          IFS=$'\t' read -r state base sha branch cross <<< "$details"
+          [[ "$state" == OPEN && "$base" == main && "$sha" == "$GITHUB_SHA" && \
+             "refs/heads/$branch" == "$GITHUB_REF" && "$cross" == false ]]
 
   quality:
     needs: target
@@ -67,7 +74,6 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
       - run: sh scripts/install-ci-tools.sh core
-      - run: python3 tests/pr-ci.py
       - run: python3 tests/build-metadata.py
       - run: cargo +stable fmt --all --check
       - run: cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings

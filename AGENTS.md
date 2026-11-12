@@ -82,8 +82,8 @@
 READMEへ実装詳細や開発経緯を追記しないこと。生成物は`target/`以下へ配置する。
 VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体のビルド依存ではない。
 
-CIは明示的な手動起動だけで実行する。PRコメントの`/ci`を受けた既定ブランチの配送ワークフロー、または`workflow_dispatch`で起動する。push・タグ作成・PR作成／更新・定期実行による自動起動を追加しないこと。
-PR画面では書き込み権限のあるユーザーが`/ci`を投稿する。配送側は同一リポジトリ内のopen PRとbase=`main`を確認し、先頭ブランチのRust CIを起動する。Rust CIもPR番号・先頭コミット・ブランチを照合する。`main`のマージ条件はGitHub Actionsによる`PR target`と`CI result`の成功、および最新の`main`の取り込みとし、管理者もCI条件を迂回しない。手動実行の結果は対象コミットのstatusへ通知し、再実行時はpendingへ戻す。Actions画面からはPR CIにPR番号を指定するか、Rust CIで先頭ブランチと`pr_number`を指定する。正式版はリリースタグを選んで手動起動する。
+CIの起動はユーザーの明示的な操作・実行指示に限定し、`workflow_dispatch`だけを使用する。エージェントが検証目的で独自に起動・再実行しないこと。push・タグ作成・PR作成／更新・コメント・定期実行による自動起動を追加しないこと。
+ActionsのRust CIでPRの先頭ブランチと`pr_number`を指定する。`PR target`でopen PR・base=`main`・同一リポジトリ・先頭コミット・ブランチを照合する。`main`のマージ条件はGitHub Actionsによる`PR target`と`CI result`の成功、および最新の`main`の取り込みとし、管理者もCI条件を迂回しない。手動実行の結果は対象コミットのstatusへ通知し、再実行時はpendingへ戻す。正式版はリリースタグを選んで手動起動する。
 変更時は該当ジョブをローカルでも検証し、
 GitHub上での実行結果とローカルでの確認を区別して報告すること。
 CI用ツールの固定バージョンは `scripts/ci-versions.sh` で更新し、MSRVは `Cargo.toml` の `rust-version` と一致させること。
