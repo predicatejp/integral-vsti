@@ -92,12 +92,20 @@ impl Reverb {
             line.resize(length, 0.);
         }
         self.state.lines = lines;
+        self.set_sample_rate(sample_rate);
+        true
+    }
+
+    /// prepare済みの領域内で遅延長と係数だけを再設定する。
+    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        debug_assert!(self.state.lines.iter().zip(LENGTHS).all(|(line, base)| {
+            (base as f64 * sample_rate / 48000.0 * 2.0).ceil() <= line.len() as f64
+        }));
         self.state.sample_rate = sample_rate;
         self.update_lengths();
         self.update_decay();
         self.update_damping();
         self.reset();
-        true
     }
 
     pub fn prepared_for(&self, sample_rate: f64) -> bool {

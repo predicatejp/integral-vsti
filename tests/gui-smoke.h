@@ -330,10 +330,8 @@ public:
     }
     tresult PLUGIN_API restartComponent(int32 flags) override {
         assert(std::this_thread::get_id() == uiThread && flags == kLatencyChanged);
-        assert(processor->setProcessing(false) == kResultOk);
-        assert(component->setActive(false) == kResultOk);
-        assert(component->setActive(true) == kResultOk);
-        assert(processor->setProcessing(true) == kResultOk);
+        // UI操作後の切替は、ホストによる再有効化へ依存しない。
+        assert(processor->getLatencySamples() >= 243);
         ++restarts;
         return kResultOk;
     }
@@ -897,7 +895,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(handler.sequence == (std::vector<int>{0, 2}));
         waitFor([&] { return parent.cursorVisible(); }, "cursor restored after focus loss");
         parent.knobButton(false); pump(); handler.sequence.clear();
-        // Rate選択はUIスレッドの再構成を経て、倍率に対応する遅延へ切り替わる。
+        // Rate選択直後に新しい遅延を返し、ホストは再有効化せず処理を続けられる。
         assert(component->setActive(true) == kResultOk);
         assert(processor->setProcessing(true) == kResultOk);
         const auto beforeRate = handler.restarts;

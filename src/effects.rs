@@ -292,6 +292,18 @@ impl Effects {
         true
     }
 
+    /// 確保済みの最大レート以下へ切り替える。確保・解放は行わない。
+    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        for slot in &mut self.state.slots {
+            slot.state.delay.set_sample_rate(sample_rate);
+            slot.state.reverb.set_sample_rate(sample_rate);
+            slot.state.chorus.set_sample_rate(sample_rate);
+            slot.state.phaser.prepare(sample_rate);
+            slot.state.compressor.prepare(sample_rate);
+        }
+        self.reset();
+    }
+
     pub fn set_tempo(&mut self, tempo: f64) {
         if tempo.is_finite() && tempo > 0.0 && tempo != self.state.tempo {
             self.state.tempo = tempo;

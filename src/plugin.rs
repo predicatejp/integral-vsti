@@ -12,7 +12,7 @@ use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 mod programs;
 
@@ -69,8 +69,8 @@ struct Plugin {
     max_samples: AtomicI32,
     /// 設定済みのサンプル形式（SAMPLE32またはSAMPLE64）。正の長さの処理には一致を要求する。
     sample_size: AtomicI32,
-    /// setupProcessing／setActiveで確定した総遅延。照会はatomicだけを読む。
-    latency: AtomicU32,
+    /// setupProcessingで受理したホストレート。UIの遅延照会はDSPを借用しない。
+    sample_rate: AtomicU64,
     /// UIスレッドで最後に要求したRateの選択番号。再入で同じ再起動を重複通知しない。
     requested_rate: Cell<usize>,
 }
@@ -144,7 +144,6 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         return NO_INTERFACE;
     }
     let synth = Synthesizer::new();
-    let latency = synth.latency_samples() as u32;
     let plugin = Box::new(Plugin {
         component: Interface {
             vtable: ptr::from_ref(&COMPONENT).cast(),
@@ -181,7 +180,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         synth: UnsafeCell::new(synth),
         max_samples: AtomicI32::new(0),
         sample_size: AtomicI32::new(SAMPLE32),
-        latency: AtomicU32::new(latency),
+        sample_rate: AtomicU64::new(44100.0_f64.to_bits()),
         requested_rate: Cell::new(0),
     });
     let owner = Box::into_raw(plugin);
@@ -393,21 +392,9 @@ unsafe extern "system" fn set_active(this: This, state: u8) -> TResult {
         let values = plugin.processor_parameters.snapshot();
         let rate = parameters::to_plain(parameters::OVERSAMPLING, values[parameters::OVERSAMPLING])
             as usize;
-        let mode = [
-            crate::oversampling::Mode::X1,
-            crate::oversampling::Mode::X2,
-            crate::oversampling::Mode::X4,
-        ][rate];
-        // SAFETY: setActive(true)は停止中のUIスレッドで呼ばれる。確保を伴う再構成はここで行う。
-        let synth = unsafe { &mut *plugin.synth.get() };
-        synth.set_parameters(values);
-        if !synth.set_oversampling(mode) {
-            return FALSE;
-        }
+        // SAFETY: setActiveはprocessと直列化される。倍率の適用も確保済み領域内で行う。
+        unsafe { (*plugin.synth.get()).set_parameters(values) };
         plugin.requested_rate.set(rate);
-        plugin
-            .latency
-            .store(synth.latency_samples() as u32, Ordering::Relaxed);
     }
     // 既に同じ有効状態でも成功とする。終了時の重複した無効化も安全に扱う。
     plugin.active.store(state, Ordering::Relaxed);
@@ -808,7 +795,14 @@ unsafe extern "system" fn can_process_sample_size(_: This, size: i32) -> TResult
 
 unsafe extern "system" fn latency_samples(this: This) -> u32 {
     // SAFETY: 生存中のIAudioProcessor。音声状態へは触れない。
-    unsafe { instance(this) }.latency.load(Ordering::Relaxed)
+    let plugin = unsafe { instance(this) };
+    let sample_rate = f64::from_bits(plugin.sample_rate.load(Ordering::Relaxed));
+    let rate = parameters::to_plain(
+        parameters::OVERSAMPLING,
+        plugin.processor_parameters.get(parameters::OVERSAMPLING),
+    ) as usize;
+    // ホストの照会順序に依存せず、次の音声処理で適用する倍率の遅延を返す。
+    Synthesizer::latency_at(sample_rate, parameters::OVERSAMPLING_MODES[rate]) as u32
 }
 
 unsafe extern "system" fn context_requirements(_: This) -> u32 {
@@ -839,11 +833,9 @@ unsafe extern "system" fn setup_processing(this: This, setup: *const ProcessSetu
     if !unsafe { (*plugin.synth.get()).set_sample_rate(setup.sample_rate) } {
         return FALSE;
     }
-    // SAFETY: setupProcessingは非アクティブ状態で直列化される。
-    plugin.latency.store(
-        unsafe { (*plugin.synth.get()).latency_samples() } as u32,
-        Ordering::Relaxed,
-    );
+    plugin
+        .sample_rate
+        .store(setup.sample_rate.to_bits(), Ordering::Relaxed);
     plugin
         .max_samples
         .store(setup.max_samples_per_block, Ordering::Relaxed);

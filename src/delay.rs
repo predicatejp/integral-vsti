@@ -108,10 +108,16 @@ impl Delay {
             buffer.resize(size, [0.0; 2]);
             self.state.buffer = buffer;
         }
+        self.set_sample_rate(sample_rate);
+        true
+    }
+
+    /// prepareで確保した最大レート以下へ、確保せず切り替える。
+    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        debug_assert!((sample_rate * 8.0).ceil() + 2.0 <= self.state.buffer.len() as f64);
         self.state.sample_rate = sample_rate;
         self.state.fade_length = (sample_rate * 0.05).round() as usize;
         self.reset();
-        true
     }
 
     pub fn set_parameters(&mut self, parameters: DelayParameters) {

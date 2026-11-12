@@ -22,6 +22,8 @@ struct LimiterState {
     enabled: bool,
     /// 5 msを切り上げた長さの音声・包絡履歴。確保は初期化・setup時だけ。
     history: Vec<Frame>,
+    /// 現在の内部レートでの先読み長。確保したhistoryの有効な先頭部分を使う。
+    lookahead: usize,
     /// 次に交換する最古の履歴の位置。
     position: usize,
     /// 減少順の最大値queue（振幅、入力sample番号）。添字用に2の冪長を確保する。
@@ -52,6 +54,7 @@ impl Limiter {
             state: LimiterState {
                 enabled: false,
                 history: vec![Frame::default(); size],
+                lookahead: size,
                 position: 0,
                 peaks: vec![(0.0, 0); (size + 1).next_power_of_two()],
                 head: 0,
@@ -90,13 +93,21 @@ impl Limiter {
             self.state.history = history;
             self.state.peaks = peaks;
         }
-        self.update_release(sample_rate);
-        self.reset();
+        self.set_sample_rate(sample_rate);
         true
     }
 
+    /// prepare済みの容量を保ち、現在の5 msに対応する有効長へ切り替える。
+    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        let lookahead = (sample_rate * LOOKAHEAD_MS / 1000.0).ceil() as usize;
+        debug_assert!(lookahead > 0 && lookahead <= self.state.history.len());
+        self.state.lookahead = lookahead;
+        self.update_release(sample_rate);
+        self.reset();
+    }
+
     pub fn latency_samples(&self) -> usize {
-        self.state.history.len()
+        self.state.lookahead
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -111,7 +122,7 @@ impl Limiter {
     }
 
     pub fn reset(&mut self) {
-        self.state.history.fill(Frame::default());
+        self.state.history[..self.state.lookahead].fill(Frame::default());
         self.state.position = 0;
         self.state.head = 0;
         self.state.length = 0;
@@ -123,7 +134,7 @@ impl Limiter {
     pub fn process_sample(&mut self, input: [f64; 2]) -> [f64; 2] {
         let s = &mut self.state;
         let peak = input[0].abs().max(input[1].abs());
-        let size = s.history.len();
+        let size = s.lookahead;
         let mask = s.peaks.len() - 1;
         if s.length > 0 && s.frame.wrapping_sub(s.peaks[s.head].1) > size as u64 {
             s.head = (s.head + 1) & mask;

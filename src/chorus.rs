@@ -92,11 +92,17 @@ impl Chorus {
         }
         buffer.resize(length, [0.0; 2]);
         self.state.buffer = buffer;
+        self.set_sample_rate(sample_rate);
+        true
+    }
+
+    /// prepare済みの領域を使い、履歴と時間・LFO係数を更新する。
+    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        debug_assert!((sample_rate * 0.050).ceil() + 2.0 <= self.state.buffer.len() as f64);
         self.state.sample_rate = sample_rate;
         self.update_delay();
         self.update_rate();
         self.reset();
-        true
     }
 
     pub fn prepared_for(&self, sample_rate: f64) -> bool {

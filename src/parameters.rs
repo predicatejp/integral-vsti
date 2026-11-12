@@ -12,8 +12,13 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const COUNT: usize = 133;
-/// エフェクタ系列の処理倍率。停止中の再構成で適用する。
+/// エフェクタ系列の処理倍率。次の音声処理で適用する。
 pub const OVERSAMPLING: usize = 132;
+pub const OVERSAMPLING_MODES: [crate::oversampling::Mode; 3] = [
+    crate::oversampling::Mode::X1,
+    crate::oversampling::Mode::X2,
+    crate::oversampling::Mode::X4,
+];
 /// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo、ReverbのDecay/Damping/Size/Mix、ChorusのTime/Depth/Rate/Detune/Feedback/Mix、PhaserのCenter/Depth/Rate/Feedback/Mix、CompressorのThreshold/Ratio/Attack/Release/Knee/Makeup/Mix。IDは位置に固定する。
 pub const EFFECT_SLOTS: [[usize; 30]; 3] = [
     [

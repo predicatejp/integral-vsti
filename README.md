@@ -206,8 +206,9 @@ FIR遅延はx1／x2／x4で0／64／68ホストサンプルです。
 
 RateはVST3 ParamID `0x46585254`、選択番号0／1／2、正規化値0／0.5／1です。
 保存・復元できる非オートメーション設定として公開します。
-変更時はUIスレッドから`restartComponent(kLatencyChanged)`を通知し、ホストが停止・再有効化した際に内部レートと履歴を準備します。
-音声コールバック内ではバッファを確保せず、切替時には発音と残響の履歴を初期化します。
+Rateは次の音声処理で適用します。最大x4の履歴領域を`setupProcessing`で確保し、切替時は内部レート・係数・有効長を更新します。
+発音中のノート・位相・エンベロープは継続し、エフェクト・EQ・Limiter・リサンプラの履歴を初期化します。音声コールバック内での確保・解放は行いません。
+UIスレッドの`restartComponent(kLatencyChanged)`は遅延補正の更新を通知するために使います。`getLatencySamples`は選択直後から新しい遅延を返し、DSPの倍率切替はホストの停止・再有効化を待ちません。
 
 ## マスターボリューム
 
@@ -408,7 +409,7 @@ Controllerの `setParamNormalized` は表示値を更新し、DSPの更新はホ
 保存・復元には標準の `IComponent::getState/setState` と `IBStream` を使用します。
 保存形式v35は1068バイト（`SVST`、バージョンu32、波形番号u32、実単位のAttack/Hold/Decay/Sustain/Release/Unison/Detune/Polyphony/Filter/Cutoff/Resonance/Phase/Volume/Cutoff Attack/Cutoff Hold/Cutoff Decay/Cutoff Sustain/Cutoff Release/Cutoff Amount/Width/Pan/Osc1 Volume/Osc2 Waveform/Osc2 Tune/Osc2 Volume/Osc3 Waveform/Osc3 Tune/Osc3 Volume/Osc2 Mod/Osc3 Mod/Clipper type/Gain/Mix/EQ Enable/Low Frequency/Low Gain/Mid Frequency/Mid Gain/Mid Q/High Frequency/High Gain/Effect 1/Effect 2/Effect 3/Effect 2 Clipper/Gain/Mix/Effect 3 Clipper/Gain/Mix、および各スロットのDelay Time/Feedback/Mixと3スロットのStereo、Reverb Decay/Damping/Size/MixとChorus Time/Depth/Rate/Detune/Feedback/Mix、Phaser Center/Depth/Rate/Feedback/Mix、Limiter、および各スロットのCompressor Threshold/Ratio/Attack/Release/Knee/Makeup/Mix、Amp Sensitivity・Filter Amount Sensitivity・Effect Rate（0／1／2）を各f64。little endian）です。
 読み込みは現行形式v35のみです。異なるバージョン・空データ・不正値・途中切れは拒否し、現在の設定を保持します。
-`setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。Rateはホストによる停止・再有効化で適用します。
+`setState` はProcessorと同一インスタンスのControllerの値を復元し、DSPには次の音声処理ブロックから適用します。Rateも次の音声処理で適用します。
 標準の `setComponentState` によるControllerの同期にも対応します。
 位相・乱数状態・発音中のノートは保存・復元の対象にせず、Controller固有の保存状態は空です。
 状態の受け渡しはatomicで行い、音声スレッドをロックしません。
@@ -511,9 +512,9 @@ Dualは左右独立に帰還します。Crossは左右を交差して帰還し�
 PP-L／PP-RはWetへの入力を`(L + R) / 2`でモノラル化し、指定側だけへ入れて交差帰還します。PP-Lの反復は左→右→左、PP-Rは右→左→右です。
 どの方式もDryの左右配置を保持します。Stereo方式の変更では履歴を保持し、変更点以降の入力と帰還先を切り替えます。
 
-リングバッファは停止中の`setupProcessing`／`setActive`で内部レートに応じて3スロット分を準備し、音声処理中には確保しません。
+リングバッファは`setupProcessing`でホストレート×4の3スロット分を準備し、音声処理中には確保しません。
 各スロットの上限は256 MiBで、8秒分を確保できない内部レートや確保失敗は再構成時に拒否します。
-ホスト44.1/48 kHzでは合計x1=24 MiB、x2=48 MiB、x4=96 MiBです。
+ホスト44.1/48 kHzでは選択倍率にかかわらず合計96 MiBです。
 再生停止・シーク・ループで履歴を消さず、処理停止・再設定・スロット種類変更で初期化します。
 音価による遅延はエフェクトの動作であり、固定の処理遅延に加算しません。
 
@@ -602,7 +603,7 @@ Decayは低域の設計残響時間（T60）、Dampingは帰還LPFの設計周�
 Decay・Damping・Mixは変更点間を線形補間し、Sizeは変更点で切り替えて残響をリセットします。
 Mix=0%は原音、100%は残響です。操作ノブは各スロットにSize・Dec・Dampを等間隔で横一列に並べ、縦ディバイダの右側にMixを配置します。
 
-8本の履歴は最大Sizeを収める領域を停止中の`setupProcessing`／`setActive`で全3スロット分確保し、処理中に確保・解放しません。
+8本の履歴は最大Sizeを収める領域を`setupProcessing`でホストレート×4の全3スロット分を確保し、処理中に確保・解放しません。
 上限は1スロット合計16 MiBです。資源上限を超える内部レートや確保失敗は再構成時に拒否します。
 再生停止・シークでは残響を継続し、処理停止・再設定・スロット種類変更でリセットします。
 追加の処理遅延は0サンプルで、エフェクタ系列は内部レートの固定3サンプルです。
