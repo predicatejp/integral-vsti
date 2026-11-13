@@ -86,10 +86,10 @@ CIの起動はユーザーの明示的な操作・実行指示に限定し、`wo
 ActionsのRust CIでPRの先頭ブランチと`pr_number`を指定する。`PR target`でopen PR・base=`main`・同一リポジトリ・先頭コミット・ブランチを照合する。`main`のマージ条件はGitHub Actionsによる`PR target`と`CI result`の成功、および最新の`main`の取り込みとし、管理者もCI条件を迂回しない。手動実行の結果は対象コミットのstatusへ通知し、再実行時はpendingへ戻す。正式版はリリースタグを選んで手動起動する。
 変更時は該当ジョブをローカルでも検証し、
 GitHub上での実行結果とローカルでの確認を区別して報告すること。
-通常PRのCIは実行開始から結果集約まで3分以内を合格条件とし、超過時は成功扱いにしない。各検証ジョブも`timeout-minutes: 3`を上限とする。Miri・SDKによるABI検証・GUI検証・Validatorは通常PRのCIから除外し、必要な変更でローカル検証を明示的に実行する。通常PRではRustのテスト・静的解析・依存関係監査・カバレッジと、Linux/Windowsのバンドル生成を実行する。
+テストとCIの実行時間は可能な限り短く保つこと。walltimeを合否条件にせず、ワークフロー独自の経過時間制限や`timeout-minutes`は設定しない。Miri・SDKによるABI検証・GUI検証・Validatorは通常PRのCIから除外し、必要な変更でローカル検証を明示的に実行する。通常PRではRustのテスト・静的解析・依存関係監査・カバレッジを実行する。MSRVとstableの全テストをLinux/Windowsのtestプロファイルで実行し、releaseプロファイルの検査はLinuxで行う。PR対象の検査と各検証ジョブは並列に開始し、すべての結果を集約してマージ条件を判定する。
 CI用ツールの固定バージョンは `scripts/ci-versions.sh` で更新し、MSRVは `Cargo.toml` の `rust-version` と一致させること。
 開発版は `dev-<完全なコミットID>`、正式版はCargo.tomlのSemantic Versioningとする。
-PRでは先頭コミットをビルドし、成果物名・ホスト向けバージョン・build-info.jsonのコミットを一致させること。
+配布バンドル生成は独立した`VST3 Build`（`.github/workflows/vst3.yml`）へ分離し、必要な場合だけユーザーが手動起動する。通常CIの起動・成功やPRのマージ条件へ連動させない。PRでは先頭ブランチとPR番号を指定し、先頭コミットをビルドして成果物名・ホスト向けバージョン・build-info.jsonのコミットを一致させること。
 最適化ビルドと正式リリースを区別し、正式版は `INTEGRAL_RELEASE_VERSION` で明示すること。
 バンドルZIPにはライセンス通知とビルド情報を含める。バージョン生成の変更時は `python3 tests/build-metadata.py` を実行すること。
 MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済みとしないこと。
