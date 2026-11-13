@@ -141,7 +141,7 @@ const GAP: f32 = 8.0;
 const HEADER_HEIGHT: f32 = 28.0;
 const CHOICE_HEIGHT: f32 = 28.0;
 /// 製品名・全体コントロール・メーターを表示する上部バー。
-const TITLE_BAR_HEIGHT: f32 = KNOB_CELL.y;
+const TITLE_BAR_HEIGHT: f32 = KNOB_CELL.y - GAP;
 /// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
 const KNOB_CELL: egui::Vec2 = egui::vec2(56.0, 64.0);
 const KNOB_CENTER_Y: f32 = 28.0;
@@ -461,7 +461,7 @@ impl Editor {
         );
         let (label_position, label_align) = if matches!(index, 13 | 21) {
             (
-                egui::pos2(area.left() - GAP, center.y),
+                egui::pos2(center.x - 32.0 * KNOB_SCALE - GAP / 2.0, center.y),
                 egui::Align2::RIGHT_CENTER,
             )
         } else {
@@ -1003,7 +1003,7 @@ impl WindowHandler for Editor {
                 INK,
             );
             let meter_x = effects_x + (side_width - 254.0) / 2.0;
-            let button_size = egui::vec2(64.0, 40.0);
+            let button_size = egui::vec2(64.0, 32.0);
             let reset_rect = egui::Rect::from_min_size(
                 egui::pos2(
                     center_x + filter_width - GAP - button_size.x,
