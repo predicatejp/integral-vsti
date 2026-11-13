@@ -89,14 +89,33 @@ struct NativeParent {
         HWND child = this->child(); assert(child);
         RECT rect; assert(GetClientRect(child, &rect));
         HDC dc = GetDC(child); assert(dc);
+        // 画素ごとのGetPixelによる画面読み戻しを避け、一括で取得する。
+        HDC memory = CreateCompatibleDC(dc); assert(memory);
+        BITMAPINFO info {};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = rect.right;
+        info.bmiHeader.biHeight = -rect.bottom; // 上から下へ並ぶ32bit BGR。
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        void* pixels = nullptr;
+        HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+        assert(bitmap && pixels);
+        HGDIOBJ previous = SelectObject(memory, bitmap); assert(previous && previous != HGDI_ERROR);
+        assert(BitBlt(memory, 0, 0, rect.right, rect.bottom, dc, 0, 0, SRCCOPY));
+        assert(GdiFlush());
+        const auto* bgra = static_cast<const unsigned char*>(pixels);
         std::ofstream file(path, std::ios::binary);
         file << "P6\n" << rect.right << ' ' << rect.bottom << "\n255\n";
         for (int y = 0; y < rect.bottom; ++y) for (int x = 0; x < rect.right; ++x) {
-            COLORREF pixel = GetPixel(dc, x, y);
-            const char rgb[] = {static_cast<char>(GetRValue(pixel)),
-                                static_cast<char>(GetGValue(pixel)), static_cast<char>(GetBValue(pixel))};
+            const auto* pixel = bgra + (static_cast<size_t>(y) * rect.right + x) * 4;
+            const char rgb[] = {static_cast<char>(pixel[2]),
+                                static_cast<char>(pixel[1]), static_cast<char>(pixel[0])};
             file.write(rgb, 3);
         }
+        assert(SelectObject(memory, previous) == bitmap);
+        assert(DeleteObject(bitmap));
+        assert(DeleteDC(memory));
         ReleaseDC(child, dc);
     }
 #else

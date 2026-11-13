@@ -136,9 +136,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
       - run: sh scripts/install-ci-tools.sh miri
-      - run: |
-          source scripts/ci-versions.sh
-          MIRIFLAGS=-Zmiri-no-extra-rounding-error cargo +"$CI_NIGHTLY" miri test --locked --lib
+      - run: bash scripts/check-miri.sh
 
   coverage:
     needs: target

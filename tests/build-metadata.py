@@ -45,12 +45,20 @@ with tempfile.TemporaryDirectory(prefix="integral-version-") as temporary:
     commit = run(directory, "git", "rev-parse", "HEAD")
 
     def cargo(env=environment, succeeds=True):
-        return run(directory, "cargo", "run", "--quiet", "--locked", env=env, succeeds=succeeds)
+        output = run(directory, "cargo", "run", "--quiet", "--locked",
+                     "--message-format=json", env=env, succeeds=succeeds)
+        if not succeeds:
+            return output
+        lines = output.splitlines()
+        for line in lines:
+            if line.startswith("{"):
+                message = json.loads(line)
+                if message["reason"] == "build-script-executed":
+                    cargo.info_path = Path(message["out_dir"]) / "build-info.json"
+        return "\n".join(line for line in lines if not line.startswith("{"))
 
     def metadata():
-        paths = list((directory / "target/debug/build").glob("*/out/build-info.json"))
-        assert len(paths) == 1
-        return json.loads(paths[0].read_text())
+        return json.loads(cargo.info_path.read_text())
 
     assert cargo() == f"dev-{commit}"
     assert metadata()["dirty"] is False
