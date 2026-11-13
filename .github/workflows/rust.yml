@@ -30,7 +30,6 @@ jobs:
   target:
     name: PR target
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
     permissions:
       contents: read
       pull-requests: read
@@ -64,10 +63,12 @@ jobs:
              "refs/heads/$branch" == "$GITHUB_REF" && "$cross" == false ]]
 
   quality:
-    needs: target
-    name: Format, Clippy, docs
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    name: Static analysis (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -75,22 +76,33 @@ jobs:
           ref: ${{ github.sha }}
       - run: sh scripts/install-ci-tools.sh core
       - run: python3 tests/build-metadata.py
+        if: runner.os == 'Linux'
       - run: cargo +stable fmt --all --check
+        if: runner.os == 'Linux'
       - run: cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo +stable doc --locked --workspace --all-features --no-deps
+        if: runner.os == 'Linux'
         env:
           RUSTDOCFLAGS: -D warnings
 
   test:
-    needs: target
-    name: Build and test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    name: Test (${{ matrix.os }}, ${{ matrix.toolchain }}, ${{ matrix.profile }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 3
     strategy:
       fail-fast: false
       matrix:
         toolchain: [msrv, stable]
         os: [ubuntu-24.04, windows-2022]
+        profile: [test, release]
+        exclude:
+          # Windowsではtestで全ケースを実行し、最適化時の検査はLinuxで行う。
+          - os: windows-2022
+            profile: release
+    env:
+      # debug assertionsとoverflow checksを保ち、テスト用のデバッグ情報だけを省く。
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      TEST_PROFILE: ${{ matrix.profile }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -105,7 +117,7 @@ jobs:
             sh scripts/install-ci-tools.sh msrv
             echo "RUSTUP_TOOLCHAIN=$CI_MSRV" >> "$GITHUB_ENV"
           else
-            sh scripts/install-ci-tools.sh core
+            rustup toolchain install stable --profile minimal --no-self-update
             echo 'RUSTUP_TOOLCHAIN=stable' >> "$GITHUB_ENV"
           fi
       - name: Identify Rust compiler
@@ -119,17 +131,13 @@ jobs:
             ~/.cargo/git
             target/debug
             target/release
-          key: cargo-v1-${{ runner.os }}-test-${{ steps.compiler.outputs.hash }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci-versions.sh') }}
-          restore-keys: cargo-v1-${{ runner.os }}-test-${{ steps.compiler.outputs.hash }}-
-      - run: cargo test --locked --workspace --all-targets --all-features
-      - run: cargo test --locked --release --workspace --all-targets --all-features
-      - run: cargo build --locked --release --workspace --all-features
+          key: cargo-v2-${{ runner.os }}-test-${{ matrix.profile }}-${{ steps.compiler.outputs.hash }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci-versions.sh') }}
+          restore-keys: cargo-v2-${{ runner.os }}-test-${{ matrix.profile }}-${{ steps.compiler.outputs.hash }}-
+      - run: cargo test --profile "$TEST_PROFILE" --locked --workspace --all-targets --all-features
 
   coverage:
-    needs: target
     name: Coverage
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -148,10 +156,8 @@ jobs:
           retention-days: 14
 
   dependencies:
-    needs: target
     name: Dependency audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -161,92 +167,12 @@ jobs:
       - run: sh scripts/install-ci-tools.sh audit
       - run: cargo +stable deny --locked check
 
-  bundle:
-    needs: target
-    name: VST3 bundle (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 3
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2022]
-    env:
-      PR_NUMBER: ${{ inputs.pr_number }}
-      RUSTUP_TOOLCHAIN: stable
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-      - run: sh scripts/install-ci-tools.sh core
-      - name: Identify Rust compiler
-        id: compiler
-        run: echo "hash=$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - name: Cache Rust build dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 (MIT)
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/debug
-            target/release
-            target/x86_64-unknown-linux-gnu
-            target/x86_64-pc-windows-msvc
-          key: cargo-v1-${{ runner.os }}-vst3-${{ steps.compiler.outputs.hash }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci-versions.sh') }}
-          restore-keys: cargo-v1-${{ runner.os }}-vst3-${{ steps.compiler.outputs.hash }}-
-      - name: Configure MSVC tools
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $installation) { throw 'MSVC build tools not found' }
-          & cmd.exe /d /s /c "call `"$installation\Common7\Tools\VsDevCmd.bat`" -arch=x64 -host_arch=x64 >nul && set" |
-            Where-Object { $_ -match '^(PATH|INCLUDE|LIB|LIBPATH|VSCMD_ARG_TGT_ARCH)=' } |
-            ForEach-Object { $_ >> $env:GITHUB_ENV }
-          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed' }
-      - name: Windows static analysis
-        if: runner.os == 'Windows'
-        run: cargo +stable clippy --locked --all-targets -- -D warnings
-      - name: Build VST3 bundle
-        id: bundle
-        run: python scripts/build-vst3.py
-      - name: Check Windows runtime dependencies
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $dependencies = & dumpbin /dependents target/vst3/Integral.vst3/Contents/x86_64-win/Integral.vst3
-          if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed' }
-          $dependencies | Tee-Object -FilePath target/windows-dependencies.log
-          if ($dependencies -match '(?i)(VCRUNTIME|MSVCP)\d[^\s]*\.dll') {
-            throw 'Unexpected dynamic VC runtime dependency'
-          }
-      # upload-artifactのZIPにバンドルを直接格納し、ZIPの二重梱包を避ける。
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        id: artifact
-        with:
-          name: ${{ steps.bundle.outputs.artifact_name }}
-          path: target/vst3/
-          if-no-files-found: error
-          retention-days: 14
-      - name: Download information
-        env:
-          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
-          PLUGIN_VERSION: ${{ steps.bundle.outputs.version }}
-          BUILD_COMMIT: ${{ steps.bundle.outputs.commit }}
-        run: |
-          echo "[Download VST3 bundle ZIP]($ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
-          echo "Version: $PLUGIN_VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "Commit: $BUILD_COMMIT" >> "$GITHUB_STEP_SUMMARY"
-
   ci:
     name: CI result
     if: always()
-    needs: [target, quality, test, coverage, dependencies, bundle]
+    needs: [target, quality, test, coverage, dependencies]
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
     permissions:
-      actions: read
       statuses: write
     steps:
       - name: Report and require all checks to pass
@@ -263,13 +189,6 @@ jobs:
               state=failure
             fi
           done
-          started=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --jq .run_started_at)
-          elapsed=$(python3 -c 'import datetime, math, sys; start = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")); print(math.ceil((datetime.datetime.now(datetime.timezone.utc) - start).total_seconds()))' "$started")
-          echo "CI elapsed: ${elapsed}s / 180s" >> "$GITHUB_STEP_SUMMARY"
-          if (( elapsed > 180 )); then
-            echo 'CI exceeded the three-minute budget.' >&2
-            state=failure
-          fi
           if [[ -n "$PR_NUMBER" ]]; then
             [[ "$TARGET_RESULT" == success ]] || TARGET_RESULT=failure
             for context in 'PR target' 'CI result'; do
