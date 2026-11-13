@@ -503,8 +503,66 @@ pub fn max_tick(index: usize) -> u32 {
     }
 }
 
+/// 対数ノブで正確に選ぶ実値。目盛に加え、250/4000/6000は初期値用の換算点。
+fn knob_log_points(index: usize) -> &'static [(u32, f64)] {
+    match control_kind(index) {
+        35 | 37 | 40 => &[
+            (0, 20.0),
+            (40, 50.0),
+            (70, 100.0),
+            (100, 200.0),
+            (110, 250.0),
+            (140, 500.0),
+            (170, 1000.0),
+            (200, 2000.0),
+            (230, 4000.0),
+            (240, 5000.0),
+            (270, 10000.0),
+            (300, 20000.0),
+        ],
+        64 => &[
+            (0, 500.0),
+            (56, 1000.0),
+            (113, 2000.0),
+            (187, 5000.0),
+            (202, 6000.0),
+            (244, 10000.0),
+            (300, 20000.0),
+        ],
+        93 => &[
+            (0, 100.0),
+            (75, 200.0),
+            (175, 500.0),
+            (250, 1000.0),
+            (325, 2000.0),
+            (400, 4000.0),
+        ],
+        39 | 63 => &[
+            (0, 0.1),
+            (30, 0.2),
+            (70, 0.5),
+            (100, 1.0),
+            (130, 2.0),
+            (170, 5.0),
+            (200, 10.0),
+        ],
+        _ => &[],
+    }
+}
+
 /// ホストの正規化値をGUIの整数tickへ換算する。表示更新だけでは再通知しない。
 pub fn to_tick(index: usize, value: f64) -> u32 {
+    let points = knob_log_points(index);
+    if !points.is_empty() {
+        let plain = to_plain(index, value);
+        for pair in points.windows(2) {
+            let [(start, low), (end, high)] = [pair[0], pair[1]];
+            if plain <= high {
+                let fraction = (plain / low).ln() / (high / low).ln();
+                return (f64::from(start) + f64::from(end - start) * fraction).round() as u32;
+            }
+        }
+    }
     (value * f64::from(max_tick(index))).round() as u32
 }
 
@@ -546,6 +604,18 @@ pub fn holds_between_points(index: usize) -> bool {
 /// GUIの整数tickを実単位へ換算する。時間0..=401、sustain/detune/width 0..=100、unison 0..=6、polyphony 0..=31、cutoff 0..=1200、resonance 0..=950、volume 0..=720（0は−∞）、cutoff amount 0..=960、pan 0..=200、tune 0..=480。
 pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
     let index = control_kind(index);
+    let points = knob_log_points(index);
+    // 各表はtick=0から始まる。対応点では補間せず、定義した実値を返す。
+    for (position, &(end, high)) in points.iter().enumerate() {
+        if tick == end {
+            return high;
+        }
+        if tick < end {
+            let (start, low) = points[position - 1];
+            let fraction = f64::from(tick - start) / f64::from(end - start);
+            return low * (high / low).powf(fraction);
+        }
+    }
     if index >= 34 {
         return to_plain(index, f64::from(tick) / f64::from(max_tick(index)));
     }
@@ -896,7 +966,7 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         100.0, // Amp velocity sensitivity
         0.0,   // Filter Amount velocity sensitivity
         0.0,   // Portamento (ms)
-        0.0,   // Pitch bend range (cent)
+        200.0, // Pitch bend range (cent)
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -1278,6 +1348,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn knob_values_increase_and_round_trip_with_exact_defaults() {
+        for (index, value) in defaults().into_iter().enumerate() {
+            if !choices(index).is_empty() {
+                continue;
+            }
+            let plain = to_plain(index, value);
+            let displayed = tick_to_plain(index, to_tick(index, value));
+            assert!(
+                plain == displayed || (plain - displayed).abs() < plain.abs().max(1.0) * 1e-12,
+                "default {index}: {plain} -> {displayed}"
+            );
+            let mut previous = f64::NEG_INFINITY;
+            for tick in 0..=max_tick(index) {
+                let plain = tick_to_plain(index, tick);
+                assert!(tick == 0 || plain > previous, "order {index}: {tick}");
+                assert_eq!(
+                    to_tick(index, to_normalized(index, plain)),
+                    tick,
+                    "round trip {index}"
+                );
+                previous = plain;
+            }
+        }
+    }
+
+    #[test]
+    fn logarithmic_knobs_select_meaningful_values_and_round_host_updates() {
+        for (index, values) in [
+            (
+                35,
+                &[
+                    20.0, 50.0, 100.0, 200.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 5000.0,
+                    10000.0, 20000.0,
+                ][..],
+            ),
+            (39, &[0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0][..]),
+            (63, &[0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0][..]),
+            (
+                64,
+                &[500.0, 1000.0, 2000.0, 5000.0, 6000.0, 10000.0, 20000.0][..],
+            ),
+            (93, &[100.0, 200.0, 500.0, 1000.0, 2000.0, 4000.0][..]),
+        ] {
+            for &plain in values {
+                let tick = to_tick(index, to_normalized(index, plain));
+                assert_eq!(tick_to_plain(index, tick), plain);
+            }
+            // ホストから届く連続値は対数軸上で最も近い整数tickへ表示する。
+            for tick in 0..max_tick(index) {
+                let low = tick_to_plain(index, tick);
+                let high = tick_to_plain(index, tick + 1);
+                for (fraction, expected) in [(0.49, tick), (0.51, tick + 1)] {
+                    let plain = low * (high / low).powf(fraction);
+                    assert_eq!(to_tick(index, to_normalized(index, plain)), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn note_controls_use_envelope_time_axis_and_ten_cent_ticks() {
         for tick in 0..=401 {
             let time = tick_to_plain(PORTAMENTO, tick);
@@ -1293,7 +1423,8 @@ mod tests {
         assert!(!valid_plain(PITCH, 1201.0));
         assert!(!valid_plain(PORTAMENTO, 10001.0));
         assert_eq!(defaults()[PORTAMENTO], 0.0);
-        assert_eq!(sine_preset()[PITCH], 0.0);
+        assert_eq!(to_plain(PITCH, defaults()[PITCH]), 200.0);
+        assert_eq!(to_plain(PITCH, sine_preset()[PITCH]), 200.0);
     }
 
     #[test]
