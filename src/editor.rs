@@ -141,7 +141,7 @@ const GAP: f32 = 8.0;
 const HEADER_HEIGHT: f32 = 28.0;
 const CHOICE_HEIGHT: f32 = 28.0;
 /// 製品名・全体コントロール・メーターを表示する上部バー。
-const TITLE_BAR_HEIGHT: f32 = KNOB_CELL.y + GAP * 2.0;
+const TITLE_BAR_HEIGHT: f32 = KNOB_CELL.y;
 /// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
 const KNOB_CELL: egui::Vec2 = egui::vec2(56.0, 64.0);
 const KNOB_CENTER_Y: f32 = 28.0;
@@ -987,6 +987,8 @@ impl WindowHandler for Editor {
             let filter_width = GAP * 2.0 + KNOB_CELL.x * 6.0;
             let center_x = GAP + oscillator_width + GAP;
             let effects_x = center_x + filter_width + GAP;
+            // 2段配置の最大4ノブと、種類選択・交換ボタンが収まる幅。
+            let side_width = GAP * 2.0 + 64.0 * 4.0;
             let title = egui::Rect::from_min_size(
                 egui::vec2(GAP, GAP).to_pos2(),
                 egui::vec2(size.width as f32 / UI_SCALE - GAP * 2.0, TITLE_BAR_HEIGHT),
@@ -1000,11 +1002,11 @@ impl WindowHandler for Editor {
                 egui::FontId::proportional(HEADING_FONT_SIZE),
                 INK,
             );
-            let meter_x = title.right() - GAP - 254.0;
-            let button_size = egui::vec2(80.0, 48.0);
+            let meter_x = effects_x + (side_width - 254.0) / 2.0;
+            let button_size = egui::vec2(64.0, 40.0);
             let reset_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    meter_x - GAP - button_size.x,
+                    center_x + filter_width - GAP - button_size.x,
                     title.center().y - button_size.y / 2.0,
                 ),
                 button_size,
@@ -1013,15 +1015,12 @@ impl WindowHandler for Editor {
                 egui::pos2(reset_rect.left() - GAP - button_size.x, reset_rect.top()),
                 button_size,
             );
-            // ラベル32pxとノブの間はGAP、各組の左右余白は2×GAP。
-            let control_width = 32.0 + GAP + KNOB_CELL.x + GAP * 4.0;
+            // ラベル32pxとノブの間をGAPとし、2組を中央列へ収める。
+            let control_width = 32.0 + GAP + KNOB_CELL.x;
             for (column, index) in [13, 21].into_iter().enumerate() {
-                let right = limiter_rect.left() - GAP * 2.0 - control_width * (1 - column) as f32;
+                let right = limiter_rect.left() - GAP - control_width * (1 - column) as f32;
                 let area = egui::Rect::from_min_size(
-                    egui::pos2(
-                        right - GAP * 2.0 - KNOB_CELL.x,
-                        title.center().y - KNOB_CENTER_Y,
-                    ),
+                    egui::pos2(right - KNOB_CELL.x, title.center().y - KNOB_CENTER_Y),
                     KNOB_CELL,
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
@@ -1029,10 +1028,18 @@ impl WindowHandler for Editor {
                 });
             }
             let limiter_tick = parameters::to_tick(108, selected[108]);
-            let limiter = ui.put(
-                limiter_rect,
-                egui::Button::new("Limiter").selected(limiter_tick != 0),
-            );
+            let (limiter, reset) = ui
+                .scope(|ui| {
+                    ui.spacing_mut().button_padding.x = 6.0;
+                    (
+                        ui.put(
+                            limiter_rect,
+                            egui::Button::new("Limiter").selected(limiter_tick != 0),
+                        ),
+                        ui.put(reset_rect, egui::Button::new("Reset")),
+                    )
+                })
+                .inner;
             if limiter.clicked() {
                 self.edits.push(Edit::Set(
                     108,
@@ -1040,7 +1047,6 @@ impl WindowHandler for Editor {
                 ));
                 limiter.surrender_focus();
             }
-            let reset = ui.put(reset_rect, egui::Button::new("Reset"));
             if reset.clicked() {
                 self.reset_requested.store(true, Ordering::Relaxed);
                 self.state.borrow_mut().peak_db = -60.0;
@@ -1101,8 +1107,6 @@ impl WindowHandler for Editor {
                 ),
                 &selected,
             );
-            // 2段配置の最大4ノブと、種類選択・交換ボタンが収まる幅。
-            let side_width = GAP * 2.0 + 64.0 * 4.0;
             // NoteとAmpは1行分の同じ高さとし、SensもAHDSRと同じ行へ置く。
             let amp_height = note_height;
             let filter_height = panel_height - note_height - amp_height - GAP * 2.0;
