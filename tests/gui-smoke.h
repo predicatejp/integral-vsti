@@ -761,10 +761,15 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             const int x = uiPixel(logicalX), y = uiPixel(logicalY);
             parent.movePointer(x, y); pump();
 #ifdef _WIN32
+            const auto injectionsBefore = GuiReentry::injections;
             GuiReentry::arm(parent.child());
 #endif
             parent.knobButton(true);
             waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
+#ifdef _WIN32
+            // 各ノブで再入を1回検査する。ノブ追加時も固定の総数に依存しない。
+            assert(GuiReentry::injections == injectionsBefore + 1);
+#endif
             assert(handler.sequence == (std::vector<int>{0}));
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
@@ -920,8 +925,5 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     assert(view->setFrame(nullptr) == kResultOk && frame.refs == 1);
     assert(view->release() == 0);
     assert(controller->setComponentHandler(nullptr) == kResultOk && handler.refs == 1);
-#ifdef _WIN32
-    assert(GuiReentry::injections == 228); // 114ノブ×2回の表示で再入と配送延期を検証。
-#endif
     std::cout << "GUI: embedded editor, clicks, UI-thread gestures, restore and reopen passed\n";
 }
