@@ -64,16 +64,16 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
 const KNOB_DETENT_PIXELS: u32 = 80;
 
-/// 描画目盛りとは独立した吸着対象。最大・最小値は除外する。
+/// 吸着対象のノブは描画と同じ目盛りを使う。最大・最小値は除外する。
 fn is_detent(index: usize, tick: u32) -> bool {
     if tick == 0 || tick == parameters::max_tick(index) {
         return false;
     }
-    match index {
-        10 | 19 | 24 | 27 => tick.is_multiple_of(120), // Cutoff / Amount / Tune: 1200 cent
-        13 | 22 | 25 | 28 => tick.is_multiple_of(60),  // Volume: 6 dB
-        36 | 38 | 41 | 114 | 121 | 128 => tick.is_multiple_of(60), // EQ Gain / Makeup: 6 dB
-        21 => tick == 100,                             // Pan: 中央
+    match parameters::control_kind(index) {
+        10 | 19 | 24 | 27 | 13 | 22 | 25 | 28 | 36 | 38 | 41 | 114 => {
+            knob_marks(index).0.contains(&tick)
+        }
+        21 => tick == knob_marks(index).1, // Pan: 中央
         _ => false,
     }
 }
@@ -157,9 +157,14 @@ const UI_SCALE: f32 = 1.2;
 const OVERLAY_SIZE: egui::Vec2 = egui::vec2(224.0, 60.0);
 
 fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
+    let above = knob.top() - 6.0 - OVERLAY_SIZE.y;
     let min = egui::pos2(
         knob.center().x - OVERLAY_SIZE.x / 2.0,
-        knob.top() - 6.0 - OVERLAY_SIZE.y,
+        if above < viewport.top() {
+            knob.bottom() + 6.0
+        } else {
+            above
+        },
     );
     egui::Rect::from_min_size(
         egui::pos2(
@@ -1029,16 +1034,24 @@ impl WindowHandler for Editor {
             let (limiter, reset) = ui
                 .scope(|ui| {
                     ui.spacing_mut().button_padding.x = 6.0;
+                    ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(185, 218, 199);
+                    ui.visuals_mut().selection.stroke = egui::Stroke::new(1.0, INK);
                     (
                         ui.put(
                             limiter_rect,
-                            egui::Button::new("Limiter").selected(limiter_tick != 0),
+                            egui::Button::new("Limiter")
+                                .selected(limiter_tick != 0)
+                                .sense(egui::Sense::click_and_drag()),
                         ),
                         ui.put(reset_rect, egui::Button::new("Reset")),
                     )
                 })
                 .inner;
-            if limiter.clicked() {
+            // 押下中の移動量・時間でクリック判定から外れても、内側で離せば切り替える。
+            if limiter.clicked()
+                || (limiter.drag_stopped_by(egui::PointerButton::Primary)
+                    && limiter.contains_pointer())
+            {
                 self.edits.push(Edit::Set(
                     108,
                     parameters::to_normalized(108, f64::from(1 - limiter_tick)),
@@ -1406,7 +1419,34 @@ mod tests {
                 }
                 if y >= 91.0 {
                     assert_eq!(bounds.bottom(), knob.top() - 6.0);
+                } else {
+                    assert_eq!(bounds.top(), knob.bottom() + 6.0);
                 }
+                assert!(!bounds.intersects(knob));
+            }
+        }
+    }
+
+    #[test]
+    fn knob_marks_round_trip_through_parameter_values() {
+        for index in 0..parameters::COUNT {
+            let (marks, reference) = knob_marks(index);
+            if marks.is_empty() {
+                assert!(!parameters::choices(index).is_empty());
+                continue;
+            }
+            assert_eq!(marks.first(), Some(&0));
+            assert_eq!(marks.last(), Some(&parameters::max_tick(index)));
+            assert!(marks.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(marks.contains(&reference));
+            for &tick in marks {
+                let plain = parameters::tick_to_plain(index, tick);
+                let normalized = parameters::to_normalized(index, plain);
+                assert_eq!(
+                    parameters::to_tick(index, normalized),
+                    tick,
+                    "{index}: {tick}"
+                );
             }
         }
     }

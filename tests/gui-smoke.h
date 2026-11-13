@@ -643,14 +643,23 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             choose(34, item);
             assert(handler.value == item);
         }
-        // Limiterは押下で切り替わり、ホストからの更新は編集通知を再送しない。
+        // Limiterは内側で離すと切り替わり、移動・長押しでも編集通知は一組にする。
         ParameterInfo limiterInfo; assert(controller->getParameterInfo(108, limiterInfo) == kResultOk);
         const auto [limiterX, limiterY] = controls[108];
-        for (int initial : {0, 1}) {
+        for (const auto& [movement, hold] : std::array<std::pair<int, bool>, 4>{{
+                 {0, false}, {1, false}, {1, true}, {16, false}}}) for (int initial : {0, 1}) {
             assert(controller->setParamNormalized(limiterInfo.id, initial) == kResultOk);
             parent.movePointer(4, 4); pump(); assert(handler.sequence.empty());
             const auto before = parent.pixel(uiPixel(limiterX + 26), uiPixel(limiterY));
-            parent.click(uiPixel(limiterX), uiPixel(limiterY));
+            parent.movePointer(uiPixel(limiterX), uiPixel(limiterY)); pump();
+            parent.knobButton(true); pump();
+            if (hold) {
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                while (std::chrono::steady_clock::now() < deadline) pump();
+            }
+            parent.movePointer(uiPixel(limiterX) + movement, uiPixel(limiterY)); pump();
+            assert(handler.sequence.empty());
+            parent.knobButton(false);
             waitFor([&] { return handler.sequence.size() == 3; }, "limiter toggled");
             assert(handler.sequence == (std::vector<int>{0, 1, 2}));
             assert(handler.editedId == limiterInfo.id && handler.value == 1 - initial);
@@ -658,6 +667,10 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(parent.pixel(uiPixel(limiterX + 26), uiPixel(limiterY)) != before);
             handler.sequence.clear();
         }
+        parent.movePointer(uiPixel(limiterX), uiPixel(limiterY)); pump();
+        parent.knobButton(true); pump();
+        parent.movePointer(4, 4); pump(); parent.knobButton(false); pump();
+        assert(handler.sequence.empty()); // 外側で離すとキャンセル。
         for (int slot = 1; slot < 3; ++slot) {
             choose(42 + slot, 4);
             choose(slot == 1 ? 45 : 48, 1);
@@ -810,7 +823,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
             const int overlayX = std::clamp(logicalX - 112, 0, 673);
-            const int overlayY = std::clamp(logicalY - 91, 0, 580);
+            const int overlayY = std::clamp(logicalY < 91 ? logicalY + 31 : logicalY - 91, 0, 580);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
 #else
@@ -919,6 +932,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(handler.editedId == phaseId && handler.value == .5);
         choose(12, 2);
         assert(handler.editedId == phaseId && handler.value == 1.0);
+        assert(controller->setParamNormalized(limiterInfo.id, 1.0) == kResultOk);
         parent.movePointer(4, 4); pump();
         parent.screenshot("target/gui-choices.ppm");
         point.id = phaseId; point.values = {{0, handler.value}};
@@ -950,10 +964,18 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         assert(handler.sequence == (std::vector<int>{0, 2}));
         waitFor([&] { return parent.cursorVisible(); }, "cursor restored after focus loss");
         parent.knobButton(false); pump(); handler.sequence.clear();
+        // 上部Volのオーバーレイを実ウィンドウから記録する。
+        parent.movePointer(uiPixel(controls[13].first), uiPixel(controls[13].second)); pump();
+        parent.knobButton(true);
+        waitFor([&] { return handler.sequence.size() == 1; }, "header overlay");
+        pump(); parent.screenshot();
+        parent.knobButton(false);
+        waitFor([&] { return handler.sequence.size() == 2; }, "header overlay end");
+        handler.sequence.clear();
         // 押したまま画面を閉じても開始済み編集は終了する。
         parent.movePointer(uiPixel(controls[6].first), uiPixel(controls[6].second)); pump(); parent.knobButton(true);
         waitFor([&] { return handler.sequence.size() == 1; }, "knob before close");
-        pump(); parent.screenshot();
+        pump();
         assert(view->removed() == kResultOk);
         parent.knobButton(false); pump();
         assert(handler.sequence == (std::vector<int>{0, 2})); handler.sequence.clear();
