@@ -140,8 +140,8 @@ const GAP: f32 = 8.0;
 /// 見出し行と選択欄の高さ。選択欄は見出し行の中央に置く。
 const HEADER_HEIGHT: f32 = 28.0;
 const CHOICE_HEIGHT: f32 = 28.0;
-/// プラグイン名と発音数を表示する上部バー。
-const TITLE_BAR_HEIGHT: f32 = 36.0;
+/// 製品名・全体コントロール・メーターを表示する上部バー。
+const TITLE_BAR_HEIGHT: f32 = KNOB_CELL.y + GAP * 2.0;
 /// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
 const KNOB_CELL: egui::Vec2 = egui::vec2(56.0, 64.0);
 const KNOB_CENTER_Y: f32 = 28.0;
@@ -580,7 +580,7 @@ impl Editor {
     }
 
     fn choice(&self, ui: &mut egui::Ui, index: usize, selected: f64) {
-        if matches!(index, 12 | 31 | 45 | 48 | 60..=62 | 108) {
+        if matches!(index, 12 | 31 | 45 | 48 | 60..=62) {
             ui.painter().text(
                 ui.max_rect().center_top() - egui::vec2(0.0, GAP),
                 egui::Align2::CENTER_BOTTOM,
@@ -668,40 +668,24 @@ impl Editor {
             rows
         };
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
-        let stacked_choices = choices.first() == Some(&108);
-        let choice_label_height = if stacked_choices {
-            CHOICE_HEIGHT + GAP
-        } else {
-            0.0
-        };
-        let choice_rows = if stacked_choices { choices.len() } else { 0 };
         let internal_choice_width = if effect.is_some() && choices.len() > 1 {
             90.0 + GAP
         } else {
             0.0
         };
-        let choice_height = (CHOICE_HEIGHT + choice_label_height) * choice_rows as f32;
-        let row_header_height = if choices.len() > 1 && effect.is_none() && !stacked_choices {
+        let row_header_height = if choices.len() > 1 && effect.is_none() {
             CHOICE_HEIGHT + GAP
         } else {
             0.0
         };
         let row_height = KNOB_CELL.y + row_header_height;
         let header_height = if title.is_empty() { 0.0 } else { HEADER_HEIGHT };
-        let content_rows = rows.len() + choice_rows;
-        let row_gap =
-            (height - GAP - header_height - choice_height - row_height * rows.len() as f32)
-                / (content_rows + 1) as f32;
+        let row_gap = (height - GAP - header_height - row_height * rows.len() as f32)
+            / (rows.len() + 1) as f32;
         let body_y = if row_header_height > 0.0 {
             GAP
         } else {
-            GAP + header_height
-                + row_gap
-                + if choice_height > 0.0 {
-                    choice_height + row_gap * choice_rows as f32
-                } else {
-                    0.0
-                }
+            GAP + header_height + row_gap
         };
         let row_step = if row_header_height > 0.0 {
             height / rows.len() as f32
@@ -803,17 +787,6 @@ impl Editor {
                 rect.top() + GAP
             } else if row_header_height > 0.0 {
                 rect.top() + body_y + row as f32 * row_step
-            } else if choice_height > 0.0 {
-                rect.top()
-                    + GAP
-                    + HEADER_HEIGHT
-                    + row_gap
-                    + choice_label_height
-                    + if stacked_choices {
-                        row as f32 * (CHOICE_HEIGHT + choice_label_height + row_gap)
-                    } else {
-                        0.0
-                    }
             } else {
                 rect.top() + GAP + (HEADER_HEIGHT - CHOICE_HEIGHT) / 2.0
             };
@@ -1021,6 +994,34 @@ impl WindowHandler for Editor {
                 egui::pos2(meter_x - GAP - 64.0, title.center().y - HEADER_HEIGHT / 2.0),
                 egui::vec2(64.0, HEADER_HEIGHT),
             );
+            let limiter_rect = egui::Rect::from_min_size(
+                egui::pos2(reset_rect.left() - GAP - 80.0, reset_rect.top()),
+                egui::vec2(80.0, HEADER_HEIGHT),
+            );
+            for (column, index) in [13, 21].into_iter().enumerate() {
+                let area = egui::Rect::from_min_size(
+                    egui::pos2(
+                        limiter_rect.left() - GAP - KNOB_CELL.x * (2 - column) as f32,
+                        title.top() + GAP,
+                    ),
+                    KNOB_CELL,
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                    self.knob(ui, index, selected[index], KNOB_CELL.x);
+                });
+            }
+            let limiter_tick = parameters::to_tick(108, selected[108]);
+            let limiter = ui.put(
+                limiter_rect,
+                egui::Button::new("Limiter").selected(limiter_tick != 0),
+            );
+            if limiter.clicked() {
+                self.edits.push(Edit::Set(
+                    108,
+                    parameters::to_normalized(108, f64::from(1 - limiter_tick)),
+                ));
+                limiter.surrender_focus();
+            }
             let reset = ui.put(reset_rect, egui::Button::new("Reset"));
             if reset.clicked() {
                 self.reset_requested.store(true, Ordering::Relaxed);
@@ -1083,8 +1084,6 @@ impl WindowHandler for Editor {
             );
             // 2段配置の最大4ノブと、種類選択・交換ボタンが収まる幅。
             let side_width = GAP * 2.0 + 64.0 * 4.0;
-            let master_x = effects_x + side_width + GAP;
-            let master_width = GAP * 2.0 + KNOB_CELL.x * 2.0;
             // NoteとAmpは1行分の同じ高さとし、SensもAHDSRと同じ行へ置く。
             let amp_height = note_height;
             let filter_height = panel_height - note_height - amp_height - GAP * 2.0;
@@ -1202,12 +1201,6 @@ impl WindowHandler for Editor {
                         effects_x - GAP * 2.0,
                         eq_height,
                     ],
-                ),
-                (
-                    "Master",
-                    &[108],
-                    &[&[13][..], &[21][..]][..],
-                    [master_x, left_top, master_width, full_height],
                 ),
             ];
             for (title, choices, rows, rect) in groups {

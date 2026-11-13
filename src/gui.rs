@@ -21,8 +21,8 @@ use std::{
     },
 };
 
-const WIDTH: i32 = 1240;
-const HEIGHT: i32 = 744;
+const WIDTH: i32 = 1076;
+const HEIGHT: i32 = 797;
 const RECT: ViewRect = ViewRect {
     left: 0,
     top: 0,
