@@ -7,7 +7,7 @@ publish = false
 description = "Integral, a polyphonic VST3 synthesizer implemented directly in Rust"
 authors = ["Yusuke Oda"]
 license = "AGPL-3.0-only"
-repository = "https://github.com/predicatejp/sample-vsti"
+repository = "https://github.com/predicatejp/integral-vsti"
 
 [lib]
 crate-type = ["cdylib"]
