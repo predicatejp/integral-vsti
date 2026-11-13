@@ -492,14 +492,34 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
-        parent.click(uiPixel(x), uiPixel(y)); pump(); assert(handler.sequence.empty());
-        parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
+        const auto label = "dropdown " + std::to_string(index) + " item " + std::to_string(item);
+        // 開く入力と選択する入力を同じ描画フレームへ蓄積させない。
+        // 文字・矢印の下の背景色で、表示とヒット判定の更新を待つ。
+        constexpr uint32 open = 0xdcdcdc;
+#ifdef _WIN32
+        constexpr uint32 hovered = RGB(219, 232, 222), selected = RGB(20, 96, 76);
+#else
+        constexpr uint32 hovered = 0xdbe8de, selected = 0x14604c;
+#endif
+        parent.click(uiPixel(x), uiPixel(y));
+        waitFor([&] { return parent.pixel(uiPixel(x + 30), uiPixel(y + 5)) == open; },
+                (label + " opened").c_str());
+        assert(handler.sequence.empty());
         // 最下段の4択は画面内へ収まるよう上側に開く。
         const int firstItemY = index == 62 ? y - 112 : index == 44 ? y - 193 : y + 30;
-        parent.click(uiPixel(x), uiPixel(firstItemY + item * 27));
-        waitFor([&] { return handler.sequence.size() >= 3; }, "dropdown choice");
+        const int itemY = firstItemY + item * 27;
+        parent.movePointer(uiPixel(x), uiPixel(itemY));
+        waitFor([&] {
+            const auto color = parent.pixel(uiPixel(x + 30), uiPixel(itemY + 3));
+            return color == hovered || color == selected;
+        }, (label + " hovered").c_str());
+        parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
+        parent.click(uiPixel(x), uiPixel(itemY));
+        waitFor([&] { return handler.sequence.size() >= 3; }, (label + " edited").c_str());
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-        handler.sequence.clear(); pump();
+        waitFor([&] { return parent.pixel(uiPixel(x + 30), uiPixel(y + 5)) != open; },
+                (label + " closed").c_str());
+        handler.sequence.clear();
     };
     for (int cycle = 0; cycle < 2; ++cycle) {
 #ifdef _WIN32
