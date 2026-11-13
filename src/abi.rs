@@ -51,6 +51,7 @@ pub const FACTORY2_IID: Tuid = tuid(0x0007b650_f24b4c0b_a464edb9_f00b2abb);
 pub const COMPONENT_IID: Tuid = tuid(0xe831ff31_f2d54301_928ebbee_25697802);
 pub const PROCESSOR_IID: Tuid = tuid(0x42043f99_b7da453c_a569e79d_9aaec33d);
 pub const CONTROLLER_IID: Tuid = tuid(0xdcd7bbe3_7742448d_a874aacc_979c759e);
+pub const MIDI_MAPPING_IID: Tuid = tuid(0xdf0ff9f7_49b74669_b63ab732_7adbf5e5);
 pub const UNIT_INFO_IID: Tuid = tuid(0x3d4bd6b5_913a4fd2_a886e768_a5eb92c1);
 pub const CONTEXT_REQUIREMENTS_IID: Tuid = tuid(0x2a654303_ef764e3d_95b5fe83_730ef6d0);
 pub const VIEW_IID: Tuid = tuid(0x5bc32507_d06049ea_a6151b52_2b755b29);
@@ -78,6 +79,15 @@ pub struct UnknownVTable {
     pub add_ref: unsafe extern "system" fn(This) -> u32,
     /// 所有参照を1つ解放し、更新後の参照数を返す。最後の参照で実体を破棄する。
     pub release: unsafe extern "system" fn(This) -> u32,
+}
+
+#[repr(C)]
+pub struct MidiMappingVTable {
+    /// IMidiMappingはFUnknownを直接継承する。
+    pub unknown: UnknownVTable,
+    /// 入力イベントバス・チャンネル・CtrlNumber（int16）に対応するParamIDを返す。
+    pub get_midi_controller_assignment:
+        unsafe extern "system" fn(This, i32, i16, i16, *mut u32) -> TResult,
 }
 
 #[repr(C)]

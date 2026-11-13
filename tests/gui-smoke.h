@@ -322,7 +322,7 @@ public:
         assert(!GuiReentry::insideDraw);
 #endif
         assert(std::this_thread::get_id() == uiThread);
-        assert(id == 0x4153454e || id == 0x4653454e || (id >= 0x43500100 && id <= 0x43500306) || id == 0x4c490000 || (id >= 0x50314346 && id <= 0x50335254) || (id >= 0x43314450 && id <= 0x4333544d) || (id >= 0x52314443 && id <= 0x5233535a) || (id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463142 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
+        assert(id == 0x504f5254 || id == 0x50495443 || id == 0x4153454e || id == 0x4653454e || (id >= 0x43500100 && id <= 0x43500306) || id == 0x4c490000 || (id >= 0x50314346 && id <= 0x50335254) || (id >= 0x43314450 && id <= 0x4333544d) || (id >= 0x52314443 && id <= 0x5233535a) || (id >= 0x45510000 && id < 0x45510008) || (id >= 0x45463142 && id <= 0x45463354) || id == 0x43545950 || id == 0x43474149 || id == 0x434d4958 || id == 0x4f32464d || id == 0x4f33464d || id == 0x4f31564c || id == 0x4f325746 || id == 0x4f32544e || id == 0x4f32564c || id == 0x4f335746 || id == 0x4f33544e || id == 0x4f33564c || id == 0x57494454 || id == 0x4d50414e || std::find(cutoffEnvelopeIds.begin(), cutoffEnvelopeIds.end(), id) != cutoffEnvelopeIds.end() || id == volumeId || id == phaseId || id == waveformId || id == unisonId || id == detuneId || id == polyphonyId || std::find(filterIds.begin(), filterIds.end(), id) != filterIds.end() || std::find(envelopeIds.begin(), envelopeIds.end(), id) != envelopeIds.end());
         editedId = id;
         sequence.push_back(0); return kResultOk;
     }
@@ -351,7 +351,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1172 && rect.getHeight() == 728);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1172 && rect.getHeight() == 800);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -465,29 +465,30 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         waitFor([&] { return parent.pointerAt(x, y); }, "knob pointer restored");
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
-    std::array<std::pair<int, int>, 132> controls {{
-        {175, 74}, {292, 160}, {348, 160}, {404, 160}, {460, 160}, {516, 160},
-        {44, 136}, {100, 136}, {904, 531}, {479, 234}, {299, 309}, {369, 309},
-        {904, 170}, {904, 339}, {292, 406}, {348, 406}, {404, 406}, {460, 406},
-        {516, 406}, {439, 309}, {156, 136}, {904, 435}, {212, 136}, {175, 215},
-        {53, 277}, {128, 277}, {175, 356}, {53, 418}, {128, 418}, {203, 277},
-        {203, 418}, {613, 157}, {709, 157}, {796, 157}, {479, 505}, {54, 555},
-        {129, 555}, {205, 555}, {280, 555}, {355, 555}, {431, 555}, {506, 555},
-        {689, 74}, {689, 256}, {689, 438}, {613, 339}, {709, 339}, {796, 339},
-        {613, 522}, {709, 522}, {796, 522}, {709, 122}, {709, 192}, {796, 157},
-        {709, 304}, {709, 374}, {796, 339}, {709, 487}, {709, 557}, {796, 522},
-        {613, 157}, {613, 339}, {613, 522}, {660, 157}, {721, 157}, {599, 157},
-        {796, 157}, {660, 339}, {721, 339}, {599, 339}, {796, 339}, {660, 522},
-        {721, 522}, {599, 522}, {796, 522}, {599, 122}, {660, 122}, {614, 192},
-        {706, 192}, {721, 122}, {796, 157}, {599, 304}, {660, 304}, {614, 374},
-        {706, 374}, {721, 304}, {796, 339}, {599, 487}, {660, 487}, {614, 557},
-        {706, 557}, {721, 487}, {796, 522}, {614, 122}, {706, 122}, {614, 192},
-        {706, 192}, {796, 157}, {614, 304}, {706, 304}, {614, 374}, {706, 374},
-        {796, 339}, {614, 487}, {706, 487}, {614, 557}, {706, 557}, {796, 522},
-        {904, 266}, {599, 122}, {660, 122}, {599, 192}, {660, 192}, {721, 122},
-        {721, 192}, {796, 157}, {599, 304}, {660, 304}, {599, 374}, {660, 374},
-        {721, 304}, {721, 374}, {796, 339}, {599, 487}, {660, 487}, {599, 557},
-        {660, 557}, {721, 487}, {721, 557}, {796, 522}, {516, 88}, {509, 309},
+    std::array<std::pair<int, int>, 134> controls {{
+        {175, 198}, {292, 284}, {348, 284}, {404, 284}, {460, 284}, {516, 284},
+        {44, 250}, {100, 250}, {214, 124}, {479, 358}, {299, 412}, {369, 412},
+        {82, 132}, {904, 369}, {292, 487}, {348, 487}, {404, 487}, {460, 487},
+        {516, 487}, {439, 412}, {156, 250}, {904, 528}, {212, 250}, {175, 318},
+        {53, 369}, {128, 369}, {175, 437}, {53, 489}, {128, 489}, {203, 369},
+        {203, 489}, {613, 167}, {709, 167}, {796, 167}, {479, 565}, {54, 615},
+        {129, 615}, {205, 615}, {280, 615}, {355, 615}, {431, 615}, {506, 615},
+        {689, 74}, {689, 276}, {689, 478}, {613, 369}, {709, 369}, {796, 369},
+        {613, 572}, {709, 572}, {796, 572}, {709, 129}, {709, 205}, {796, 167},
+        {709, 331}, {709, 408}, {796, 369}, {709, 533}, {709, 610}, {796, 572},
+        {613, 167}, {613, 369}, {613, 572}, {660, 167}, {721, 167}, {599, 167},
+        {796, 167}, {660, 369}, {721, 369}, {599, 369}, {796, 369}, {660, 572},
+        {721, 572}, {599, 572}, {796, 572}, {599, 129}, {660, 129}, {614, 205},
+        {706, 205}, {721, 129}, {796, 167}, {599, 331}, {660, 331}, {614, 408},
+        {706, 408}, {721, 331}, {796, 369}, {599, 533}, {660, 533}, {614, 610},
+        {706, 610}, {721, 533}, {796, 572}, {614, 129}, {706, 129}, {614, 205},
+        {706, 205}, {796, 167}, {614, 331}, {706, 331}, {614, 408}, {706, 408},
+        {796, 369}, {614, 533}, {706, 533}, {614, 610}, {706, 610}, {796, 572},
+        {904, 233}, {599, 129}, {660, 129}, {599, 205}, {660, 205}, {721, 129},
+        {721, 205}, {796, 167}, {599, 331}, {660, 331}, {599, 408}, {660, 408},
+        {721, 331}, {721, 408}, {796, 369}, {599, 533}, {660, 533}, {599, 610},
+        {660, 610}, {721, 533}, {721, 610}, {796, 572}, {516, 212}, {509, 412},
+        {346, 124}, {478, 124},
     }};
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
     auto choose = [&](int index, int item) {
@@ -527,7 +528,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(1172, 728); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(1172, 800); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         if (cycle == 0) {
@@ -767,7 +768,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         parent.movePointer(4, 4); pump(); parent.screenshot("target/gui-effects-off.ppm");
         // Offのグループを含む全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
         parent.unfocus(); pump(); assert(parent.focused());
-        for (int i = 1; i < 132; ++i) {
+        for (int i = 1; i < 134; ++i) {
             if (i == 108 || i == 9 || i == 12 || i == 23 || i == 26 || i == 31 || i == 34 || (i >= 42 && i <= 45) || i == 48 || (i >= 60 && i <= 62)) continue;
             if ((i >= 51 && i < 130) || i == 32 || i == 33 || i == 46 || i == 47 || i == 49 || i == 50) {
                 const int slot = i >= 109 ? (i - 109) / 7 : i >= 93 ? (i - 93) / 5 : i >= 75 ? (i - 75) / 6 : i >= 63 ? (i - 63) / 4 : i >= 51 ? (i - 51) / 3 : (i < 45 ? 0 : (i - 45) / 3 + 1);
@@ -794,7 +795,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
             const int overlayX = std::clamp(logicalX - 112, 0, 753);
-            const int overlayY = std::clamp(logicalY - 91, 0, 547);
+            const int overlayY = std::clamp(logicalY - 91, 0, 607);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
 #else
@@ -809,7 +810,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
 #endif
-            const int pixelsPerTick = i >= 130 ? 4 : i >= 109 ? std::array<int,7>{2,4,3,3,4,4,4}[(i-109)%7] : (i >= 93 && ((i-93)%5 == 0 || (i-93)%5 == 2)) ? 3 : (i == 76 || i == 82 || i == 88) ? 2 : (i == 77 || i == 83 || i == 89) ? 3 : (i == 6 || i == 51 || i == 54 || i == 57) ? 32 : i == 8 ? 8 :
+            const int pixelsPerTick = i == 132 ? 3 : i >= 130 ? 4 : i >= 109 ? std::array<int,7>{2,4,3,3,4,4,4}[(i-109)%7] : (i >= 93 && ((i-93)%5 == 0 || (i-93)%5 == 2)) ? 3 : (i == 76 || i == 82 || i == 88) ? 2 : (i == 77 || i == 83 || i == 89) ? 3 : (i == 6 || i == 51 || i == 54 || i == 57) ? 32 : i == 8 ? 8 :
                 (i == 10 || i == 11 || i == 13 || i == 19 || i == 22 || i == 25 || i == 28) ? 2 :
                 (i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 ||
                  i == 18 || i == 24 || i == 27 || i == 32 || i == 46 || i == 49) ? 3 : 4;
@@ -820,7 +821,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return handler.sequence.size() == 2; }, "knob integer tick");
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
-            const double plain = i >= 130 ? 1.0 : i >= 109 ? std::array<double,7>{-59.9,1.1,1,1,.1,.1,1}[(i-109)%7] : i >= 93 ? std::array<double,5>{100.*std::pow(40.,1./400.),10.,.06,-94.,1.}[(i-93)%5] : i >= 75 ? std::array<double,6>{.2, .01, .06, -.099, -94., 1.}[(i-75)%6] : i >= 63 ? std::array<double,4>{.1 * std::pow(100.,1./200.), 500. * std::pow(40.,1./300.), 51., 1.}[(i-63)%4] : (i == 35 || i == 37 || i == 40) ? 20. * std::pow(1000., 1./300.) : (i == 36 || i == 38 || i == 41) ? -17.9 : i == 39 ? .1 * std::pow(100., 1./200.) : time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
+            const double plain = i == 133 ? 10.0 : i >= 130 ? 1.0 : i >= 109 ? std::array<double,7>{-59.9,1.1,1,1,.1,.1,1}[(i-109)%7] : i >= 93 ? std::array<double,5>{100.*std::pow(40.,1./400.),10.,.06,-94.,1.}[(i-93)%5] : i >= 75 ? std::array<double,6>{.2, .01, .06, -.099, -94., 1.}[(i-75)%6] : i >= 63 ? std::array<double,4>{.1 * std::pow(100.,1./200.), 500. * std::pow(40.,1./300.), 51., 1.}[(i-63)%4] : (i == 35 || i == 37 || i == 40) ? 20. * std::pow(1000., 1./300.) : (i == 36 || i == 38 || i == 41) ? -17.9 : i == 39 ? .1 * std::pow(100., 1./200.) : time ? 1.0 : (i == 6 || i == 8) ? 2.0 : i == 7 ? 1.0 : i == 10 ? -2390.0 :
                                  i == 11 ? .51 : (i == 13 || i == 22 || i == 25 || i == 28) ? -59.9 : (i == 24 || i == 27) ? -2390.0 : i == 19 ? -4790.0 : i == 20 ? 1.0 : i == 21 ? -99.0 : (i >= 51 || i == 29 || i == 30 || i == 33 || i == 47 || i == 50) ? 1.0 : (i == 32 || i == 46 || i == 49) ? .1 : .01;
             assert(std::abs(controller->normalizedParamToPlain(info.id, handler.value) - plain) < 1e-9);
             assert(parent.pointerAt(x, y));

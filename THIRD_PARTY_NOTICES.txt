@@ -26,6 +26,7 @@ Referenced headers (relative to pluginterfaces/):
 - vst/ivstaudioprocessor.h
 - vst/ivstprocesscontext.h
 - vst/ivsteditcontroller.h
+- vst/ivstmidicontrollers.h
 - vst/ivstunits.h
 - vst/ivstparameterchanges.h
 - vst/ivstevents.h

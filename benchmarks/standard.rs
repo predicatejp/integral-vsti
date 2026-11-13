@@ -106,6 +106,8 @@ const BASE: [f64; parameters::COUNT] = [
     -18., 4., 10., 100., 6., 0., 100.,
     -18., 4., 10., 100., 6., 0., 100.,
     -18., 4., 10., 100., 6., 0., 100.,
+    100.0, 0.0, // Amp / Filter Amount velocity sensitivity
+    0.0, 0.0, // Portamento / Pitch
 ];
 const BASS: &[(usize, f64)] = &[
     (0, 3.),

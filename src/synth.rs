@@ -23,6 +23,8 @@ pub struct SynthesizerState {
     sample_rate: f64,
     /// 適用済みの正規化値。変更時だけ実単位へ換算する。
     parameters: [f64; parameters::COUNT],
+    /// ホストからの共通ピッチベンド（0〜1、中央0.5）。音色の保存対象ではない。
+    pitch_bend: f64,
     /// 共有ディストーション・EQの後に掛ける振幅倍率。Volume変更時だけ再計算する。
     master_gain: f64,
     /// 全Voice共通の定位係数。実発音数・有効なWidth・Panの変更時だけ更新する。
@@ -56,6 +58,7 @@ impl Synthesizer {
                 used_voices: 0,
                 sample_rate: 44100.0,
                 parameters: parameters::defaults(),
+                pitch_bend: 0.5,
                 master_gain: 1.0,
                 panning_gains: [[1.0; 2]; 7],
                 mono_gains: [1.0; 2],
@@ -95,6 +98,22 @@ impl Synthesizer {
         self.state.parameters
     }
 
+    pub fn pitch_bend(&self) -> f64 {
+        self.state.pitch_bend
+    }
+
+    pub fn set_pitch_bend(&mut self, value: f64) {
+        if self.state.pitch_bend != value {
+            self.state.pitch_bend = value;
+            let cents =
+                parameters::to_plain(parameters::PITCH, self.state.parameters[parameters::PITCH]);
+            let ratio = ((value * 2.0 - 1.0) * cents / 1200.0).exp2();
+            for voice in &mut self.state.voices[..self.state.polyphony] {
+                voice.set_pitch_ratio(ratio);
+            }
+        }
+    }
+
     /// 設定は有効な枠の入力へ反映し、Polyphony増加時は追加した枠も同期する。
     pub fn set_parameters(&mut self, values: [f64; parameters::COUNT]) -> bool {
         if values == self.state.parameters {
@@ -129,6 +148,25 @@ impl Synthesizer {
             self.state.polyphony = count;
             self.state.used_voices = self.state.used_voices.min(count);
             self.state.next_oscillator_id %= count;
+        }
+        if values[8] != previous[8]
+            || values[parameters::PORTAMENTO] != previous[parameters::PORTAMENTO]
+        {
+            let time = if self.state.polyphony == 1 {
+                parameters::to_plain(parameters::PORTAMENTO, values[parameters::PORTAMENTO])
+            } else {
+                0.0
+            };
+            for voice in &mut self.state.voices[..self.state.polyphony] {
+                voice.set_portamento(time);
+            }
+        }
+        if expanded || values[parameters::PITCH] != previous[parameters::PITCH] {
+            let cents = parameters::to_plain(parameters::PITCH, values[parameters::PITCH]);
+            let ratio = ((self.state.pitch_bend * 2.0 - 1.0) * cents / 1200.0).exp2();
+            for voice in &mut self.state.voices[..self.state.polyphony] {
+                voice.set_pitch_ratio(ratio);
+            }
         }
         if expanded || values[130..132] != previous[130..132] {
             for voice in &mut self.state.voices[..self.state.polyphony] {
@@ -245,7 +283,7 @@ impl Synthesizer {
                 );
             }
         }
-        if values[31..34] != previous[31..34] || values[42..] != previous[42..] {
+        if values[31..34] != previous[31..34] || values[42..130] != previous[42..130] {
             self.state.effects.set_parameters(&values, previous);
         }
         if expanded || values[9..11] != previous[9..11] {
@@ -426,6 +464,74 @@ mod tests {
 
     fn note(id: i32, channel: i16, pitch: i16) -> Note {
         Note { id, channel, pitch }
+    }
+
+    #[test]
+    fn note_controls_apply_bend_range_and_restrict_glide_to_mono() {
+        let mut synth = Synthesizer::new();
+        let mut values = parameters::sine_preset();
+        values[parameters::PORTAMENTO] = parameters::to_normalized(parameters::PORTAMENTO, 10.0);
+        values[parameters::PITCH] = 1.0;
+        synth.set_parameters(values);
+        synth.note_on(
+            Note {
+                id: 1,
+                channel: 0,
+                pitch: 69,
+            },
+            0.0,
+            1.0,
+        );
+        synth.generate_sample();
+        assert_eq!(
+            synth.state.voices[0].state.oscillator_inputs[0].frequency_hz,
+            440.0
+        );
+        for (bend, hz) in [(1.0, 880.0), (0.0, 220.0), (0.5, 440.0)] {
+            synth.set_pitch_bend(bend);
+            for input in synth.state.voices[0].state.oscillator_inputs {
+                assert_eq!(input.frequency_hz, hz);
+            }
+        }
+        synth.note_on(
+            Note {
+                id: 2,
+                channel: 0,
+                pitch: 81,
+            },
+            0.0,
+            1.0,
+        );
+        assert_eq!(
+            synth.state.voices[0].state.oscillator_inputs[0].frequency_hz,
+            440.0
+        );
+        values[8] = parameters::to_normalized(8, 2.0);
+        synth.set_parameters(values); // Poly変更は進行中の移行も終了する。
+        assert_eq!(
+            synth.state.voices[0].state.oscillator_inputs[0].frequency_hz,
+            880.0
+        );
+        synth.note_on(
+            Note {
+                id: 3,
+                channel: 0,
+                pitch: 57,
+            },
+            0.0,
+            1.0,
+        );
+        assert_eq!(
+            synth.state.voices[0].state.oscillator_inputs[0].frequency_hz,
+            220.0
+        );
+        synth.set_pitch_bend(1.0);
+        values[parameters::PITCH] = 0.0;
+        synth.set_parameters(values); // 幅0では受信値によらず元の音高。
+        assert_eq!(
+            synth.state.voices[0].state.oscillator_inputs[0].frequency_hz,
+            220.0
+        );
     }
 
     #[test]

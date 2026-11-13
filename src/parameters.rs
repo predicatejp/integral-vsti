@@ -11,7 +11,13 @@ use crate::oscillator::{PhaseMode, Waveform};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const COUNT: usize = 132;
+pub const COUNT: usize = 134;
+pub const PORTAMENTO: usize = 132;
+pub const PITCH: usize = 133;
+/// ホストのピッチベンド受信値。音色の保存対象とGUIから独立させる。
+pub const PITCH_BEND_ID: u32 = 0x4245_4e44;
+pub const PITCH_BEND_INDEX: usize = COUNT + 1;
+pub const HOST_COUNT: usize = COUNT + 2;
 /// 各スロットの種類、Clipper/Gain/Mix、Delayの音価/Feedback/Mix/Stereo、ReverbのDecay/Damping/Size/Mix、ChorusのTime/Depth/Rate/Detune/Feedback/Mix、PhaserのCenter/Depth/Rate/Feedback/Mix、CompressorのThreshold/Ratio/Attack/Release/Knee/Makeup/Mix。IDは位置に固定する。
 pub const EFFECT_SLOTS: [[usize; 30]; 3] = [
     [
@@ -50,6 +56,7 @@ pub const DELAY_BEATS: [&str; 14] = [
 /// 同じ種類の設定は全スロットで同じ単位・量子化を用いる。
 pub fn control_kind(index: usize) -> usize {
     match index {
+        PORTAMENTO => 1, // AHDSRと同じ時間軸。
         45 | 48 => 31,
         46 | 49 => 32,
         47 | 50 => 33,
@@ -290,6 +297,8 @@ pub const IDS: [u32; COUNT] = [
     0x43500306,  // Compressor 3: Mix
     0x4153_454e, // ASEN: Amp velocity sensitivity
     0x4653_454e, // FSEN: Filter Amount velocity sensitivity
+    0x504f_5254, // PORT: Portamento
+    0x5049_5443, // PITC: Pitch bend range
 ];
 pub const NAMES: [&str; COUNT] = [
     "Osc1 Waveform",
@@ -424,6 +433,8 @@ pub const NAMES: [&str; COUNT] = [
     "Effect 3 Compressor Mix",
     "Amp Sensitivity",
     "Filter Amount Sensitivity",
+    "Portamento",
+    "Pitch",
 ];
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
@@ -486,6 +497,7 @@ pub fn max_tick(index: usize) -> u32 {
             13 | 22 | 25 | 28 => 720,
             24 | 27 | 32 => 480,
             11 => 950,
+            PITCH => 120,
             _ => 100,
         }
     }
@@ -510,7 +522,7 @@ pub fn unit(index: usize) -> &'static str {
             36 | 38 | 41 | 109 | 113 | 114 => "dB",
             13 | 22 | 25 | 28 | 32 => "dB",
             20 | 21 | 29 | 30 | 33 | 52 | 79 | 130 | 131 => "%",
-            7 | 10 | 19 | 24 | 27 | 94 => "cent",
+            7 | 10 | 19 | 24 | 27 | 94 | PITCH => "cent",
             _ => "",
         }
     }
@@ -584,6 +596,8 @@ pub fn to_plain(index: usize, normalized: f64) -> f64 {
         113 | 114 => return normalized * 24.0,
         93 => return 100.0 * 40_f64.powf(normalized),
         94 => return 2400.0 * normalized,
+        PITCH => return 1200.0 * normalized,
+        PITCH_BEND_INDEX => return normalized * 2.0 - 1.0,
         60 => return (normalized * 4.0).floor().min(3.0),
         75 => return 0.1 + normalized * 39.9,
         76 => return normalized * 10.0,
@@ -643,6 +657,8 @@ pub fn to_normalized(index: usize, plain: f64) -> f64 {
         113 | 114 => return plain / 24.0,
         93 => return (plain / 100.0).log(40.0),
         94 => return plain / 2400.0,
+        PITCH => return plain / 1200.0,
+        PITCH_BEND_INDEX => return (plain + 1.0) / 2.0,
         60 => return plain.clamp(0.0, 3.0).round() / 3.0,
         75 => return (plain - 0.1) / 39.9,
         76 => return plain / 10.0,
@@ -695,6 +711,8 @@ pub fn valid_plain(index: usize, plain: f64) -> bool {
         113 | 114 => (0.0..=24.0).contains(&plain),
         93 => (100.0..=4000.0).contains(&plain),
         94 => (0.0..=2400.0).contains(&plain),
+        PITCH => (0.0..=1200.0).contains(&plain),
+        PITCH_BEND_INDEX => (-1.0..=1.0).contains(&plain),
         60 => (0.0..=3.0).contains(&plain) && plain.fract() == 0.0,
         75 => (0.1..=40.0).contains(&plain),
         76 => (0.0..=10.0).contains(&plain),
@@ -877,6 +895,8 @@ fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
         100.0,
         100.0, // Amp velocity sensitivity
         0.0,   // Filter Amount velocity sensitivity
+        0.0,   // Portamento (ms)
+        0.0,   // Pitch bend range (cent)
     ];
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
@@ -1044,9 +1064,21 @@ pub struct ParameterPoints<'a> {
 impl<'a> ParameterPoints<'a> {
     /// ホストのキューを1回列挙し、ParamIDごとのカーソルを構成する。
     /// SAFETY: dataの入れ子のインターフェースはホスト所有で、dataの借用期間中有効。
-    pub unsafe fn all(data: &'a ProcessData, values: &[f64; COUNT]) -> [Self; COUNT + 1] {
+    pub unsafe fn all(
+        data: &'a ProcessData,
+        values: &[f64; COUNT],
+        pitch_bend: f64,
+    ) -> [Self; HOST_COUNT] {
         let mut points = std::array::from_fn(|i| {
-            Self::empty(data.num_samples, i, values.get(i).copied().unwrap_or(0.0))
+            Self::empty(
+                data.num_samples,
+                i,
+                values.get(i).copied().unwrap_or(if i == PITCH_BEND_INDEX {
+                    pitch_bend
+                } else {
+                    0.0
+                }),
+            )
         });
         if !data.input_parameter_changes.is_null() {
             // SAFETY: ホストのIParameterChangesと借用キューを読み、process中だけ保持する。
@@ -1062,6 +1094,8 @@ impl<'a> ParameterPoints<'a> {
                     let id = (queue_table.get_parameter_id)(queue);
                     let parameter = if id == PROGRAM_ID {
                         Some(PROGRAM_INDEX)
+                    } else if id == PITCH_BEND_ID {
+                        Some(PITCH_BEND_INDEX)
                     } else {
                         index(id)
                     };
@@ -1156,9 +1190,9 @@ impl<'a> ParameterPoints<'a> {
     }
 }
 
-// v36: 固定1060バイト。波形番号u32と、その他の実単位f64を保持する。
+// v37: 固定1076バイト。波形番号u32と、その他の実単位f64を保持する。
 const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x24\0\0\0";
+const STATE_HEADER: [u8; 8] = *b"SVST\x25\0\0\0";
 
 /// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
 pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
@@ -1242,6 +1276,25 @@ pub unsafe fn write_state(stream: This, values: [f64; COUNT]) -> TResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn note_controls_use_envelope_time_axis_and_ten_cent_ticks() {
+        for tick in 0..=401 {
+            let time = tick_to_plain(PORTAMENTO, tick);
+            assert_eq!(time, tick_to_plain(1, tick));
+            assert_eq!(to_tick(PORTAMENTO, to_normalized(PORTAMENTO, time)), tick);
+        }
+        for tick in 0..=120 {
+            let cents = tick_to_plain(PITCH, tick);
+            assert!((cents - f64::from(tick) * 10.0).abs() < 1e-10);
+            assert_eq!(to_tick(PITCH, to_normalized(PITCH, cents)), tick);
+        }
+        assert!(!valid_plain(PITCH, -1.0));
+        assert!(!valid_plain(PITCH, 1201.0));
+        assert!(!valid_plain(PORTAMENTO, 10001.0));
+        assert_eq!(defaults()[PORTAMENTO], 0.0);
+        assert_eq!(sine_preset()[PITCH], 0.0);
+    }
 
     #[test]
     fn sample_positions_interpolate_only_known_continuous_intervals() {
@@ -1523,7 +1576,7 @@ mod tests {
                     assert_eq!(read_state(stream.cast()), Err(FALSE));
                 }
                 (*stream).length = STATE_SIZE;
-                for version in (0..=36).filter(|v| *v != STATE_HEADER[4]) {
+                for version in (0..=37).filter(|v| *v != STATE_HEADER[4]) {
                     (*stream).bytes[4] = version;
                     (*stream).position = 0;
                     assert_eq!(read_state(stream.cast()), Err(FALSE));

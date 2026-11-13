@@ -37,7 +37,7 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Center", "Depth", "Rate", "Fdbk", "Mix", "Center", "Depth", "Rate", "Fdbk", "Mix", "Center",
     "Depth", "Rate", "Fdbk", "Mix", "Limiter", "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix",
     "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix", "Thrs", "Ratio", "A", "R", "Knee", "Gain",
-    "Mix", "Sens", "Sens",
+    "Mix", "Sens", "Sens", "Porta", "Pitch",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -58,6 +58,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     2, 4, 3, 3, 4, 4, 4, // Compressor
     2, 4, 3, 3, 4, 4, 4, // Compressor
     4, 4, // Velocity sensitivity
+    3, 4, // Portamento / Pitch
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -85,7 +86,8 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
         6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
         7 | 20 | 33 | 52 | 130 | 131 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
-        8 => (&[0, 7, 15, 23, 31], 0),          // Polyphony: 1/8/16/24/32
+        parameters::PITCH => (&[0, 20, 40, 60, 80, 100, 120], 0),
+        8 => (&[0, 7, 15, 23, 31], 0), // Polyphony: 1/8/16/24/32
         // Cutoff: −2〜+8 oct、0 centを強調。
         10 => (
             &[0, 120, 240, 360, 480, 600, 720, 840, 960, 1080, 1200],
@@ -602,6 +604,33 @@ impl Editor {
         }
     }
 
+    fn note_group(&self, ui: &mut egui::Ui, rect: egui::Rect, selected: &[f64; parameters::COUNT]) {
+        panel(ui.painter(), rect, "Note");
+        let width = (rect.width() - GAP * 2.0) / 4.0;
+        let top = rect.top() + GAP * 2.0 + HEADER_HEIGHT;
+        for (column, index) in [12, 8, parameters::PORTAMENTO, parameters::PITCH]
+            .into_iter()
+            .enumerate()
+        {
+            let left = rect.left() + GAP + column as f32 * width;
+            let area = if index == 12 {
+                egui::Rect::from_min_size(
+                    egui::pos2(left + GAP, top + KNOB_CENTER_Y - CHOICE_HEIGHT / 2.0 + GAP),
+                    egui::vec2(width - GAP * 2.0, CHOICE_HEIGHT),
+                )
+            } else {
+                egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, KNOB_CELL.y))
+            };
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                if index == 12 {
+                    self.choice(ui, index, selected[index]);
+                } else {
+                    self.knob(ui, index, selected[index], width);
+                }
+            });
+        }
+    }
+
     fn group(
         &self,
         ui: &mut egui::Ui,
@@ -635,7 +664,7 @@ impl Editor {
             rows
         };
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
-        let stacked_choices = choices.first() == Some(&12);
+        let stacked_choices = choices.first() == Some(&108);
         let choice_label_height = if stacked_choices {
             CHOICE_HEIGHT + GAP
         } else {
@@ -1052,7 +1081,17 @@ impl WindowHandler for Editor {
             let left_top = title.bottom() + GAP;
             let full_height = size.height as f32 / UI_SCALE - left_top - GAP;
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
-            let panel_height = full_height - GAP - eq_height;
+            let note_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
+            let voice_top = left_top + note_height + GAP;
+            let panel_height = full_height - note_height - GAP * 2.0 - eq_height;
+            self.note_group(
+                ui,
+                egui::Rect::from_min_size(
+                    egui::pos2(GAP, left_top),
+                    egui::vec2(effects_x - GAP * 2.0, note_height),
+                ),
+                &selected,
+            );
             // 2段配置の最大4ノブと、種類選択・交換ボタンが収まる幅。
             let side_width = GAP * 2.0 + 64.0 * 4.0;
             let master_x = effects_x + side_width + GAP;
@@ -1081,13 +1120,13 @@ impl WindowHandler for Editor {
                         &[24, 25, 29][..],
                         &[27, 28, 30][..],
                     ][..],
-                    [GAP, left_top, oscillator_width, panel_height],
+                    [GAP, voice_top, oscillator_width, panel_height],
                 ),
                 (
                     "Amp",
                     &[],
                     &[&[1, 2, 3, 4, 5][..]][..],
-                    [center_x, left_top, filter_width, amp_height],
+                    [center_x, voice_top, filter_width, amp_height],
                 ),
                 (
                     "Filter",
@@ -1095,7 +1134,7 @@ impl WindowHandler for Editor {
                     &[&[10, 11, 19, 131][..], &[14, 15, 16, 17, 18][..]][..],
                     [
                         center_x,
-                        left_top + amp_height + GAP,
+                        voice_top + amp_height + GAP,
                         filter_width,
                         filter_height,
                     ],
@@ -1170,15 +1209,15 @@ impl WindowHandler for Editor {
                     &[&[35, 36, 37, 38, 39, 40, 41][..]][..],
                     [
                         GAP,
-                        left_top + panel_height + GAP,
+                        voice_top + panel_height + GAP,
                         effects_x - GAP * 2.0,
                         eq_height,
                     ],
                 ),
                 (
                     "Master",
-                    &[12, 108],
-                    &[&[13][..], &[21][..], &[8][..]][..],
+                    &[108],
+                    &[&[13][..], &[21][..]][..],
                     [master_x, left_top, master_width, full_height],
                 ),
             ];

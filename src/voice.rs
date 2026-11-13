@@ -36,6 +36,18 @@ pub struct VoiceState {
     phase_depths: [f64; 2],
     /// ノート基音に掛けるOsc2/3のTune倍率。Osc1は1。
     tune_ratios: [f64; 3],
+    /// ベンドと各Tuneを適用する前の現在のノート周波数（Hz）。
+    note_hz: f64,
+    /// 直近のNote Onで指定された移行先のノート周波数（Hz）。
+    target_hz: f64,
+    /// Polyphony=1のときだけ親が設定する移行時間（ms）。0は即時変更。
+    portamento_ms: f64,
+    /// 進行中の移行の残り時間（ms）。0なら周波数を保持する。
+    glide_remaining_ms: f64,
+    /// cent上の線形移行を表す1サンプルの周波数倍率。
+    glide_ratio: f64,
+    /// ホストのピッチベンドとPitch幅から親が換算した全発振器共通の倍率。
+    pitch_ratio: f64,
     /// ノートを保持している間true。Note Offでは共通AHDSRのreleaseへ移る。
     pub(super) gate: bool,
     /// Note Onの世代。3発振器へ同じ番号を渡す。
@@ -107,6 +119,12 @@ impl Voice {
                 oscillator_gains: [std::f64::consts::SQRT_2, 0.0, 0.0],
                 phase_depths: [0.0; 2],
                 tune_ratios: [1.0; 3],
+                note_hz: 440.0,
+                target_hz: 440.0,
+                portamento_ms: 0.0,
+                glide_remaining_ms: 0.0,
+                glide_ratio: 1.0,
+                pitch_ratio: 1.0,
                 gate: false,
                 note_generation: 0,
                 sample_rate: MIN_SAMPLE_RATE,
@@ -144,13 +162,24 @@ impl Voice {
         }
         self.state.oscillators_prepared = 0;
         self.state.note_generation = self.state.note_generation.wrapping_add(1);
-        for (input, ratio) in self
-            .state
-            .oscillator_inputs
-            .iter_mut()
-            .zip(self.state.tune_ratios)
+        self.state.target_hz = frequency_hz;
+        self.state.glide_remaining_ms = if self.is_active()
+            && self.state.envelope.is_active()
+            && self.state.note_hz > 0.0
+            && frequency_hz > 0.0
+            && self.state.note_hz != frequency_hz
         {
-            input.frequency_hz = (frequency_hz * ratio).min(f64::MAX);
+            self.state.portamento_ms
+        } else {
+            0.0
+        };
+        if self.state.glide_remaining_ms == 0.0 {
+            self.state.note_hz = frequency_hz;
+        } else {
+            self.update_glide_ratio();
+        }
+        self.refresh_pitch();
+        for input in &mut self.state.oscillator_inputs {
             input.note_generation = self.state.note_generation;
         }
         self.state.velocity = f64::from(velocity);
@@ -160,6 +189,56 @@ impl Voice {
         self.state.gate = true;
         self.state.note = Some(note);
         true
+    }
+
+    /// 時間は次のNote Onに適用する。無効化時は進行中の移行も直ちに完了する。
+    pub fn set_portamento(&mut self, milliseconds: f64) {
+        self.state.portamento_ms = milliseconds;
+        if milliseconds == 0.0 && self.state.glide_remaining_ms > 0.0 {
+            self.state.glide_remaining_ms = 0.0;
+            self.state.note_hz = self.state.target_hz;
+            self.refresh_pitch();
+        }
+    }
+
+    pub fn set_pitch_ratio(&mut self, ratio: f64) {
+        if self.state.pitch_ratio != ratio {
+            self.state.pitch_ratio = ratio;
+            self.refresh_pitch();
+        }
+    }
+
+    fn refresh_pitch(&mut self) {
+        let base = (self.state.note_hz * self.state.pitch_ratio).min(f64::MAX);
+        for (input, ratio) in self
+            .state
+            .oscillator_inputs
+            .iter_mut()
+            .zip(self.state.tune_ratios)
+        {
+            input.frequency_hz = (base * ratio).min(f64::MAX);
+        }
+        self.state.oscillators_prepared = 0;
+    }
+
+    fn update_glide_ratio(&mut self) {
+        let samples = self.state.glide_remaining_ms * self.state.sample_rate / 1000.0;
+        self.state.glide_ratio =
+            ((self.state.target_hz.log2() - self.state.note_hz.log2()) / samples).exp2();
+    }
+
+    fn update_pitch_sample(&mut self) {
+        if self.state.glide_remaining_ms > 0.0 {
+            self.state.glide_remaining_ms =
+                (self.state.glide_remaining_ms - 1000.0 / self.state.sample_rate).max(0.0);
+            if self.state.glide_remaining_ms < 1e-9 {
+                self.state.glide_remaining_ms = 0.0;
+                self.state.note_hz = self.state.target_hz;
+            } else {
+                self.state.note_hz = (self.state.note_hz * self.state.glide_ratio).min(f64::MAX);
+            }
+            self.refresh_pitch();
+        }
     }
 
     /// 親が検証した感度を反映し、発音中のノートにも適用する。
@@ -205,6 +284,7 @@ impl Voice {
     }
 
     pub fn stop(&mut self) {
+        self.state.glide_remaining_ms = 0.0;
         self.state.oscillators_prepared = 0;
         // releaseとは区別し、次サンプルで即時消音する。位相は保持する。
         self.state.gate = false;
@@ -349,6 +429,13 @@ impl Voice {
                 rest.fill([0.0; 2]);
                 return;
             }
+            // 移行中は周波数がサンプルごとに変わるため、定常入力専用の経路を使わない。
+            if self.state.oscillators_prepared != 0b111 {
+                for value in rest {
+                    *value = self.generate_sample(sample_rate, gains, mono_gains);
+                }
+                return;
+            }
             if self.state.oscillator_inputs[0].phase_modulated
                 || self.state.oscillator_inputs[1].phase_modulated
             {
@@ -470,6 +557,9 @@ impl Voice {
             }
             self.state.oscillators_prepared = 0;
             self.state.sample_rate = sample_rate;
+            if self.state.glide_remaining_ms > 0.0 {
+                self.update_glide_ratio();
+            }
             self.state.envelope.set_input(
                 &self.state.envelope_parameters,
                 sample_rate,
@@ -556,6 +646,9 @@ impl Voice {
         );
         self.state.envelope.update_sample();
         self.state.cutoff_envelope.update_sample();
+        if !PREPARED && active {
+            self.update_pitch_sample();
+        }
         output
     }
 }
@@ -563,6 +656,125 @@ impl Voice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portamento_tracks_cents_retargets_and_starts_silent_notes_immediately() {
+        for rate in [44100.0, 48000.0, 96000.0] {
+            let mut voice = Voice::new();
+            voice.set_parameters(
+                Waveform::Sine,
+                EnvelopeParameters {
+                    attack_ms: 0.0,
+                    hold_ms: 0.0,
+                    decay_ms: 0.0,
+                    sustain: 1.0,
+                    release_ms: 1.0,
+                },
+                1,
+                0.0,
+                PhaseMode::Keep,
+            );
+            voice.set_portamento(10.0);
+            voice.set_pitch_ratio(2.0);
+            voice.set_oscillator(1, Waveform::Sine, 0.5, 1.0);
+            voice.set_oscillator(2, Waveform::Sine, 4.0, 1.0);
+            let note = Note {
+                id: 1,
+                channel: 0,
+                pitch: 69,
+            };
+            let next = Note {
+                id: 2,
+                pitch: 81,
+                ..note
+            };
+            assert!(voice.note_on(note, 0.0, 1.0));
+            assert_eq!(voice.state.note_hz, 440.0);
+            voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+            assert!(voice.note_on(next, 0.0, 1.0));
+            let count = (rate * 0.01).round() as usize;
+            for i in 0..=count {
+                let expected = 440.0 * 2.0_f64.powf(i as f64 / count as f64);
+                assert!((voice.state.note_hz / expected - 1.0).abs() < 1e-10);
+                for (input, ratio) in voice.state.oscillator_inputs.iter().zip([2.0, 1.0, 8.0]) {
+                    assert!((input.frequency_hz / (expected * ratio) - 1.0).abs() < 1e-10);
+                }
+                voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+            }
+            assert_eq!(voice.state.glide_remaining_ms, 0.0);
+            voice.note_off(next);
+            assert!(voice.note_on(note, 0.0, 1.0)); // release中からの移行。
+            for _ in 0..count / 2 {
+                voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+            }
+            let current = voice.state.note_hz;
+            assert!(voice.note_on(next, 0.0, 1.0));
+            assert_eq!(voice.state.note_hz, current);
+            voice.set_portamento(0.0);
+            assert_eq!(voice.state.note_hz, 880.0);
+            voice.set_portamento(10.0);
+            voice.note_off(next);
+            for _ in 0..count {
+                voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+            }
+            assert!(voice.note_on(note, 0.0, 1.0));
+            assert_eq!(voice.state.note_hz, 440.0);
+            assert_eq!(voice.state.glide_remaining_ms, 0.0);
+            voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+            voice.stop();
+            assert!(voice.note_on(next, 0.0, 1.0));
+            assert_eq!(voice.state.note_hz, 880.0);
+            assert_eq!(voice.state.glide_remaining_ms, 0.0);
+        }
+    }
+
+    #[test]
+    fn portamento_series_matches_samples_with_unison_modulation_and_filter() {
+        for rate in [44100.0, 96000.0] {
+            for modulation in [0.0, 0.5] {
+                let mut voice = Voice::new();
+                voice.set_parameters(
+                    Waveform::Sawtooth,
+                    DEFAULT_ENVELOPE,
+                    7,
+                    25.0,
+                    PhaseMode::Zero,
+                );
+                voice.set_filter(FilterType::LowPass2, 1200.0, 1.0);
+                voice.set_phase_modulation([modulation; 2]);
+                voice.set_portamento(1.0);
+                let note = Note {
+                    id: 1,
+                    channel: 0,
+                    pitch: 69,
+                };
+                assert!(voice.note_on(note, 0.0, 1.0));
+                voice.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+                assert!(voice.note_on(
+                    Note {
+                        id: 2,
+                        pitch: 81,
+                        ..note
+                    },
+                    0.0,
+                    1.0
+                ));
+                let mut reference = voice.clone();
+                for length in [1, 3, 32, 65, 512] {
+                    let mut output = vec![[0.0; 2]; length];
+                    voice.generate_samples(rate, &[[1.0; 2]; 7], &[1.0; 2], &mut output);
+                    let mut error = 0.0;
+                    let mut energy = 0.0;
+                    for actual in output {
+                        let expected = reference.generate_sample(rate, &[[1.0; 2]; 7], &[1.0; 2]);
+                        error += (actual[0] - expected[0]).powi(2);
+                        energy += expected[0].powi(2);
+                    }
+                    assert!(error <= energy * 1e-8, "{error}/{energy}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn velocity_response_matches_scaled_inputs_in_sample_and_series_paths() {

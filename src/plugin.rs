@@ -12,7 +12,7 @@ use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 mod programs;
 
@@ -36,6 +36,10 @@ struct Plugin {
     context_requirements: Interface,
     /// ルートユニットと内蔵プログラム一覧を提供するIUnitInfo。
     unit_info: Interface,
+    /// ホストのピッチベンドをVST3パラメーターへ割り当てるIMidiMapping。
+    midi_mapping: Interface,
+    /// Controller上のピッチベンド受信値。DSPへの配送はホストの変更キューを使う。
+    controller_pitch_bend: AtomicU64,
     /// 全インターフェースで共有する所有参照数。0になったときPlugin全体を破棄する。
     refs: AtomicU32,
     /// initializeが成功してからterminateまでtrueとなる初期化状態。
@@ -104,6 +108,10 @@ static PROCESSOR: ProcessorVTable = ProcessorVTable {
     process,
     get_tail_samples,
 };
+static MIDI_MAPPING: MidiMappingVTable = MidiMappingVTable {
+    unknown: UNKNOWN,
+    get_midi_controller_assignment: midi_assignment,
+};
 static CONTEXT_REQUIREMENTS: ContextRequirementsVTable = ContextRequirementsVTable {
     unknown: UNKNOWN,
     get_process_context_requirements: context_requirements,
@@ -138,6 +146,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
             | CONTROLLER_IID
             | CONTEXT_REQUIREMENTS_IID
             | UNIT_INFO_IID
+            | MIDI_MAPPING_IID
     ) {
         return NO_INTERFACE;
     }
@@ -164,6 +173,11 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
             vtable: ptr::from_ref(&programs::UNIT_INFO).cast(),
             owner: ptr::null_mut(),
         },
+        midi_mapping: Interface {
+            vtable: ptr::from_ref(&MIDI_MAPPING).cast(),
+            owner: ptr::null_mut(),
+        },
+        controller_pitch_bend: AtomicU64::new(0.5_f64.to_bits()),
         refs: AtomicU32::new(1),
         initialized: AtomicBool::new(false),
         active: AtomicBool::new(false),
@@ -190,6 +204,7 @@ pub unsafe fn create(iid: &Tuid, out: *mut This) -> TResult {
         (*owner).controller.owner = owner;
         (*owner).context_requirements.owner = owner;
         (*owner).unit_info.owner = owner;
+        (*owner).midi_mapping.owner = owner;
         out.write(interface(&*owner, iid));
     }
     OK
@@ -202,6 +217,7 @@ fn interface(plugin: &Plugin, iid: &Tuid) -> This {
         CONTROLLER_IID => &plugin.controller,
         CONTEXT_REQUIREMENTS_IID => &plugin.context_requirements,
         UNIT_INFO_IID => &plugin.unit_info,
+        MIDI_MAPPING_IID => &plugin.midi_mapping,
         _ => return ptr::null_mut(),
     };
     ptr::from_ref(target).cast_mut().cast()
@@ -438,10 +454,47 @@ unsafe extern "system" fn set_controller_component_state(this: This, stream: Thi
         Err(status) => status,
     }
 }
+unsafe extern "system" fn midi_assignment(
+    _: This,
+    bus: i32,
+    channel: i16,
+    controller: i16,
+    out: *mut u32,
+) -> TResult {
+    if out.is_null() {
+        return INVALID_ARGUMENT;
+    }
+    if bus != 0 || !(0..16).contains(&channel) || controller != 129 {
+        // kPitchBend
+        return FALSE;
+    }
+    // SAFETY: outはホストが渡したParamIDの出力領域。全チャンネルを共通ベンドへ割り当てる。
+    unsafe {
+        out.write(parameters::PITCH_BEND_ID);
+    }
+    OK
+}
+
 unsafe extern "system" fn parameter_count(_: This) -> i32 {
-    (IDS.len() + 1) as i32
+    parameters::HOST_COUNT as i32
 }
 unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut ParameterInfo) -> TResult {
+    if index == parameters::PITCH_BEND_INDEX as i32 && !out.is_null() {
+        // SAFETY: outはホストのParameterInfo書き込み領域。
+        unsafe {
+            out.write(ParameterInfo {
+                id: parameters::PITCH_BEND_ID,
+                title: utf16("Pitch Bend"),
+                short_title: utf16("Bend"),
+                units: [0; 128],
+                step_count: 0,
+                default_normalized_value: 0.5,
+                unit_id: 0,
+                flags: 1,
+            });
+        }
+        return OK;
+    }
     if index == parameters::PROGRAM_INDEX as i32 && !out.is_null() {
         // SAFETY: outはホストのParameterInfo書き込み領域。
         unsafe {
@@ -485,12 +538,20 @@ unsafe extern "system" fn parameter_info(_: This, index: i32, out: *mut Paramete
     }
     OK
 }
+fn value_index(id: u32) -> Option<usize> {
+    if id == parameters::PITCH_BEND_ID {
+        Some(parameters::PITCH_BEND_INDEX)
+    } else {
+        parameters::index(id)
+    }
+}
+
 unsafe extern "system" fn parameter_string(_: This, id: u32, value: f64, out: *mut u16) -> TResult {
     if id == parameters::PROGRAM_ID && (0.0..=1.0).contains(&value) {
         // SAFETY: outはnullまたはホストのString128。
         return unsafe { programs::program_name(ptr::null_mut(), 0, 0, out) };
     }
-    let Some(i) = parameters::index(id) else {
+    let Some(i) = value_index(id) else {
         return INVALID_ARGUMENT;
     };
     if out.is_null() || !(0.0..=1.0).contains(&value) {
@@ -541,7 +602,7 @@ unsafe extern "system" fn parameter_value(
         unsafe { out.write(0.0) };
         return OK;
     }
-    let Some(i) = parameters::index(id) else {
+    let Some(i) = value_index(id) else {
         return INVALID_ARGUMENT;
     };
     let names = parameters::choices(i);
@@ -568,20 +629,38 @@ unsafe extern "system" fn normalized_to_plain(_: This, id: u32, value: f64) -> f
     if !(0.0..=1.0).contains(&value) {
         return 0.0;
     }
-    parameters::index(id).map_or(0.0, |i| parameters::to_plain(i, value))
+    value_index(id).map_or(0.0, |i| parameters::to_plain(i, value))
 }
 unsafe extern "system" fn plain_to_normalized(_: This, id: u32, value: f64) -> f64 {
-    parameters::index(id)
+    value_index(id)
         .filter(|&i| parameters::valid_plain(i, value))
         .map_or(0.0, |i| parameters::to_normalized(i, value))
 }
 unsafe extern "system" fn parameter_normalized(this: This, id: u32) -> f64 {
+    if id == parameters::PITCH_BEND_ID {
+        // SAFETY: Controllerのatomicだけを読む。
+        return f64::from_bits(
+            unsafe { instance(this) }
+                .controller_pitch_bend
+                .load(Ordering::Relaxed),
+        );
+    }
     // SAFETY: thisは生存中。Controllerのatomicだけを読む。
     parameters::index(id).map_or(0.0, |i| {
         unsafe { instance(this) }.controller_parameters.get(i)
     })
 }
 unsafe extern "system" fn set_parameter(this: This, id: u32, value: f64) -> TResult {
+    if id == parameters::PITCH_BEND_ID {
+        if !(0.0..=1.0).contains(&value) {
+            return INVALID_ARGUMENT;
+        }
+        // SAFETY: Controllerのatomicのみ更新し、DSP配送はホストへ任せる。
+        unsafe { instance(this) }
+            .controller_pitch_bend
+            .store(value.to_bits(), Ordering::Relaxed);
+        return OK;
+    }
     if id == parameters::PROGRAM_ID && (0.0..=1.0).contains(&value) {
         // SAFETY: ホストUIスレッド上のController。DSPにはホストのProgramキューで配送する。
         let plugin = unsafe { instance(this) };
@@ -852,8 +931,11 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
             return NOT_INITIALIZED;
         }
         let mut values = plugin.processor_parameters.snapshot();
-        // SAFETY: 変更キューはこの呼び出し中有効。停止中のDSP状態には触れない。
-        let mut changes = unsafe { ParameterPoints::all(data, &values) };
+        // SAFETY: ホストはprocessと処理設定・停止を直列化する。
+        let synth = unsafe { &mut *plugin.synth.get() };
+        // SAFETY: 変更キューはこの呼び出し中有効。
+        let mut changes = unsafe { ParameterPoints::all(data, &values, synth.pitch_bend()) };
+        synth.set_pitch_bend(changes[parameters::PITCH_BEND_INDEX].value_at(0));
         let loaded = changes[parameters::PROGRAM_INDEX].take_program_at(0);
         if loaded {
             values = parameters::sine_preset();
@@ -906,7 +988,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     let values = plugin.processor_parameters.snapshot();
     synth.set_parameters(values);
     // SAFETY: 音色設定とProgramのカーソルはこのprocess中だけホストのキューを借用する。
-    let mut changes = unsafe { ParameterPoints::all(data, &values) };
+    let mut changes = unsafe { ParameterPoints::all(data, &values, synth.pitch_bend()) };
     let event_active = plugin.event_active.load(Ordering::Relaxed);
     if !event_active {
         synth.stop();
@@ -995,7 +1077,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     OK
 }
 
-type AutomationMask = [u64; (parameters::COUNT + 1).div_ceil(64)];
+type AutomationMask = [u64; (parameters::HOST_COUNT).div_ceil(64)];
 
 // SAFETY契約: channelsの各要素はnum_samples個の書き込み領域。rangeは範囲内。
 // changesはこのprocessから借用し、
@@ -1006,10 +1088,10 @@ unsafe fn generate_samples(
     data: &ProcessData,
     channels: Option<[This; 2]>,
     range: std::ops::Range<i32>,
-    changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
+    changes: &mut [ParameterPoints<'_>; parameters::HOST_COUNT],
     peak: &mut f32,
 ) -> u64 {
-    let mut automated: AutomationMask = [0; (parameters::COUNT + 1).div_ceil(64)];
+    let mut automated: AutomationMask = [0; (parameters::HOST_COUNT).div_ceil(64)];
     for (i, point) in changes.iter().enumerate() {
         automated[i / 64] |= u64::from(point.automated) << (i % 64);
     }
@@ -1063,7 +1145,7 @@ unsafe fn generate_samples(
 fn generate_output_samples(
     plugin: &Plugin,
     synth: &mut Synthesizer,
-    changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
+    changes: &mut [ParameterPoints<'_>; parameters::HOST_COUNT],
     automated: AutomationMask,
     range: std::ops::Range<i32>,
     mut write: impl FnMut(usize, [f64; 2]) -> u64,
@@ -1090,7 +1172,7 @@ fn generate_output_samples(
 fn apply_parameters(
     plugin: &Plugin,
     synth: &mut Synthesizer,
-    changes: &mut [ParameterPoints<'_>; parameters::COUNT + 1],
+    changes: &mut [ParameterPoints<'_>; parameters::HOST_COUNT],
     automated: AutomationMask,
     offset: i32,
 ) {
@@ -1106,6 +1188,11 @@ fn apply_parameters(
     }
     let mut controls = automated;
     controls[parameters::PROGRAM_INDEX / 64] &= !(1 << (parameters::PROGRAM_INDEX % 64));
+    if controls[parameters::PITCH_BEND_INDEX / 64] & (1 << (parameters::PITCH_BEND_INDEX % 64)) != 0
+    {
+        synth.set_pitch_bend(changes[parameters::PITCH_BEND_INDEX].value_at(offset));
+        controls[parameters::PITCH_BEND_INDEX / 64] &= !(1 << (parameters::PITCH_BEND_INDEX % 64));
+    }
     for (word, mut pending) in controls.into_iter().enumerate() {
         while pending != 0 {
             let i = word * 64 + pending.trailing_zeros() as usize;
