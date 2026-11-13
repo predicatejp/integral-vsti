@@ -20,6 +20,11 @@ fn x86_64_layout() {
     assert_eq!(size_of::<ProgramListInfo>(), 264);
     assert_eq!(offset_of!(ProgramListInfo, program_count), 260);
     assert_eq!(size_of::<UnitInfoVTable>(), 15 * 8);
+    assert_eq!(size_of::<MidiMappingVTable>(), 4 * 8);
+    assert_eq!(
+        offset_of!(MidiMappingVTable, get_midi_controller_assignment),
+        3 * 8
+    );
     assert_eq!(size_of::<ParameterInfo>(), 792);
     assert_eq!(align_of::<ParameterInfo>(), 8);
     assert_eq!(offset_of!(ParameterInfo, default_normalized_value), 776);
@@ -662,11 +667,11 @@ fn editor_owns_controller_and_has_fixed_size() {
             bottom: 0,
         };
         assert_eq!((vt.get_size)(view, &mut rect), OK);
-        assert_eq!((rect.right, rect.bottom), (1172, 728));
+        assert_eq!((rect.right, rect.bottom), (1076, 768));
         rect.right = 800;
         assert_eq!((vt.on_size)(view, &rect), FALSE);
         assert_eq!((vt.check_size_constraint)(view, &mut rect), OK);
-        assert_eq!((rect.right, rect.bottom), (1172, 728));
+        assert_eq!((rect.right, rect.bottom), (1076, 768));
         assert_eq!((vt.on_size)(view, &rect), OK);
         assert_eq!((vt.removed)(view), OK);
         assert_eq!((vt.unknown.release)(view), 0);
@@ -763,7 +768,7 @@ fn parameter_queues_are_enumerated_once_and_keep_the_first_duplicate() {
     data.input_parameter_changes = ptr::from_mut(&mut queues).cast();
     let mut values = parameters::defaults();
     values[32] = 0.2;
-    let mut points = unsafe { parameters::ParameterPoints::all(&data, &values) };
+    let mut points = unsafe { parameters::ParameterPoints::all(&data, &values, 0.5) };
     assert_eq!(queues.visits, 6);
     assert_eq!(points[11].value_at(0), 0.4);
     assert_eq!(points[32].value_at(0), 0.2);

@@ -37,7 +37,7 @@ const KNOB_NAMES: [&str; parameters::COUNT] = [
     "Center", "Depth", "Rate", "Fdbk", "Mix", "Center", "Depth", "Rate", "Fdbk", "Mix", "Center",
     "Depth", "Rate", "Fdbk", "Mix", "Limiter", "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix",
     "Thrs", "Ratio", "A", "R", "Knee", "Gain", "Mix", "Thrs", "Ratio", "A", "R", "Knee", "Gain",
-    "Mix", "Sens", "Sens",
+    "Mix", "Sens", "Sens", "Porta", "Pitch",
 ];
 
 /// 各ノブの1tickに必要な上下移動量（物理px、正の整数）。
@@ -58,6 +58,7 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
     2, 4, 3, 3, 4, 4, 4, // Compressor
     2, 4, 3, 3, 4, 4, 4, // Compressor
     4, 4, // Velocity sensitivity
+    3, 4, // Portamento / Pitch
 ];
 
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
@@ -85,7 +86,8 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
         6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
         7 | 20 | 33 | 52 | 130 | 131 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
-        8 => (&[0, 7, 15, 23, 31], 0),          // Polyphony: 1/8/16/24/32
+        parameters::PITCH => (&[0, 20, 40, 60, 80, 100, 120], 0),
+        8 => (&[0, 7, 15, 23, 31], 0), // Polyphony: 1/8/16/24/32
         // Cutoff: −2〜+8 oct、0 centを強調。
         10 => (
             &[0, 120, 240, 360, 480, 600, 720, 840, 960, 1080, 1200],
@@ -138,8 +140,8 @@ const GAP: f32 = 8.0;
 /// 見出し行と選択欄の高さ。選択欄は見出し行の中央に置く。
 const HEADER_HEIGHT: f32 = 28.0;
 const CHOICE_HEIGHT: f32 = 28.0;
-/// プラグイン名と発音数を表示する上部バー。
-const TITLE_BAR_HEIGHT: f32 = 36.0;
+/// 製品名・全体コントロール・メーターを表示する上部バー。
+const TITLE_BAR_HEIGHT: f32 = KNOB_CELL.y - GAP;
 /// ノブとラベルの高さ。横幅は各行で均等に割り当てる。
 const KNOB_CELL: egui::Vec2 = egui::vec2(56.0, 64.0);
 const KNOB_CENTER_Y: f32 = 28.0;
@@ -410,21 +412,19 @@ impl Editor {
             0.0
         };
         let guide_stroke = egui::Stroke::new(2.0 * KNOB_SCALE, LINE);
+        let mut guide_left = center.x - 26.0 * KNOB_SCALE - guide_stroke.width / 2.0;
         let (marks, reference) = knob_marks(index);
         for &mark in marks {
             let d = direction(mark as f32 / parameters::max_tick(index) as f32);
             let major = mark == reference || mark == 0 || mark == parameters::max_tick(index);
-            painter.line_segment(
-                [
-                    center + d * (26.0 * KNOB_SCALE),
-                    center + d * (if major { 32.0 } else { 30.0 } * KNOB_SCALE),
-                ],
-                if major {
-                    guide_stroke
-                } else {
-                    egui::Stroke::new(KNOB_SCALE, LINE)
-                },
-            );
+            let end = center + d * (if major { 32.0 } else { 30.0 } * KNOB_SCALE);
+            let stroke = if major {
+                guide_stroke
+            } else {
+                egui::Stroke::new(KNOB_SCALE, LINE)
+            };
+            guide_left = guide_left.min(end.x - stroke.width / 2.0);
+            painter.line_segment([center + d * (26.0 * KNOB_SCALE), end], stroke);
         }
         let arc = |from: f32, to: f32| {
             (0..=32)
@@ -457,9 +457,20 @@ impl Editor {
             ],
             egui::Stroke::new(3.0 * KNOB_SCALE, ACCENT),
         );
+        let (label_position, label_align) = if matches!(index, 13 | 21) {
+            (
+                egui::pos2(guide_left - GAP / 2.0, center.y),
+                egui::Align2::RIGHT_CENTER,
+            )
+        } else {
+            (
+                egui::pos2(center.x, area.top() + 56.0),
+                egui::Align2::CENTER_CENTER,
+            )
+        };
         painter.text(
-            egui::pos2(center.x, area.top() + 56.0),
-            egui::Align2::CENTER_CENTER,
+            label_position,
+            label_align,
             KNOB_NAMES[index],
             egui::FontId::proportional(FONT_SIZE),
             MUTED,
@@ -578,7 +589,7 @@ impl Editor {
     }
 
     fn choice(&self, ui: &mut egui::Ui, index: usize, selected: f64) {
-        if matches!(index, 12 | 31 | 45 | 48 | 60..=62 | 108) {
+        if matches!(index, 12 | 31 | 45 | 48 | 60..=62) {
             ui.painter().text(
                 ui.max_rect().center_top() - egui::vec2(0.0, GAP),
                 egui::Align2::CENTER_BOTTOM,
@@ -599,6 +610,37 @@ impl Editor {
                 index,
                 parameters::to_normalized(index, choice as f64),
             ));
+        }
+    }
+
+    fn note_group(&self, ui: &mut egui::Ui, rect: egui::Rect, selected: &[f64; parameters::COUNT]) {
+        panel(ui.painter(), rect, "Note");
+        let choice_width = 112.0;
+        let width = (rect.width() - GAP * 2.0 - choice_width) / 3.0;
+        let top = rect.top() + GAP * 2.0 + HEADER_HEIGHT;
+        for (column, index) in [12, 8, parameters::PORTAMENTO, parameters::PITCH]
+            .into_iter()
+            .enumerate()
+        {
+            let left = rect.left() + GAP;
+            let area = if index == 12 {
+                egui::Rect::from_min_size(
+                    egui::pos2(left, top + KNOB_CENTER_Y - CHOICE_HEIGHT / 2.0 + GAP),
+                    egui::vec2(choice_width - GAP, CHOICE_HEIGHT),
+                )
+            } else {
+                egui::Rect::from_min_size(
+                    egui::pos2(left + choice_width + (column - 1) as f32 * width, top),
+                    egui::vec2(width, KNOB_CELL.y),
+                )
+            };
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                if index == 12 {
+                    self.choice(ui, index, selected[index]);
+                } else {
+                    self.knob(ui, index, selected[index], width);
+                }
+            });
         }
     }
 
@@ -635,46 +677,24 @@ impl Editor {
             rows
         };
         // 上余白・行間・下余白へ均等配分する。特定の行間だけを引き伸ばさない。
-        let stacked_choices = choices.first() == Some(&12);
-        let choice_label_height = if stacked_choices {
-            CHOICE_HEIGHT + GAP
-        } else {
-            0.0
-        };
-        let choice_rows = if stacked_choices { choices.len() } else { 0 };
         let internal_choice_width = if effect.is_some() && choices.len() > 1 {
             90.0 + GAP
         } else {
             0.0
         };
-        let choice_height = (CHOICE_HEIGHT + choice_label_height) * choice_rows as f32;
-        let row_header_height = if choices.len() > 1 && effect.is_none() && !stacked_choices {
+        let row_header_height = if choices.len() > 1 && effect.is_none() {
             CHOICE_HEIGHT + GAP
         } else {
             0.0
         };
         let row_height = KNOB_CELL.y + row_header_height;
-        let header_height = if title.is_empty() {
-            0.0
-        } else if title == "Amp" {
-            KNOB_CELL.y
-        } else {
-            HEADER_HEIGHT
-        };
-        let content_rows = rows.len() + choice_rows;
-        let row_gap =
-            (height - GAP - header_height - choice_height - row_height * rows.len() as f32)
-                / (content_rows + 1) as f32;
+        let header_height = if title.is_empty() { 0.0 } else { HEADER_HEIGHT };
+        let row_gap = (height - GAP - header_height - row_height * rows.len() as f32)
+            / (rows.len() + 1) as f32;
         let body_y = if row_header_height > 0.0 {
             GAP
         } else {
-            GAP + header_height
-                + row_gap
-                + if choice_height > 0.0 {
-                    choice_height + row_gap * choice_rows as f32
-                } else {
-                    0.0
-                }
+            GAP + header_height + row_gap
         };
         let row_step = if row_header_height > 0.0 {
             height / rows.len() as f32
@@ -709,15 +729,6 @@ impl Editor {
             );
         } else {
             panel(&painter, rect, title);
-        }
-        if title == "Amp" {
-            let area = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - GAP - KNOB_CELL.x, rect.top() + GAP),
-                KNOB_CELL,
-            );
-            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                self.knob(ui, 130, selected[130], KNOB_CELL.x);
-            });
         }
         for (row, knobs) in rows.iter().enumerate() {
             if knobs.is_empty() {
@@ -785,17 +796,6 @@ impl Editor {
                 rect.top() + GAP
             } else if row_header_height > 0.0 {
                 rect.top() + body_y + row as f32 * row_step
-            } else if choice_height > 0.0 {
-                rect.top()
-                    + GAP
-                    + HEADER_HEIGHT
-                    + row_gap
-                    + choice_label_height
-                    + if stacked_choices {
-                        row as f32 * (CHOICE_HEIGHT + choice_label_height + row_gap)
-                    } else {
-                        0.0
-                    }
             } else {
                 rect.top() + GAP + (HEADER_HEIGHT - CHOICE_HEIGHT) / 2.0
             };
@@ -982,9 +982,11 @@ impl WindowHandler for Editor {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
-            let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
+            let filter_width = GAP * 2.0 + KNOB_CELL.x * 6.0;
             let center_x = GAP + oscillator_width + GAP;
             let effects_x = center_x + filter_width + GAP;
+            // 2段配置の最大4ノブと、種類選択・交換ボタンが収まる幅。
+            let side_width = GAP * 2.0 + 64.0 * 4.0;
             let title = egui::Rect::from_min_size(
                 egui::vec2(GAP, GAP).to_pos2(),
                 egui::vec2(size.width as f32 / UI_SCALE - GAP * 2.0, TITLE_BAR_HEIGHT),
@@ -998,21 +1000,61 @@ impl WindowHandler for Editor {
                 egui::FontId::proportional(HEADING_FONT_SIZE),
                 INK,
             );
-            let meter_x = title.right() - GAP - 254.0;
+            let meter_x = effects_x + (side_width - 254.0) / 2.0;
+            let button_size = egui::vec2(64.0, 32.0);
             let reset_rect = egui::Rect::from_min_size(
-                egui::pos2(meter_x - GAP - 64.0, title.center().y - HEADER_HEIGHT / 2.0),
-                egui::vec2(64.0, HEADER_HEIGHT),
+                egui::pos2(
+                    center_x + filter_width - GAP - button_size.x,
+                    title.center().y - button_size.y / 2.0,
+                ),
+                button_size,
             );
-            let reset = ui.put(reset_rect, egui::Button::new("Reset"));
+            let limiter_rect = egui::Rect::from_min_size(
+                egui::pos2(reset_rect.left() - GAP - button_size.x, reset_rect.top()),
+                button_size,
+            );
+            // ラベル32pxとノブの間をGAPとし、2組を中央列へ収める。
+            let control_width = 32.0 + GAP + KNOB_CELL.x;
+            for (column, index) in [13, 21].into_iter().enumerate() {
+                let right = limiter_rect.left() - GAP * 2.0 - control_width * (1 - column) as f32;
+                let area = egui::Rect::from_min_size(
+                    egui::pos2(right - KNOB_CELL.x, title.center().y - KNOB_CENTER_Y),
+                    KNOB_CELL,
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                    self.knob(ui, index, selected[index], KNOB_CELL.x);
+                });
+            }
+            let limiter_tick = parameters::to_tick(108, selected[108]);
+            let (limiter, reset) = ui
+                .scope(|ui| {
+                    ui.spacing_mut().button_padding.x = 6.0;
+                    (
+                        ui.put(
+                            limiter_rect,
+                            egui::Button::new("Limiter").selected(limiter_tick != 0),
+                        ),
+                        ui.put(reset_rect, egui::Button::new("Reset")),
+                    )
+                })
+                .inner;
+            if limiter.clicked() {
+                self.edits.push(Edit::Set(
+                    108,
+                    parameters::to_normalized(108, f64::from(1 - limiter_tick)),
+                ));
+                limiter.surrender_focus();
+            }
             if reset.clicked() {
                 self.reset_requested.store(true, Ordering::Relaxed);
                 self.state.borrow_mut().peak_db = -60.0;
                 reset.surrender_focus();
             }
             let peak_db = self.state.borrow().peak_db;
+            let meter_height = (button_size.y - GAP) / 2.0;
             let peak_rect = egui::Rect::from_min_size(
-                egui::pos2(meter_x, title.center().y - 10.0),
-                egui::vec2(254.0, 8.0),
+                egui::pos2(meter_x, reset_rect.top()),
+                egui::vec2(254.0, meter_height),
             );
             painter.rect_filled(peak_rect, 1.0, METER_BACKGROUND);
             let zero_x = meter_x + peak_rect.width() * 60.0 / 72.0;
@@ -1026,7 +1068,7 @@ impl WindowHandler for Editor {
                     painter.rect_filled(
                         egui::Rect::from_min_size(
                             egui::pos2(start_x, peak_rect.top()),
-                            egui::vec2(width, 8.0),
+                            egui::vec2(width, meter_height),
                         ),
                         0.0,
                         color,
@@ -1036,8 +1078,8 @@ impl WindowHandler for Editor {
             painter.vline(zero_x, peak_rect.y_range(), egui::Stroke::new(1.0, INK));
             for voice in 0..32 {
                 let segment = egui::Rect::from_min_size(
-                    egui::pos2(meter_x + voice as f32 * 8.0, title.center().y + 2.0),
-                    egui::vec2(6.0, 8.0),
+                    egui::pos2(meter_x + voice as f32 * 8.0, peak_rect.bottom() + GAP),
+                    egui::vec2(6.0, meter_height),
                 );
                 painter.rect_filled(
                     segment,
@@ -1052,14 +1094,20 @@ impl WindowHandler for Editor {
             let left_top = title.bottom() + GAP;
             let full_height = size.height as f32 / UI_SCALE - left_top - GAP;
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
+            let note_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
+            let amp_top = left_top + note_height + GAP;
             let panel_height = full_height - GAP - eq_height;
-            // 2段配置の最大4ノブと、種類選択・交換ボタンが収まる幅。
-            let side_width = GAP * 2.0 + 64.0 * 4.0;
-            let master_x = effects_x + side_width + GAP;
-            let master_width = GAP * 2.0 + KNOB_CELL.x * 2.0;
-            // AmpはタイトルとSensで1行を共有し、AHDSRとの間隔も標準余白に揃える。
-            let amp_height = KNOB_CELL.y * 2.0 + GAP * 3.0;
-            let filter_height = panel_height - amp_height - GAP;
+            self.note_group(
+                ui,
+                egui::Rect::from_min_size(
+                    egui::pos2(center_x, left_top),
+                    egui::vec2(filter_width, note_height),
+                ),
+                &selected,
+            );
+            // NoteとAmpは1行分の同じ高さとし、SensもAHDSRと同じ行へ置く。
+            let amp_height = note_height;
+            let filter_height = panel_height - note_height - amp_height - GAP * 2.0;
             let effects_body_y = left_top;
             let effect_height = full_height / 3.0;
             panel(
@@ -1086,8 +1134,8 @@ impl WindowHandler for Editor {
                 (
                     "Amp",
                     &[],
-                    &[&[1, 2, 3, 4, 5][..]][..],
-                    [center_x, left_top, filter_width, amp_height],
+                    &[&[1, 2, 3, 4, 5, 130][..]][..],
+                    [center_x, amp_top, filter_width, amp_height],
                 ),
                 (
                     "Filter",
@@ -1095,7 +1143,7 @@ impl WindowHandler for Editor {
                     &[&[10, 11, 19, 131][..], &[14, 15, 16, 17, 18][..]][..],
                     [
                         center_x,
-                        left_top + amp_height + GAP,
+                        amp_top + amp_height + GAP,
                         filter_width,
                         filter_height,
                     ],
@@ -1174,12 +1222,6 @@ impl WindowHandler for Editor {
                         effects_x - GAP * 2.0,
                         eq_height,
                     ],
-                ),
-                (
-                    "Master",
-                    &[12, 108],
-                    &[&[13][..], &[21][..], &[8][..]][..],
-                    [master_x, left_top, master_width, full_height],
                 ),
             ];
             for (title, choices, rows, rect) in groups {
