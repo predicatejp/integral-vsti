@@ -459,9 +459,20 @@ impl Editor {
             ],
             egui::Stroke::new(3.0 * KNOB_SCALE, ACCENT),
         );
+        let (label_position, label_align) = if matches!(index, 13 | 21) {
+            (
+                egui::pos2(area.left() - GAP, center.y),
+                egui::Align2::RIGHT_CENTER,
+            )
+        } else {
+            (
+                egui::pos2(center.x, area.top() + 56.0),
+                egui::Align2::CENTER_CENTER,
+            )
+        };
         painter.text(
-            egui::pos2(center.x, area.top() + 56.0),
-            egui::Align2::CENTER_CENTER,
+            label_position,
+            label_align,
             KNOB_NAMES[index],
             egui::FontId::proportional(FONT_SIZE),
             MUTED,
@@ -990,19 +1001,26 @@ impl WindowHandler for Editor {
                 INK,
             );
             let meter_x = title.right() - GAP - 254.0;
+            let button_size = egui::vec2(80.0, 48.0);
             let reset_rect = egui::Rect::from_min_size(
-                egui::pos2(meter_x - GAP - 64.0, title.center().y - HEADER_HEIGHT / 2.0),
-                egui::vec2(64.0, HEADER_HEIGHT),
+                egui::pos2(
+                    meter_x - GAP - button_size.x,
+                    title.center().y - button_size.y / 2.0,
+                ),
+                button_size,
             );
             let limiter_rect = egui::Rect::from_min_size(
-                egui::pos2(reset_rect.left() - GAP - 80.0, reset_rect.top()),
-                egui::vec2(80.0, HEADER_HEIGHT),
+                egui::pos2(reset_rect.left() - GAP - button_size.x, reset_rect.top()),
+                button_size,
             );
+            // ラベル32pxとノブの間はGAP、各組の左右余白は2×GAP。
+            let control_width = 32.0 + GAP + KNOB_CELL.x + GAP * 4.0;
             for (column, index) in [13, 21].into_iter().enumerate() {
+                let right = limiter_rect.left() - GAP * 2.0 - control_width * (1 - column) as f32;
                 let area = egui::Rect::from_min_size(
                     egui::pos2(
-                        limiter_rect.left() - GAP - KNOB_CELL.x * (2 - column) as f32,
-                        title.top() + GAP,
+                        right - GAP * 2.0 - KNOB_CELL.x,
+                        title.center().y - KNOB_CENTER_Y,
                     ),
                     KNOB_CELL,
                 );
@@ -1029,9 +1047,10 @@ impl WindowHandler for Editor {
                 reset.surrender_focus();
             }
             let peak_db = self.state.borrow().peak_db;
+            let meter_height = (button_size.y - GAP) / 2.0;
             let peak_rect = egui::Rect::from_min_size(
-                egui::pos2(meter_x, title.center().y - 10.0),
-                egui::vec2(254.0, 8.0),
+                egui::pos2(meter_x, reset_rect.top()),
+                egui::vec2(254.0, meter_height),
             );
             painter.rect_filled(peak_rect, 1.0, METER_BACKGROUND);
             let zero_x = meter_x + peak_rect.width() * 60.0 / 72.0;
@@ -1045,7 +1064,7 @@ impl WindowHandler for Editor {
                     painter.rect_filled(
                         egui::Rect::from_min_size(
                             egui::pos2(start_x, peak_rect.top()),
-                            egui::vec2(width, 8.0),
+                            egui::vec2(width, meter_height),
                         ),
                         0.0,
                         color,
@@ -1055,8 +1074,8 @@ impl WindowHandler for Editor {
             painter.vline(zero_x, peak_rect.y_range(), egui::Stroke::new(1.0, INK));
             for voice in 0..32 {
                 let segment = egui::Rect::from_min_size(
-                    egui::pos2(meter_x + voice as f32 * 8.0, title.center().y + 2.0),
-                    egui::vec2(6.0, 8.0),
+                    egui::pos2(meter_x + voice as f32 * 8.0, peak_rect.bottom() + GAP),
+                    egui::vec2(6.0, meter_height),
                 );
                 painter.rect_filled(
                     segment,

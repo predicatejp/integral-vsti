@@ -468,8 +468,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     std::array<std::pair<int, int>, 134> controls {{
         {175, 118}, {292, 292}, {348, 292}, {404, 292}, {460, 292}, {516, 292},
         {44, 183}, {100, 183}, {413, 168}, {535, 366}, {306, 416}, {390, 416},
-        {316, 176}, {375, 44}, {298, 488}, {365, 488}, {432, 488}, {499, 488},
-        {566, 488}, {474, 416}, {156, 183}, {431, 44}, {212, 183}, {175, 263},
+        {316, 176}, {263, 48}, {298, 488}, {365, 488}, {432, 488}, {499, 488},
+        {566, 488}, {474, 416}, {156, 183}, {391, 48}, {212, 183}, {175, 263},
         {53, 328}, {128, 328}, {175, 409}, {53, 473}, {128, 473}, {203, 328},
         {203, 473}, {669, 203}, {765, 203}, {852, 203}, {535, 562}, {58, 612},
         {141, 612}, {225, 612}, {308, 612}, {391, 612}, {475, 612}, {558, 612},
@@ -484,7 +484,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {762, 612}, {777, 541}, {852, 577}, {670, 168}, {762, 168}, {670, 239},
         {762, 239}, {852, 203}, {670, 354}, {762, 354}, {670, 426}, {762, 426},
         {852, 390}, {670, 541}, {762, 541}, {670, 612}, {762, 612}, {852, 577},
-        {507, 48}, {655, 168}, {716, 168}, {655, 239}, {716, 239}, {777, 168},
+        {491, 48}, {655, 168}, {716, 168}, {655, 239}, {716, 239}, {777, 168},
         {777, 239}, {852, 203}, {655, 354}, {716, 354}, {655, 426}, {716, 426},
         {777, 354}, {777, 426}, {852, 390}, {655, 541}, {716, 541}, {655, 612},
         {716, 612}, {777, 541}, {777, 612}, {852, 577}, {572, 292}, {558, 416},
@@ -558,7 +558,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
             auto meter = [&](int count) {
                 for (int i = 0; i < 32; ++i) {
-                    if (parent.pixel(uiPixel(630 + i * 8), uiPixel(54)) != (i < count ? lit : unlit)) return false;
+                    if (parent.pixel(uiPixel(630 + i * 8), uiPixel(62)) != (i < count ? lit : unlit)) return false;
                 }
                 return true;
             };
@@ -569,7 +569,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             for (int i = 0; i < 16; ++i) assert(processor->process(audio) == kResultOk);
             waitFor([&] {
                 assert(processor->process(audio) == kResultOk);
-                return parent.pixel(uiPixel(713), uiPixel(42)) == lit && parent.pixel(uiPixel(879), uiPixel(42)) == over;
+                return parent.pixel(uiPixel(713), uiPixel(34)) == lit && parent.pixel(uiPixel(879), uiPixel(34)) == over;
             }, "peak at +12 dBFS: green below zero, red above");
             parent.screenshot("target/gui-voices.ppm");
             audio.inputEvents = &events;
@@ -584,7 +584,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(processor->process(audio) == kResultOk);
             waitFor([&] { return meter(3); }, "voices before reset");
             StateStream beforeReset; assert(component->getState(&beforeReset) == kResultOk);
-            parent.click(uiPixel(587), uiPixel(48)); pump();
+            parent.click(uiPixel(579), uiPixel(48)); pump();
             assert(handler.sequence.empty());
             audio.inputEvents = nullptr;
             assert(processor->process(audio) == kResultOk);
@@ -601,7 +601,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return meter(3); }, "notes play after reset");
             assert(processor->setProcessing(false) == kResultOk);
             waitFor([&] { return meter(0); }, "voices after stop");
-            waitFor([&] { return parent.pixel(uiPixel(630), uiPixel(42)) == unlit; }, "peak decays to silence");
+            waitFor([&] { return parent.pixel(uiPixel(630), uiPixel(34)) == unlit; }, "peak decays to silence");
             assert(component->setActive(false) == kResultOk);
             assert(component->setState(&original) == kResultOk);
         }
