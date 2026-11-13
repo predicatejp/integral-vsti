@@ -64,36 +64,36 @@ const KNOB_PIXELS_PER_TICK: [u32; parameters::COUNT] = [
 /// 吸着中の内部移動量の幅（物理px）。0で小さい側、80で大きい側へ抜ける。
 const KNOB_DETENT_PIXELS: u32 = 80;
 
-/// 描画目盛りとは独立した吸着対象。最大・最小値は除外する。
+/// 吸着対象のノブは描画と同じ目盛りを使う。最大・最小値は除外する。
 fn is_detent(index: usize, tick: u32) -> bool {
     if tick == 0 || tick == parameters::max_tick(index) {
         return false;
     }
-    match index {
-        10 | 19 | 24 | 27 => tick.is_multiple_of(120), // Cutoff / Amount / Tune: 1200 cent
-        13 | 22 | 25 | 28 => tick.is_multiple_of(60),  // Volume: 6 dB
-        36 | 38 | 41 | 114 | 121 | 128 => tick.is_multiple_of(60), // EQ Gain / Makeup: 6 dB
-        21 => tick == 100,                             // Pan: 中央
+    match parameters::control_kind(index) {
+        10 | 19 | 24 | 27 | 13 | 22 | 25 | 28 | 36 | 38 | 41 | 114 => {
+            knob_marks(index).0.contains(&tick)
+        }
+        21 => tick == knob_marks(index).1, // Pan: 中央
         _ => false,
     }
 }
 
-/// ノブごとの目盛り位置と、長く強調する基準点（ともに整数tick）。
+/// ノブごとの目盛りと中立値（整数tick）。中立値のない軸は端点0を返す。
 fn knob_marks(index: usize) -> (&'static [u32], u32) {
     match parameters::control_kind(index) {
         // 時間: 0 / 10 / 100 / 1000 / 10000 ms。0と隣接する1 msは省く。
         1 | 2 | 3 | 5 | 14 | 15 | 16 | 18 => (&[0, 101, 201, 301, 401], 0),
-        4 | 17 => (&[0, 25, 50, 75, 100], 100), // Sustain: 0〜1
-        6 => (&[0, 1, 2, 3, 4, 5, 6], 0),       // Unison: 1〜7
+        4 | 17 => (&[0, 25, 50, 75, 100], 0), // Sustain: 0〜1
+        6 => (&[0, 1, 2, 3, 4, 5, 6], 0),     // Unison: 1〜7
         7 | 20 | 33 | 52 | 130 | 131 => (&[0, 25, 50, 75, 100], 0), // Detune / Width / Mix
-        parameters::PITCH => (&[0, 20, 40, 60, 80, 100, 120], 0),
+        parameters::PITCH => (&[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120], 0),
         8 => (&[0, 7, 15, 23, 31], 0), // Polyphony: 1/8/16/24/32
         // Cutoff: −2〜+8 oct、0 centを強調。
         10 => (
             &[0, 120, 240, 360, 480, 600, 720, 840, 960, 1080, 1200],
             240,
         ),
-        11 => (&[0, 50, 150, 350, 550, 750, 950], 50), // Q: 0.5/1/2/4/6/8/10
+        11 => (&[0, 50, 150, 450, 950], 0), // Q: 0.5/1/2/5/10
         // −∞と−54〜+12 dBの6 dB刻み。全ての吸着位置に目盛りを置く。
         13 | 22 | 25 | 28 => (
             &[0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660, 720],
@@ -103,24 +103,23 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
         21 => (&[0, 50, 100, 150, 200], 100),                      // Pan: 中央を強調
         24 | 27 => (&[0, 120, 240, 360, 480], 240),                // Tune: −2〜+2 oct
         29 | 30 => (&[0, 50, 100, 150, 200], 0),                   // 位相変調: 0〜2回転、半回転刻み
-        32 => (&[0, 120, 240, 360, 480], 0),                       // Gain: 0〜48 dB、12 dB刻み
-        35 | 37 | 40 => (&[0, 100, 200, 300], 100),
+        32 => (&[0, 60, 120, 180, 240, 300, 360, 420, 480], 0),    // Gain: 6 dB刻み
+        35 | 37 | 40 => (&[0, 40, 70, 100, 140, 170, 200, 240, 270, 300], 0),
         36 | 38 | 41 => (&[0, 60, 120, 180, 240, 300, 360], 180),
-        39 => (&[0, 50, 100, 150, 200], 100),
-        109 => (&[0, 120, 240, 360, 480, 600], 600), // Threshold: −60〜0 dB
-        110 => (&[0, 10, 30, 70, 190], 0),           // Ratio: 1/2/4/8/20
-        113 | 114 => (&[0, 60, 120, 180, 240], 0),   // Knee / Makeup: 6 dB
-        93 => (&[0, 100, 200, 300, 400], 0),
-        94 => (&[0, 60, 120, 180, 240], 0),
-        75 => (&[0, 9, 99, 199, 399], 199), // Time: 1/10/20/40ms
+        39 | 63 => (&[0, 30, 70, 100, 130, 170, 200], 0), // Q / 秒: 1・2・5系列
+        109 => (&[0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600], 0), // Threshold: 6 dB
+        110 => (&[0, 10, 30, 70, 190], 0),                // Ratio: 1/2/4/8/20
+        113 | 114 => (&[0, 60, 120, 180, 240], 0),        // Knee / Makeup: 6 dB
+        93 => (&[0, 75, 175, 250, 325, 400], 0),          // Center: 100/200/500/1000/2000/4000 Hz
+        94 => (&[0, 120, 240], 0),                        // Depth: 1200 cent刻み
+        75 => (&[0, 49, 99, 199, 399], 0), // Time: 0.1/5/10/20/40 ms。近接する1/2 msは省く。
         76 => (&[0, 100, 200, 500, 1000], 0),
-        77 => (&[0, 45, 95, 195, 495], 95),
+        77 => (&[0, 45, 95, 195, 495], 0),
         78 => (&[0, 50, 100, 150, 200], 100),
         79 => (&[0, 45, 95, 145, 190], 95),
-        63 => (&[0, 50, 100, 150, 200], 100), // Decay: 1s
-        64 => (&[0, 75, 150, 225, 300], 0),
-        65 => (&[0, 50, 100, 150], 50), // Size: 100%
-        51 => (&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], 5), // Delay Time: 1/8を基準にする。
+        64 => (&[0, 56, 113, 187, 244, 300], 0), // Damping: 500/1000/2000/5000/10000/20000 Hz
+        65 => (&[0, 50, 100, 150], 50),          // Size: 100%
+        51 => (&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], 0), // Delay Time: 全音価。
         _ => (&[], 0),
     }
 }
@@ -157,9 +156,14 @@ const UI_SCALE: f32 = 1.2;
 const OVERLAY_SIZE: egui::Vec2 = egui::vec2(224.0, 60.0);
 
 fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
+    let above = knob.top() - 6.0 - OVERLAY_SIZE.y;
     let min = egui::pos2(
         knob.center().x - OVERLAY_SIZE.x / 2.0,
-        knob.top() - 6.0 - OVERLAY_SIZE.y,
+        if above < viewport.top() {
+            knob.bottom() + 6.0
+        } else {
+            above
+        },
     );
     egui::Rect::from_min_size(
         egui::pos2(
@@ -402,18 +406,15 @@ impl Editor {
         let direction = |t: f32| egui::vec2(angle(t).cos(), angle(t).sin());
         let center = rect.center();
         let painter = ui.painter().clone();
-        // 実単位に沿った目盛り。中点を持つパラメーターの円弧はゼロから伸ばす。
-        let zero = if matches!(
-            parameters::control_kind(index),
-            19 | 21 | 24 | 27 | 36 | 38 | 41 | 78 | 79
-        ) {
-            0.5
-        } else {
+        let (marks, reference) = knob_marks(index);
+        // 相対調整は中立値から伸ばす。Volumeは無音からの音量を示す。
+        let zero = if parameters::is_volume(index) {
             0.0
+        } else {
+            reference as f32 / parameters::max_tick(index) as f32
         };
         let guide_stroke = egui::Stroke::new(2.0 * KNOB_SCALE, LINE);
         let mut guide_left = center.x - 26.0 * KNOB_SCALE - guide_stroke.width / 2.0;
-        let (marks, reference) = knob_marks(index);
         for &mark in marks {
             let d = direction(mark as f32 / parameters::max_tick(index) as f32);
             let major = mark == reference || mark == 0 || mark == parameters::max_tick(index);
@@ -1029,16 +1030,24 @@ impl WindowHandler for Editor {
             let (limiter, reset) = ui
                 .scope(|ui| {
                     ui.spacing_mut().button_padding.x = 6.0;
+                    ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(185, 218, 199);
+                    ui.visuals_mut().selection.stroke = egui::Stroke::new(1.0, INK);
                     (
                         ui.put(
                             limiter_rect,
-                            egui::Button::new("Limiter").selected(limiter_tick != 0),
+                            egui::Button::new("Limiter")
+                                .selected(limiter_tick != 0)
+                                .sense(egui::Sense::click_and_drag()),
                         ),
                         ui.put(reset_rect, egui::Button::new("Reset")),
                     )
                 })
                 .inner;
-            if limiter.clicked() {
+            // 押下中の移動量・時間でクリック判定から外れても、内側で離せば切り替える。
+            if limiter.clicked()
+                || (limiter.drag_stopped_by(egui::PointerButton::Primary)
+                    && limiter.contains_pointer())
+            {
                 self.edits.push(Edit::Set(
                     108,
                     parameters::to_normalized(108, f64::from(1 - limiter_tick)),
@@ -1406,7 +1415,55 @@ mod tests {
                 }
                 if y >= 91.0 {
                     assert_eq!(bounds.bottom(), knob.top() - 6.0);
+                } else {
+                    assert_eq!(bounds.top(), knob.bottom() + 6.0);
                 }
+                assert!(!bounds.intersects(knob));
+            }
+        }
+    }
+
+    #[test]
+    fn knob_marks_round_trip_through_parameter_values() {
+        for index in 0..parameters::COUNT {
+            let (marks, reference) = knob_marks(index);
+            if marks.is_empty() {
+                assert!(!parameters::choices(index).is_empty());
+                continue;
+            }
+            assert_eq!(marks.first(), Some(&0));
+            assert_eq!(marks.last(), Some(&parameters::max_tick(index)));
+            assert!(marks.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(marks.contains(&reference));
+            for pair in marks.windows(2) {
+                let spacing = (pair[1] - pair[0]) as f32 / parameters::max_tick(index) as f32
+                    * 1.5
+                    * std::f32::consts::PI
+                    * 26.0
+                    * KNOB_SCALE
+                    * UI_SCALE;
+                assert!(spacing >= 6.0, "{index}: {pair:?}, {spacing} px");
+            }
+            if reference != 0 {
+                let expected = if parameters::control_kind(index) == 65 {
+                    100.0
+                } else {
+                    0.0
+                };
+                assert_eq!(
+                    parameters::tick_to_plain(index, reference),
+                    expected,
+                    "neutral {index}"
+                );
+            }
+            for &tick in marks {
+                let plain = parameters::tick_to_plain(index, tick);
+                let normalized = parameters::to_normalized(index, plain);
+                assert_eq!(
+                    parameters::to_tick(index, normalized),
+                    tick,
+                    "{index}: {tick}"
+                );
             }
         }
     }
