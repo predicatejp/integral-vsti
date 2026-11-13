@@ -136,15 +136,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
       - run: sh scripts/install-ci-tools.sh core
-      - run: rustup component add --toolchain stable llvm-tools-preview
-      - name: Cache coverage tool
-        id: tool
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 (MIT)
-        with:
-          path: ~/.cargo/bin/cargo-llvm-cov
-          key: ci-coverage-ubuntu-24.04-${{ hashFiles('scripts/ci-versions.sh') }}
       - run: sh scripts/install-ci-tools.sh coverage
-        if: steps.tool.outputs.cache-hit != 'true'
       - run: |
           mkdir -p target/coverage
           cargo +stable llvm-cov --locked --workspace --all-features --lcov --output-path target/coverage/lcov.info
@@ -166,14 +158,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
       - run: sh scripts/install-ci-tools.sh core
-      - name: Cache audit tool
-        id: tool
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 (MIT)
-        with:
-          path: ~/.cargo/bin/cargo-deny
-          key: ci-audit-ubuntu-24.04-${{ hashFiles('scripts/ci-versions.sh') }}
       - run: sh scripts/install-ci-tools.sh audit
-        if: steps.tool.outputs.cache-hit != 'true'
       - run: cargo +stable deny --locked check
 
   bundle:
