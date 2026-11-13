@@ -412,21 +412,19 @@ impl Editor {
             0.0
         };
         let guide_stroke = egui::Stroke::new(2.0 * KNOB_SCALE, LINE);
+        let mut guide_left = center.x - 26.0 * KNOB_SCALE - guide_stroke.width / 2.0;
         let (marks, reference) = knob_marks(index);
         for &mark in marks {
             let d = direction(mark as f32 / parameters::max_tick(index) as f32);
             let major = mark == reference || mark == 0 || mark == parameters::max_tick(index);
-            painter.line_segment(
-                [
-                    center + d * (26.0 * KNOB_SCALE),
-                    center + d * (if major { 32.0 } else { 30.0 } * KNOB_SCALE),
-                ],
-                if major {
-                    guide_stroke
-                } else {
-                    egui::Stroke::new(KNOB_SCALE, LINE)
-                },
-            );
+            let end = center + d * (if major { 32.0 } else { 30.0 } * KNOB_SCALE);
+            let stroke = if major {
+                guide_stroke
+            } else {
+                egui::Stroke::new(KNOB_SCALE, LINE)
+            };
+            guide_left = guide_left.min(end.x - stroke.width / 2.0);
+            painter.line_segment([center + d * (26.0 * KNOB_SCALE), end], stroke);
         }
         let arc = |from: f32, to: f32| {
             (0..=32)
@@ -461,7 +459,7 @@ impl Editor {
         );
         let (label_position, label_align) = if matches!(index, 13 | 21) {
             (
-                egui::pos2(center.x - 32.0 * KNOB_SCALE - GAP / 2.0, center.y),
+                egui::pos2(guide_left - GAP / 2.0, center.y),
                 egui::Align2::RIGHT_CENTER,
             )
         } else {
@@ -1018,7 +1016,7 @@ impl WindowHandler for Editor {
             // ラベル32pxとノブの間をGAPとし、2組を中央列へ収める。
             let control_width = 32.0 + GAP + KNOB_CELL.x;
             for (column, index) in [13, 21].into_iter().enumerate() {
-                let right = limiter_rect.left() - GAP - control_width * (1 - column) as f32;
+                let right = limiter_rect.left() - GAP * 2.0 - control_width * (1 - column) as f32;
                 let area = egui::Rect::from_min_size(
                     egui::pos2(right - KNOB_CELL.x, title.center().y - KNOB_CENTER_Y),
                     KNOB_CELL,
