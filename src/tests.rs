@@ -321,7 +321,14 @@ fn check_host_events(activate_events: bool) {
             max_samples_per_block: 4,
             sample_rate: 56_320.0, // 440 Hzの1サンプルあたりの位相は1/128周期。
         };
-        for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+        // Miriでは下の実処理用レートで確保・再初期化を検査する。
+        // 全レートでの大容量バッファ確保は通常のdebug/releaseテストで行う。
+        let rates: &[f64] = if cfg!(miri) {
+            &[]
+        } else {
+            &[44_100.0, 48_000.0, 96_000.0, 192_000.0]
+        };
+        for &sample_rate in rates {
             let accepted = ProcessSetup {
                 sample_rate,
                 ..setup
