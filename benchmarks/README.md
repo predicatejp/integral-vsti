@@ -5,11 +5,13 @@
 
 ## 標準性能回帰スイート
 
-`standard.rs`は通常の演奏を模した固定22ケースです。Distortion／Compressorを使うケースは先頭スロットだけを有効にし、それ以外のスロットはOffにします。Compressorはベース・和音・Thresholdの連続変更を回帰対象とします。全パラメーターを明示し、製品の初期値変更から独立させています。
+`standard.rs`は現在の音源構成を対象とする41ケース（固定設定25・連続操作16）です。発振器・音量／カットオフAHDSR・各Voiceのフィルタ、Voice合成後の3エフェクトスロット・EQ・Limiter・Masterを通して測定します。全パラメーターを明示し、製品の初期値変更から独立させています。単体エフェクトは先頭スロット、連結ケースは3スロットをすべて使います。
 変更前・変更後のGit worktreeを指定し、同一のハーネス・コンパイラー・オプションでそれぞれの`src/`のコピーをビルドします。
 基準値JSONを後日の測定と比較する方式は使わず、同じ実験の同じブロック内で変更前後を対応付けます。
 固定設定のケースはノート境界で区切って`Synthesizer::generate_samples`を呼び、オートメーション中は各サンプルの設定を適用して`generate_sample`を呼びます。
-系列入口を持たない比較元では、測定ハーネス内の同名traitメソッドが単発生成へ戻します。音色・ノート列と生成順序は共通です。
+Pitch Bendは`set_pitch_bend`を使い、テンポは各音声ブロックで120 BPMを通知します。
+
+[現行41ケースの構成と検証結果](https://github.com/predicatejp/integral-vsti/wiki/Standard-performance-suite-2026-11-13)をWikiにまとめています。
 
 ### 準備・実行
 
@@ -84,11 +86,17 @@ JSONにはソースのコミット・変更有無・ソースとバイナリの�
 CPU affinity、seed、全実行の順序・開始終了時刻・burn-in実時間／周回数・本測定の実時間（`measurement_ns`）、ブロックごとの測定値、音声ハッシュ・ピーク・RMS、全解析結果を保存します。
 同じ実装・ケースの反復出力は一致を要求し、変更前後の音声一致は`audio_same`で別に記録します。
 ペア不足・重複・不正値は検定前に拒否します。旧方式の独立した測定JSONを対応ペアとして再利用しません。
-回帰テストは`target/bench-venv/bin/python tests/bench-standard.py`で実行します。
+回帰テストは次のコマンドで実行します。Rust側ではケース設定、レガート／残響のイベント列、値保持と補間、分割生成の時刻継続を検査します。Python側では無作為化・対応付け・統計解析・burn-inを検査します。
+
+```sh
+rustc --edition=2024 -D warnings -C opt-level=2 --test benchmarks/standard.rs -o target/standard-tests
+target/standard-tests suite_tests:: --test-threads=1
+target/bench-venv/bin/python tests/bench-standard.py
+```
 
 ### 音色と演奏の固定ケース
 
-全ケースのPhaseはZero。ベロシティは0.65〜0.8、Masterは−6 dBです。
+PhaseはZero、PortamentoのケースはKeepです。ベロシティは0.65〜0.8、Masterは−6 dB、Pitchの適用幅は200 centです。Amp Sensitivityは100%、Filter Amount Sensitivityは`saw-bass`で75%、その他は0%です。
 基本AHDSRはA=10 ms、H=0、D=120 ms、S=0.7、R=100 ms。Osc1のVolは0 dB、表で変更していないOsc2/3はSine・Tune=0・Vol=−∞、変調量は0です。
 Cutoffはノート基準のcentで指定します。左右の音声出力と、ノートオン／オフによるエンベロープ・フィルタ残響を計測に含めます。
 
@@ -102,9 +110,28 @@ Cutoffはノート基準のcentで指定します。左右の音声出力と、�
 | `slow-pad` | Saw、Poly 8、Unison 5、Detune 12 cent、Width 80%、LP2、Cutoff +2400、音量A=300 ms・D=500 ms・R=800 ms、カットオフA=600 ms・D=500 ms・Amount +1200 | 4音コード、releaseの重なりあり |
 | `three-osc-keys` | Poly 8、LP1、Saw −6 dB＋Triangle −12 dB/−1200 cent＋Sine −18 dB、音量R=400 ms | 4音コード |
 | `phase-mod-bell` | Sine、Poly 4、Osc2 Tune +1200・変調量30%、Osc3 Tune +1900・変調量10%、音量A=2 ms・D=1000 ms・S=0・R=300 ms | アルペジオ |
+| `portamento-lead` | リード＋Portamento 120 ms、Phase Keep、Poly 1 | 500 msごとに550 ms発音し、50 ms重ねる |
 | `soft-bass` | ベース＋Soft、Gain +9 dB、Mix 40%、ADAA2 | 低音リフ |
 | `hard-lead` | リード＋Hard、Gain +6 dB、Mix 25%、ADAA2 | モノのメロディー |
+| `compressor-bass` | ベース＋Compressor：Threshold −18 dB、Ratio 4、A=10 ms、R=100 ms、Knee 6 dB、Makeup 0 dB、Mix 100% | 低音リフ |
+| `compressor-chords` | コード＋同じCompressor | 4音コード |
+| `delay-lead` | リード＋Delay：1/8、Feedback 35%、Mix 25%、Dual | モノのメロディー |
+| `ping-pong-keys` | ベル＋Delay：1/8 D、Feedback 40%、Mix 30%、PP-L | アルペジオ |
+| `reverb-pad` | パッド＋Reverb：Decay 2.5 s、Damping 5000 Hz、Size 110%、Mix 25% | 4音コード |
+| `chorus-pad` | パッド＋Chorus：Time 18 ms、Depth 2.5 ms、Rate 0.6 Hz、Detune 0.03、Feedback 0%、Mix 35% | 4音コード |
+| `flanger-lead` | リード＋Chorus：Time 2 ms、Depth 1 ms、Rate 0.3 Hz、Detune 0.02、Feedback 65%、Mix 40% | モノのメロディー |
+| `phaser-keys` | コード＋Phaser：Center 1000 Hz、Depth 1200 cent、Rate 0.5 Hz、Feedback 50%、Mix 50% | 4音コード |
+| `eq-keys` | コード＋EQ：Low 180 Hz/+3 dB、Mid 1200 Hz/−4 dB/Q=1.2、High 6000 Hz/+2 dB | 4音コード |
+| `limiter-chords` | コード＋Osc1 Vol +6 dB、Limiter On | 4音コード、ゲイン抑制が働く入力 |
+| `chain-pad` | パッド＋Chorus → Delay → Reverb → EQ | 4音コード、releaseの重なりあり |
+| `chain-lead` | リード＋Distortion → Phaser → Compressor → EQ → Limiter | モノのメロディー |
+| `release-tail` | パッド＋Reverb（`reverb-pad`と同設定） | 最初の4音コードを1.75秒で離し、2秒以降のreleaseと残響を測定 |
 | `idle-pad` | パッドの設定、ノートなし | 無音時の処理 |
+
+連結ケースの設定は以下のとおりです。各処理の順序・パラメーターはスロット位置に固定します。
+
+- `chain-pad`：Chorus 20 ms/Depth 2 ms/Rate 0.7 Hz/Detune 0/Feedback 0%/Mix 30%、Delay 1/8 D/Feedback 30%/Mix 20%/Cross、Reverb 2.5 s/5000 Hz/Size 100%/Mix 20%。EQは250/1000/4000 Hz、Gain −3/+2/−2 dB、Mid Q=1。
+- `chain-lead`：Soft/Gain +9 dB/Mix 40%、Phaser 1000 Hz/1200 cent/0.5 Hz/Feedback 50%/Mix 30%、Compressor −12 dB/Ratio 3/A=10 ms/R=100 ms/Knee 6 dB/Makeup +2 dB/Mix 100%。EQは250/1000/4000 Hz、Gain −3/0/+2 dB、Mid Q=1。Limiter On。
 
 120 BPM相当で、メロディーは500 msごとに400 ms発音、低音リフは250 msごとに190 ms発音、アルペジオは250 msごとに160 ms発音します。
 コードはC系 `[48,55,60,64]` とF系 `[53,60,65,69]` を2000 msごとに切り替え、1750 msでノートオフします。
@@ -118,17 +145,25 @@ Monoは1枠、プラック・ベルは4枠、コード・パッドは8枠の循�
 | --- | --- | --- |
 | `auto-cutoff` | Cutoff +1200〜+4800 cent | コード |
 | `auto-resonance` | Q=0.7〜2.5 | コード |
+| `auto-cutoff-amount` | Cutoff Amount 0〜2400 cent | コード |
 | `auto-drive` | Gain +3〜+15 dB | コード＋Soft、ADAA2、Mix 40% |
 | `auto-mix` | Mix 10〜50% | コード＋Soft、ADAA2、Gain +9 dB |
 | `auto-pan` | Pan −40〜+40% | コード |
 | `auto-volume` | Master −12〜0 dB | コード |
 | `auto-width` | Width 20〜80% | コード |
 | `auto-phase-mod` | Osc2の位相変調量10〜40% | ベル |
+| `auto-pitch-bend` | ベンド入力−1〜+1（適用幅200 cent） | リード、50 ms重なるノート切替 |
+| `auto-eq-frequency` | Mid Frequency 500〜2500 Hz | `eq-keys` |
+| `auto-delay-feedback` | Feedback 20〜55% | `delay-lead` |
+| `auto-reverb-mix` | Mix 10〜40% | `reverb-pad` |
+| `auto-chorus-depth` | Depth 1〜4 ms | `chorus-pad` |
+| `auto-phaser-center` | Center 500〜2000 Hz | `phaser-keys` |
+| `auto-compressor-threshold` | Threshold −30〜−12 dB | `compressor-chords` |
 
 ブロック末尾に1変更点が届く条件をモデル化します。連続パラメーターは前ブロック末尾の値から正規化値を線形補間し、
-Cutoffは本体の`holds_between_points`に従い変更点まで保持します。Gainの内部サンプル用の次境界値も、現在ブロックの既知点までで評価します。
+Cutoffは本体の`holds_between_points`に従い変更点まで保持します。Pitch Bendは音色設定の配列と分け、専用の入力へ連続値を渡します。
 曲線とノート列は計測前に準備し、計測中は設定更新・ノート処理・DSP・ステレオ出力バッファ書き込みを行います。
-これはSynthesizer入口での回帰試験で、VST3キューの走査・GUIは`check-abi.py`などの別の検証経路で扱います。
+測定の入口はSynthesizerの生成・設定メソッドです。
 
 毎回の出力について有限性・発音／無音・反復のビット一致を検査し、ハッシュ・ピーク・RMSも保存します。
 `audio_same=false`は波形差の確認を促す表示で、時間差の検定とは分けます。数値計算を変更した場合は音声側の回帰テストも実行します。
