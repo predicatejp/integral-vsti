@@ -65,9 +65,13 @@ jobs:
 
   quality:
     needs: target
-    name: Format, Clippy, docs
-    runs-on: ubuntu-24.04
+    name: Static analysis (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 3
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -75,15 +79,18 @@ jobs:
           ref: ${{ github.sha }}
       - run: sh scripts/install-ci-tools.sh core
       - run: python3 tests/build-metadata.py
+        if: runner.os == 'Linux'
       - run: cargo +stable fmt --all --check
+        if: runner.os == 'Linux'
       - run: cargo +stable clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo +stable doc --locked --workspace --all-features --no-deps
+        if: runner.os == 'Linux'
         env:
           RUSTDOCFLAGS: -D warnings
 
   test:
     needs: target
-    name: Build and test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    name: Test (${{ matrix.os }}, ${{ matrix.toolchain }}, ${{ matrix.profile }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 3
     strategy:
@@ -91,6 +98,12 @@ jobs:
       matrix:
         toolchain: [msrv, stable]
         os: [ubuntu-24.04, windows-2022]
+        profile: [test, release]
+    env:
+      # debug assertionsとoverflow checksを保ち、テスト用のデバッグ情報だけを省く。
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      TEST_PROFILE: ${{ matrix.profile }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -105,7 +118,7 @@ jobs:
             sh scripts/install-ci-tools.sh msrv
             echo "RUSTUP_TOOLCHAIN=$CI_MSRV" >> "$GITHUB_ENV"
           else
-            sh scripts/install-ci-tools.sh core
+            rustup toolchain install stable --profile minimal --no-self-update
             echo 'RUSTUP_TOOLCHAIN=stable' >> "$GITHUB_ENV"
           fi
       - name: Identify Rust compiler
@@ -119,11 +132,9 @@ jobs:
             ~/.cargo/git
             target/debug
             target/release
-          key: cargo-v1-${{ runner.os }}-test-${{ steps.compiler.outputs.hash }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci-versions.sh') }}
-          restore-keys: cargo-v1-${{ runner.os }}-test-${{ steps.compiler.outputs.hash }}-
-      - run: cargo test --locked --workspace --all-targets --all-features
-      - run: cargo test --locked --release --workspace --all-targets --all-features
-      - run: cargo build --locked --release --workspace --all-features
+          key: cargo-v2-${{ runner.os }}-test-${{ matrix.profile }}-${{ steps.compiler.outputs.hash }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci-versions.sh') }}
+          restore-keys: cargo-v2-${{ runner.os }}-test-${{ matrix.profile }}-${{ steps.compiler.outputs.hash }}-
+      - run: cargo test --profile "$TEST_PROFILE" --locked --workspace --all-targets --all-features
 
   coverage:
     needs: target
@@ -178,7 +189,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
-      - run: sh scripts/install-ci-tools.sh core
+      - run: rustup toolchain install stable --profile minimal --no-self-update
       - name: Identify Rust compiler
         id: compiler
         run: echo "hash=$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
@@ -205,9 +216,6 @@ jobs:
             Where-Object { $_ -match '^(PATH|INCLUDE|LIB|LIBPATH|VSCMD_ARG_TGT_ARCH)=' } |
             ForEach-Object { $_ >> $env:GITHUB_ENV }
           if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed' }
-      - name: Windows static analysis
-        if: runner.os == 'Windows'
-        run: cargo +stable clippy --locked --all-targets -- -D warnings
       - name: Build VST3 bundle
         id: bundle
         run: python scripts/build-vst3.py
