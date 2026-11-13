@@ -351,7 +351,7 @@ void checkViewContract(IEditController* controller) {
     auto* view = controller->createView("editor"); assert(view);
     assert(view->canResize() == kResultFalse);
     ViewRect rect;
-    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1172 && rect.getHeight() == 800);
+    assert(view->getSize(&rect) == kResultOk && rect.getWidth() == 1240 && rect.getHeight() == 744);
     assert(view->isPlatformTypeSupported("unknown") == kResultFalse);
 #ifdef _WIN32
     const auto platform = kPlatformTypeHWND;
@@ -364,7 +364,7 @@ void checkViewContract(IEditController* controller) {
     assert(view->queryInterface(IPlugViewContentScaleSupport_iid, &result) == kNoInterface && !result);
     rect.right = 800;
     assert(view->onSize(&rect) == kResultFalse);
-    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1172);
+    assert(view->checkSizeConstraint(&rect) == kResultOk && rect.getWidth() == 1240);
     assert(view->onKeyDown(u' ', 0, 0) == kResultFalse);
     assert(view->onKeyUp(u' ', 0, 0) == kResultFalse);
     assert(view->onWheel(1) == kResultFalse);
@@ -466,29 +466,29 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
     std::array<std::pair<int, int>, 134> controls {{
-        {175, 198}, {292, 284}, {348, 284}, {404, 284}, {460, 284}, {516, 284},
-        {44, 250}, {100, 250}, {214, 124}, {479, 358}, {299, 412}, {369, 412},
-        {82, 132}, {904, 369}, {292, 487}, {348, 487}, {404, 487}, {460, 487},
-        {516, 487}, {439, 412}, {156, 250}, {904, 528}, {212, 250}, {175, 318},
-        {53, 369}, {128, 369}, {175, 437}, {53, 489}, {128, 489}, {203, 369},
-        {203, 489}, {613, 167}, {709, 167}, {796, 167}, {479, 565}, {54, 615},
-        {129, 615}, {205, 615}, {280, 615}, {355, 615}, {431, 615}, {506, 615},
-        {689, 74}, {689, 276}, {689, 478}, {613, 369}, {709, 369}, {796, 369},
-        {613, 572}, {709, 572}, {796, 572}, {709, 129}, {709, 205}, {796, 167},
-        {709, 331}, {709, 408}, {796, 369}, {709, 533}, {709, 610}, {796, 572},
-        {613, 167}, {613, 369}, {613, 572}, {660, 167}, {721, 167}, {599, 167},
-        {796, 167}, {660, 369}, {721, 369}, {599, 369}, {796, 369}, {660, 572},
-        {721, 572}, {599, 572}, {796, 572}, {599, 129}, {660, 129}, {614, 205},
-        {706, 205}, {721, 129}, {796, 167}, {599, 331}, {660, 331}, {614, 408},
-        {706, 408}, {721, 331}, {796, 369}, {599, 533}, {660, 533}, {614, 610},
-        {706, 610}, {721, 533}, {796, 572}, {614, 129}, {706, 129}, {614, 205},
-        {706, 205}, {796, 167}, {614, 331}, {706, 331}, {614, 408}, {706, 408},
-        {796, 369}, {614, 533}, {706, 533}, {614, 610}, {706, 610}, {796, 572},
-        {904, 233}, {599, 129}, {660, 129}, {599, 205}, {660, 205}, {721, 129},
-        {721, 205}, {796, 167}, {599, 331}, {660, 331}, {599, 408}, {660, 408},
-        {721, 331}, {721, 408}, {796, 369}, {599, 533}, {660, 533}, {599, 610},
-        {660, 610}, {721, 533}, {721, 610}, {796, 572}, {516, 212}, {509, 412},
-        {346, 124}, {478, 124},
+        {175, 74}, {292, 248}, {348, 248}, {404, 248}, {460, 248}, {516, 248},
+        {44, 139}, {100, 139}, {413, 124}, {535, 322}, {306, 372}, {390, 372},
+        {316, 132}, {960, 346}, {298, 444}, {365, 444}, {432, 444}, {499, 444},
+        {566, 444}, {474, 372}, {156, 139}, {960, 493}, {212, 139}, {175, 219},
+        {53, 284}, {128, 284}, {175, 365}, {53, 429}, {128, 429}, {203, 284},
+        {203, 429}, {669, 159}, {765, 159}, {852, 159}, {535, 518}, {58, 568},
+        {141, 568}, {225, 568}, {308, 568}, {391, 568}, {475, 568}, {558, 568},
+        {745, 74}, {745, 261}, {745, 447}, {669, 346}, {765, 346}, {852, 346},
+        {669, 533}, {765, 533}, {852, 533}, {765, 124}, {765, 195}, {852, 159},
+        {765, 310}, {765, 382}, {852, 346}, {765, 497}, {765, 568}, {852, 533},
+        {669, 159}, {669, 346}, {669, 533}, {716, 159}, {777, 159}, {655, 159},
+        {852, 159}, {716, 346}, {777, 346}, {655, 346}, {852, 346}, {716, 533},
+        {777, 533}, {655, 533}, {852, 533}, {655, 124}, {716, 124}, {670, 195},
+        {762, 195}, {777, 124}, {852, 159}, {655, 310}, {716, 310}, {670, 382},
+        {762, 382}, {777, 310}, {852, 346}, {655, 497}, {716, 497}, {670, 568},
+        {762, 568}, {777, 497}, {852, 533}, {670, 124}, {762, 124}, {670, 195},
+        {762, 195}, {852, 159}, {670, 310}, {762, 310}, {670, 382}, {762, 382},
+        {852, 346}, {670, 497}, {762, 497}, {670, 568}, {762, 568}, {852, 533},
+        {960, 221}, {655, 124}, {716, 124}, {655, 195}, {716, 195}, {777, 124},
+        {777, 195}, {852, 159}, {655, 310}, {716, 310}, {655, 382}, {716, 382},
+        {777, 310}, {777, 382}, {852, 346}, {655, 497}, {716, 497}, {655, 568},
+        {716, 568}, {777, 497}, {777, 568}, {852, 533}, {572, 248}, {558, 372},
+        {488, 124}, {563, 124},
     }};
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
     auto choose = [&](int index, int item) {
@@ -528,7 +528,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #else
         assert(view->attached(parent.handle(), kPlatformTypeX11EmbedWindowID) == kResultOk);
 #endif
-        waitFor([&] { return parent.drawn(1172, 800); }, "first rendered frame");
+        waitFor([&] { return parent.drawn(1240, 744); }, "first rendered frame");
         pump();
         if (cycle == 0) parent.screenshot("target/gui-panel.ppm");
         if (cycle == 0) {
@@ -558,7 +558,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
             auto meter = [&](int count) {
                 for (int i = 0; i < 32; ++i) {
-                    if (parent.pixel(uiPixel(710 + i * 8), uiPixel(32)) != (i < count ? lit : unlit)) return false;
+                    if (parent.pixel(uiPixel(767 + i * 8), uiPixel(32)) != (i < count ? lit : unlit)) return false;
                 }
                 return true;
             };
@@ -569,7 +569,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             for (int i = 0; i < 16; ++i) assert(processor->process(audio) == kResultOk);
             waitFor([&] {
                 assert(processor->process(audio) == kResultOk);
-                return parent.pixel(uiPixel(793), uiPixel(20)) == lit && parent.pixel(uiPixel(959), uiPixel(20)) == over;
+                return parent.pixel(uiPixel(850), uiPixel(20)) == lit && parent.pixel(uiPixel(1016), uiPixel(20)) == over;
             }, "peak at +12 dBFS: green below zero, red above");
             parent.screenshot("target/gui-voices.ppm");
             audio.inputEvents = &events;
@@ -584,7 +584,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(processor->process(audio) == kResultOk);
             waitFor([&] { return meter(3); }, "voices before reset");
             StateStream beforeReset; assert(component->getState(&beforeReset) == kResultOk);
-            parent.click(uiPixel(667), uiPixel(26)); pump();
+            parent.click(uiPixel(724), uiPixel(26)); pump();
             assert(handler.sequence.empty());
             audio.inputEvents = nullptr;
             assert(processor->process(audio) == kResultOk);
@@ -601,7 +601,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return meter(3); }, "notes play after reset");
             assert(processor->setProcessing(false) == kResultOk);
             waitFor([&] { return meter(0); }, "voices after stop");
-            waitFor([&] { return parent.pixel(uiPixel(710), uiPixel(20)) == unlit; }, "peak decays to silence");
+            waitFor([&] { return parent.pixel(uiPixel(767), uiPixel(20)) == unlit; }, "peak decays to silence");
             assert(component->setActive(false) == kResultOk);
             assert(component->setState(&original) == kResultOk);
         }
@@ -708,7 +708,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
             assert(controller->setParamNormalized(info.id, beforeSwap[i]) == kResultOk);
         }
-        pump(); parent.click(uiPixel(804), uiPixel(74));
+        pump(); parent.click(uiPixel(860), uiPixel(74));
         waitFor([&] { return handler.sequence.size() == 180; }, "adjacent effect swap");
         for (size_t i = 0; i < swappedIndices.size(); ++i) {
             ParameterInfo info; assert(controller->getParameterInfo(swappedIndices[i], info) == kResultOk);
@@ -718,7 +718,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         handler.sequence.clear(); pump();
         // Offでは枠・見出し・表示中のノブを背景へ50%合成し、選択欄は通常の色を維持する。
         for (const auto& check : std::array<std::array<int, 3>, 5>{{
-            {9, 10, 266}, {34, 35, 18}, {42, 32, 560}, {43, 46, 560}, {44, 49, 560}}}) {
+            {9, 10, 266}, {34, 35, 18}, {42, 32, 616}, {43, 46, 616}, {44, 49, 616}}}) {
             const auto [choiceIndex, knobIndex, headerX] = check;
             ParameterInfo info; assert(controller->getParameterInfo(choiceIndex, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
@@ -728,7 +728,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 return std::array<uint32, 3>{
                     parent.pixel(uiPixel(headerX), uiPixel(choiceY)),
                     // Offスロットのノブは非表示なので、枠と見出しを照合する。
-                    parent.pixel(uiPixel(choiceIndex >= 42 ? 578 : knobX),
+                    parent.pixel(uiPixel(choiceIndex >= 42 ? 634 : knobX),
                                  uiPixel(choiceIndex >= 42 ? choiceY : knobY)),
                     parent.pixel(uiPixel(choiceX + 40), uiPixel(choiceY - 8))};
             };
@@ -755,13 +755,13 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         for (int slot = 0; slot < 3; ++slot) {
             parent.movePointer(4, 4); pump();
             const int y = controls[53 + slot * 3].second;
-            const auto empty = parent.pixel(uiPixel(578), uiPixel(y - 40));
-            for (int x : {578, 600, 632, 664, 696, 728, 760, 792, 814}) {
+            const auto empty = parent.pixel(uiPixel(634), uiPixel(y - 40));
+            for (int x : {634, 656, 688, 720, 752, 784, 816, 848, 870}) {
                 assert(parent.pixel(uiPixel(x), uiPixel(y)) == empty);
                 assert(parent.pixel(uiPixel(x), uiPixel(y + 40)) == empty);
             }
-            assert(parent.pixel(uiPixel(613), uiPixel(y)) == empty);
-            parent.movePointer(uiPixel(664), uiPixel(y)); pump(); parent.knobButton(true); pump();
+            assert(parent.pixel(uiPixel(669), uiPixel(y)) == empty);
+            parent.movePointer(uiPixel(720), uiPixel(y)); pump(); parent.knobButton(true); pump();
             assert(handler.sequence.empty() && parent.cursorVisible());
             parent.knobButton(false); pump();
         }
@@ -794,8 +794,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0}));
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(logicalX - 112, 0, 753);
-            const int overlayY = std::clamp(logicalY - 91, 0, 607);
+            const int overlayX = std::clamp(logicalX - 112, 0, 809);
+            const int overlayY = std::clamp(logicalY - 91, 0, 560);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
 #else

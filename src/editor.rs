@@ -606,20 +606,24 @@ impl Editor {
 
     fn note_group(&self, ui: &mut egui::Ui, rect: egui::Rect, selected: &[f64; parameters::COUNT]) {
         panel(ui.painter(), rect, "Note");
-        let width = (rect.width() - GAP * 2.0) / 4.0;
+        let choice_width = 112.0;
+        let width = (rect.width() - GAP * 2.0 - choice_width) / 3.0;
         let top = rect.top() + GAP * 2.0 + HEADER_HEIGHT;
         for (column, index) in [12, 8, parameters::PORTAMENTO, parameters::PITCH]
             .into_iter()
             .enumerate()
         {
-            let left = rect.left() + GAP + column as f32 * width;
+            let left = rect.left() + GAP;
             let area = if index == 12 {
                 egui::Rect::from_min_size(
-                    egui::pos2(left + GAP, top + KNOB_CENTER_Y - CHOICE_HEIGHT / 2.0 + GAP),
-                    egui::vec2(width - GAP * 2.0, CHOICE_HEIGHT),
+                    egui::pos2(left, top + KNOB_CENTER_Y - CHOICE_HEIGHT / 2.0 + GAP),
+                    egui::vec2(choice_width - GAP, CHOICE_HEIGHT),
                 )
             } else {
-                egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, KNOB_CELL.y))
+                egui::Rect::from_min_size(
+                    egui::pos2(left + choice_width + (column - 1) as f32 * width, top),
+                    egui::vec2(width, KNOB_CELL.y),
+                )
             };
             ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
                 if index == 12 {
@@ -683,13 +687,7 @@ impl Editor {
             0.0
         };
         let row_height = KNOB_CELL.y + row_header_height;
-        let header_height = if title.is_empty() {
-            0.0
-        } else if title == "Amp" {
-            KNOB_CELL.y
-        } else {
-            HEADER_HEIGHT
-        };
+        let header_height = if title.is_empty() { 0.0 } else { HEADER_HEIGHT };
         let content_rows = rows.len() + choice_rows;
         let row_gap =
             (height - GAP - header_height - choice_height - row_height * rows.len() as f32)
@@ -738,15 +736,6 @@ impl Editor {
             );
         } else {
             panel(&painter, rect, title);
-        }
-        if title == "Amp" {
-            let area = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - GAP - KNOB_CELL.x, rect.top() + GAP),
-                KNOB_CELL,
-            );
-            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                self.knob(ui, 130, selected[130], KNOB_CELL.x);
-            });
         }
         for (row, knobs) in rows.iter().enumerate() {
             if knobs.is_empty() {
@@ -1011,7 +1000,7 @@ impl WindowHandler for Editor {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
-            let filter_width = GAP * 2.0 + KNOB_CELL.x * 5.0;
+            let filter_width = GAP * 2.0 + KNOB_CELL.x * 6.0;
             let center_x = GAP + oscillator_width + GAP;
             let effects_x = center_x + filter_width + GAP;
             let title = egui::Rect::from_min_size(
@@ -1082,13 +1071,13 @@ impl WindowHandler for Editor {
             let full_height = size.height as f32 / UI_SCALE - left_top - GAP;
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
             let note_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
-            let voice_top = left_top + note_height + GAP;
-            let panel_height = full_height - note_height - GAP * 2.0 - eq_height;
+            let amp_top = left_top + note_height + GAP;
+            let panel_height = full_height - GAP - eq_height;
             self.note_group(
                 ui,
                 egui::Rect::from_min_size(
-                    egui::pos2(GAP, left_top),
-                    egui::vec2(effects_x - GAP * 2.0, note_height),
+                    egui::pos2(center_x, left_top),
+                    egui::vec2(filter_width, note_height),
                 ),
                 &selected,
             );
@@ -1096,9 +1085,9 @@ impl WindowHandler for Editor {
             let side_width = GAP * 2.0 + 64.0 * 4.0;
             let master_x = effects_x + side_width + GAP;
             let master_width = GAP * 2.0 + KNOB_CELL.x * 2.0;
-            // AmpはタイトルとSensで1行を共有し、AHDSRとの間隔も標準余白に揃える。
-            let amp_height = KNOB_CELL.y * 2.0 + GAP * 3.0;
-            let filter_height = panel_height - amp_height - GAP;
+            // NoteとAmpは1行分の同じ高さとし、SensもAHDSRと同じ行へ置く。
+            let amp_height = note_height;
+            let filter_height = panel_height - note_height - amp_height - GAP * 2.0;
             let effects_body_y = left_top;
             let effect_height = full_height / 3.0;
             panel(
@@ -1120,13 +1109,13 @@ impl WindowHandler for Editor {
                         &[24, 25, 29][..],
                         &[27, 28, 30][..],
                     ][..],
-                    [GAP, voice_top, oscillator_width, panel_height],
+                    [GAP, left_top, oscillator_width, panel_height],
                 ),
                 (
                     "Amp",
                     &[],
-                    &[&[1, 2, 3, 4, 5][..]][..],
-                    [center_x, voice_top, filter_width, amp_height],
+                    &[&[1, 2, 3, 4, 5, 130][..]][..],
+                    [center_x, amp_top, filter_width, amp_height],
                 ),
                 (
                     "Filter",
@@ -1134,7 +1123,7 @@ impl WindowHandler for Editor {
                     &[&[10, 11, 19, 131][..], &[14, 15, 16, 17, 18][..]][..],
                     [
                         center_x,
-                        voice_top + amp_height + GAP,
+                        amp_top + amp_height + GAP,
                         filter_width,
                         filter_height,
                     ],
@@ -1209,7 +1198,7 @@ impl WindowHandler for Editor {
                     &[&[35, 36, 37, 38, 39, 40, 41][..]][..],
                     [
                         GAP,
-                        voice_top + panel_height + GAP,
+                        left_top + panel_height + GAP,
                         effects_x - GAP * 2.0,
                         eq_height,
                     ],
