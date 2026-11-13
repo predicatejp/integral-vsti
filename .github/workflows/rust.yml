@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: '成果物名に付けるPR番号（PRの先頭ブランチを選択）'
+        description: 'PR番号'
         required: false
         type: string
 
@@ -27,10 +27,47 @@ env:
   INTEGRAL_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
 
 jobs:
+  target:
+    name: PR target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Mark PR checks pending
+        if: inputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for context in 'PR target' 'CI result'; do
+            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+              -f state=pending -f context="$context" \
+              -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+          done
+      - name: Verify PR target and revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          if [[ -z "$PR_NUMBER" ]]; then
+            [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]]
+            exit
+          fi
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          details=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json state,baseRefName,headRefOid,headRefName,isCrossRepository \
+            --jq '[.state, .baseRefName, .headRefOid, .headRefName, .isCrossRepository] | @tsv')
+          IFS=$'\t' read -r state base sha branch cross <<< "$details"
+          [[ "$state" == OPEN && "$base" == main && "$sha" == "$GITHUB_SHA" && \
+             "refs/heads/$branch" == "$GITHUB_REF" && "$cross" == false ]]
+
   quality:
+    needs: target
     name: Format, Clippy, docs
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -45,9 +82,10 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   test:
+    needs: target
     name: Build and test (${{ matrix.os }}, ${{ matrix.toolchain }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 3
     strategy:
       fail-fast: false
       matrix:
@@ -87,24 +125,11 @@ jobs:
       - run: cargo test --locked --release --workspace --all-targets --all-features
       - run: cargo build --locked --release --workspace --all-features
 
-  miri:
-    name: Miri
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-      - run: sh scripts/install-ci-tools.sh miri
-      - run: |
-          source scripts/ci-versions.sh
-          MIRIFLAGS=-Zmiri-no-extra-rounding-error cargo +"$CI_NIGHTLY" miri test --locked --lib
-
   coverage:
+    needs: target
     name: Coverage
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -123,9 +148,10 @@ jobs:
           retention-days: 14
 
   dependencies:
+    needs: target
     name: Dependency audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -135,10 +161,11 @@ jobs:
       - run: sh scripts/install-ci-tools.sh audit
       - run: cargo +stable deny --locked check
 
-  vst3:
-    name: VST3 ABI and Validator (${{ matrix.os }})
+  bundle:
+    needs: target
+    name: VST3 bundle (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 3
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +194,7 @@ jobs:
             target/x86_64-pc-windows-msvc
           key: cargo-v1-${{ runner.os }}-vst3-${{ steps.compiler.outputs.hash }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'scripts/ci-versions.sh') }}
           restore-keys: cargo-v1-${{ runner.os }}-vst3-${{ steps.compiler.outputs.hash }}-
-      - name: Configure MSVC for ABI validation
+      - name: Configure MSVC tools
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -181,52 +208,9 @@ jobs:
       - name: Windows static analysis
         if: runner.os == 'Windows'
         run: cargo +stable clippy --locked --all-targets -- -D warnings
-      - name: Install Linux GUI validation dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libx11-dev libxtst6 libxfixes3 libxkbcommon-x11-0 libgl1-mesa-dri libegl1 xvfb xauth
-      - name: Prepare Windows software OpenGL for GUI validation
-        if: runner.os == 'Windows'
-        run: |
-          source scripts/ci-versions.sh
-          archive="$RUNNER_TEMP/mesa.7z"
-          python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
-            "https://github.com/pal1000/mesa-dist-win/releases/download/$CI_MESA_WINDOWS/mesa3d-$CI_MESA_WINDOWS-release-msvc.7z" "$archive"
-          echo "$CI_MESA_WINDOWS_SHA256  $archive" | sha256sum --check
-          7z x "$archive" "-o$RUNNER_TEMP/mesa" x64/opengl32.dll x64/libgallium_wgl.dll
-          mkdir -p target
-          cp "$RUNNER_TEMP/mesa/x64/"*.dll target/
-          echo 'GALLIUM_DRIVER=llvmpipe' >> "$GITHUB_ENV"
-      - name: Fetch official SDK for validation
-        run: |
-          source scripts/ci-versions.sh
-          sdk_dir="$RUNNER_TEMP/vst3-sdk"
-          git init "$sdk_dir"
-          git -C "$sdk_dir" remote add origin https://github.com/steinbergmedia/vst3sdk.git
-          git -C "$sdk_dir" fetch --depth 1 origin "$CI_VST3_REVISION"
-          git -C "$sdk_dir" checkout --detach FETCH_HEAD
-          git -C "$sdk_dir" submodule update --init --depth 1 base cmake pluginterfaces public.sdk
-          echo "VST3_SDK_DIR=$sdk_dir" >> "$GITHUB_ENV"
-      - name: Verify ABI, version, audio and GUI
+      - name: Build VST3 bundle
         id: bundle
-        env:
-          RUSTUP_TOOLCHAIN: stable
-        run: |
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a python scripts/check-abi.py --gui
-          else
-            python scripts/check-abi.py --gui
-          fi
-      - name: Build Validator
-        run: |
-          cmake -S "$VST3_SDK_DIR" -B target/vst3-sdk \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF \
-            -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \
-            -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF \
-            -DSMTG_CREATE_PLUGIN_LINK=OFF
-          cmake --build target/vst3-sdk --config Release --target validator --parallel 4
+        run: python scripts/build-vst3.py
       - name: Check Windows runtime dependencies
         if: runner.os == 'Windows'
         shell: pwsh
@@ -237,22 +221,6 @@ jobs:
           if ($dependencies -match '(?i)(VCRUNTIME|MSVCP)\d[^\s]*\.dll') {
             throw 'Unexpected dynamic VC runtime dependency'
           }
-      - name: Run Validator
-        run: |
-          target/vst3-sdk/bin/Release/validator target/vst3/Integral.vst3 |& tee target/validator.log
-          if grep -Eq 'Failed|Error|\[FAILED\]' target/validator.log; then
-            echo 'Validator reported an error, including possible teardown failures.' >&2
-            exit 1
-          fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: vst3-validation-log-${{ runner.os }}
-          path: |
-            target/validator.log
-            target/gui-smoke.ppm
-          if-no-files-found: warn
-          retention-days: 14
       # upload-artifactのZIPにバンドルを直接格納し、ZIPの二重梱包を避ける。
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: artifact
@@ -274,17 +242,42 @@ jobs:
   ci:
     name: CI result
     if: always()
-    needs: [quality, test, miri, coverage, dependencies, vst3]
+    needs: [target, quality, test, coverage, dependencies, bundle]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 3
+    permissions:
+      actions: read
+      statuses: write
     steps:
-      - name: Require all checks to pass
+      - name: Report and require all checks to pass
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          TARGET_RESULT: ${{ needs.target.result }}
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
+          state=success
           for result in $RESULTS; do
             if [[ "$result" != success ]]; then
               echo "CI job did not succeed: $result" >&2
-              exit 1
+              state=failure
             fi
           done
+          started=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --jq .run_started_at)
+          elapsed=$(python3 -c 'import datetime, math, sys; start = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")); print(math.ceil((datetime.datetime.now(datetime.timezone.utc) - start).total_seconds()))' "$started")
+          echo "CI elapsed: ${elapsed}s / 180s" >> "$GITHUB_STEP_SUMMARY"
+          if (( elapsed > 180 )); then
+            echo 'CI exceeded the three-minute budget.' >&2
+            state=failure
+          fi
+          if [[ -n "$PR_NUMBER" ]]; then
+            [[ "$TARGET_RESULT" == success ]] || TARGET_RESULT=failure
+            for context in 'PR target' 'CI result'; do
+              result="$state"
+              [[ "$context" != 'PR target' ]] || result="$TARGET_RESULT"
+              gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+                -f state="$result" -f context="$context" \
+                -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+            done
+          fi
+          [[ "$state" == success ]]

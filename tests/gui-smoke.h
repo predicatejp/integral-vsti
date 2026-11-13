@@ -89,14 +89,33 @@ struct NativeParent {
         HWND child = this->child(); assert(child);
         RECT rect; assert(GetClientRect(child, &rect));
         HDC dc = GetDC(child); assert(dc);
+        // 画素ごとのGetPixelによる画面読み戻しを避け、一括で取得する。
+        HDC memory = CreateCompatibleDC(dc); assert(memory);
+        BITMAPINFO info {};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = rect.right;
+        info.bmiHeader.biHeight = -rect.bottom; // 上から下へ並ぶ32bit BGR。
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        void* pixels = nullptr;
+        HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+        assert(bitmap && pixels);
+        HGDIOBJ previous = SelectObject(memory, bitmap); assert(previous && previous != HGDI_ERROR);
+        assert(BitBlt(memory, 0, 0, rect.right, rect.bottom, dc, 0, 0, SRCCOPY));
+        assert(GdiFlush());
+        const auto* bgra = static_cast<const unsigned char*>(pixels);
         std::ofstream file(path, std::ios::binary);
         file << "P6\n" << rect.right << ' ' << rect.bottom << "\n255\n";
         for (int y = 0; y < rect.bottom; ++y) for (int x = 0; x < rect.right; ++x) {
-            COLORREF pixel = GetPixel(dc, x, y);
-            const char rgb[] = {static_cast<char>(GetRValue(pixel)),
-                                static_cast<char>(GetGValue(pixel)), static_cast<char>(GetBValue(pixel))};
+            const auto* pixel = bgra + (static_cast<size_t>(y) * rect.right + x) * 4;
+            const char rgb[] = {static_cast<char>(pixel[2]),
+                                static_cast<char>(pixel[1]), static_cast<char>(pixel[0])};
             file.write(rgb, 3);
         }
+        assert(SelectObject(memory, previous) == bitmap);
+        assert(DeleteObject(bitmap));
+        assert(DeleteDC(memory));
         ReleaseDC(child, dc);
     }
 #else
@@ -440,6 +459,11 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
 #endif
         assert(false);
     };
+    // 固定時間ではなく、プラグインが移動を処理してカーソルを戻すまで待つ。
+    auto moveKnob = [&](int x, int y, int dy) {
+        parent.movePointer(x, y + dy);
+        waitFor([&] { return parent.pointerAt(x, y); }, "knob pointer restored");
+    };
     // グループ内のノブ中心とドロップダウン。画面上の実入力で全設定を検証する。
     std::array<std::pair<int, int>, 132> controls {{
         {175, 74}, {292, 160}, {348, 160}, {404, 160}, {460, 160}, {516, 160},
@@ -468,14 +492,34 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
-        parent.click(uiPixel(x), uiPixel(y)); pump(); assert(handler.sequence.empty());
-        parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
+        const auto label = "dropdown " + std::to_string(index) + " item " + std::to_string(item);
+        // 開く入力と選択する入力を同じ描画フレームへ蓄積させない。
+        // 文字・矢印の下の背景色で、表示とヒット判定の更新を待つ。
+        constexpr uint32 open = 0xdcdcdc;
+#ifdef _WIN32
+        constexpr uint32 hovered = RGB(219, 232, 222), selected = RGB(20, 96, 76);
+#else
+        constexpr uint32 hovered = 0xdbe8de, selected = 0x14604c;
+#endif
+        parent.click(uiPixel(x), uiPixel(y));
+        waitFor([&] { return parent.pixel(uiPixel(x + 30), uiPixel(y + 5)) == open; },
+                (label + " opened").c_str());
+        assert(handler.sequence.empty());
         // 最下段の4択は画面内へ収まるよう上側に開く。
         const int firstItemY = index == 62 ? y - 112 : index == 44 ? y - 193 : y + 30;
-        parent.click(uiPixel(x), uiPixel(firstItemY + item * 27));
-        waitFor([&] { return handler.sequence.size() >= 3; }, "dropdown choice");
+        const int itemY = firstItemY + item * 27;
+        parent.movePointer(uiPixel(x), uiPixel(itemY));
+        waitFor([&] {
+            const auto color = parent.pixel(uiPixel(x + 30), uiPixel(itemY + 3));
+            return color == hovered || color == selected;
+        }, (label + " hovered").c_str());
+        parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
+        parent.click(uiPixel(x), uiPixel(itemY));
+        waitFor([&] { return handler.sequence.size() >= 3; }, (label + " edited").c_str());
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-        handler.sequence.clear(); pump();
+        waitFor([&] { return parent.pixel(uiPixel(x + 30), uiPixel(y + 5)) != open; },
+                (label + " closed").c_str());
+        handler.sequence.clear();
     };
     for (int cycle = 0; cycle < 2; ++cycle) {
 #ifdef _WIN32
@@ -634,9 +678,9 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         size_t edits = 1;
         for (int direction : {-1, 1}) for (int tick = 1; tick <= 13; ++tick) {
             const auto previous = handler.value;
-            parent.movePointer(timeX, timeY + direction * 31); pump();
+            moveKnob(timeX, timeY, direction * 31);
             assert(handler.sequence.size() == edits && handler.value == previous);
-            parent.movePointer(timeX, timeY + direction);
+            moveKnob(timeX, timeY, direction);
             ++edits;
             waitFor([&] { return handler.sequence.size() == edits; }, "time knob step");
             const int expected = direction < 0 ? tick : 13 - tick;
@@ -737,10 +781,15 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             const int x = uiPixel(logicalX), y = uiPixel(logicalY);
             parent.movePointer(x, y); pump();
 #ifdef _WIN32
+            const auto injectionsBefore = GuiReentry::injections;
             GuiReentry::arm(parent.child());
 #endif
             parent.knobButton(true);
             waitFor([&] { return handler.sequence.size() == 1; }, "knob begin");
+#ifdef _WIN32
+            // 各ノブで再入を1回検査する。ノブ追加時も固定の総数に依存しない。
+            assert(GuiReentry::injections == injectionsBefore + 1);
+#endif
             assert(handler.sequence == (std::vector<int>{0}));
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
@@ -764,10 +813,10 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 (i == 10 || i == 11 || i == 13 || i == 19 || i == 22 || i == 25 || i == 28) ? 2 :
                 (i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 ||
                  i == 18 || i == 24 || i == 27 || i == 32 || i == 46 || i == 49) ? 3 : 4;
-            parent.movePointer(x, y - (pixelsPerTick - 1)); pump(); // 開始値は吸着しない。
+            moveKnob(x, y, -(pixelsPerTick - 1)); // 開始値は吸着しない。
             assert(handler.sequence.size() == 1 && controller->getParamNormalized(info.id) == 0.0);
             assert(parent.pointerAt(x, y));
-            parent.movePointer(x, y - 1);
+            moveKnob(x, y, -1);
             waitFor([&] { return handler.sequence.size() == 2; }, "knob integer tick");
             assert(handler.sequence == (std::vector<int>{0, 1}) && handler.editedId == info.id);
             const bool time = i == 1 || i == 2 || i == 3 || i == 5 || i == 14 || i == 15 || i == 16 || i == 18;
@@ -809,29 +858,29 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                 assert(controller->setParamNormalized(info.id, .5) == kResultOk);
                 parent.movePointer(x, y); pump(); parent.knobButton(true);
                 waitFor([&] { return handler.sequence.size() == 1; }, "pan center begin");
-                parent.movePointer(x, y - 39); pump();
+                moveKnob(x, y, -39);
                 assert(handler.sequence.size() == 1 && controller->getParamNormalized(info.id) == .5);
-                parent.movePointer(x, y - 1);
+                moveKnob(x, y, -1);
                 waitFor([&] { return handler.sequence.size() == 2; }, "pan center start");
                 assert(std::abs(handler.value - .505) < 1e-9);
-                parent.movePointer(x, y + 4);
+                moveKnob(x, y, 4);
                 waitFor([&] { return handler.sequence.size() == 3; }, "pan center arrival");
                 assert(handler.value == .5);
                 for (int step : {32, 32, 15}) {
-                    parent.movePointer(x, y + step); pump();
+                    moveKnob(x, y, step);
                 }
                 assert(handler.sequence.size() == 3 && handler.value == .5);
-                parent.movePointer(x, y + 1);
+                moveKnob(x, y, 1);
                 waitFor([&] { return handler.sequence.size() == 4; }, "pan lower detent exit");
                 assert(std::abs(handler.value - .495) < 1e-9);
                 // 小さい側から進入し、20px進んで20px戻ると小さい側へ抜ける。
-                parent.movePointer(x, y - 4);
+                moveKnob(x, y, -4);
                 waitFor([&] { return handler.sequence.size() == 5; }, "pan lower arrival");
                 assert(handler.value == .5);
-                parent.movePointer(x, y - 20); pump();
-                parent.movePointer(x, y + 19); pump();
+                moveKnob(x, y, -20);
+                moveKnob(x, y, 19);
                 assert(handler.sequence.size() == 5 && handler.value == .5);
-                parent.movePointer(x, y + 1);
+                moveKnob(x, y, 1);
                 waitFor([&] { return handler.sequence.size() == 6; }, "pan reversed detent exit");
                 assert(std::abs(handler.value - .495) < 1e-9);
                 parent.knobButton(false);
@@ -896,8 +945,5 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     assert(view->setFrame(nullptr) == kResultOk && frame.refs == 1);
     assert(view->release() == 0);
     assert(controller->setComponentHandler(nullptr) == kResultOk && handler.refs == 1);
-#ifdef _WIN32
-    assert(GuiReentry::injections == 228); // 114ノブ×2回の表示で再入と配送延期を検証。
-#endif
     std::cout << "GUI: embedded editor, clicks, UI-thread gestures, restore and reopen passed\n";
 }
