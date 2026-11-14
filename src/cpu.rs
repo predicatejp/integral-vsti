@@ -3,23 +3,28 @@
 
 //! DSPを生成する前に、CPUとOSがAVX2/FMAの実行を許可することを確認する。
 
+/// 全体のコンパイル設定に関係なく、検出前は整数命令だけを実行する。
 #[cfg(not(miri))]
-macro_rules! gate {
-    ($success:literal $(, $operand:ident = sym $symbol:path)*) => {
+#[unsafe(naked)]
+pub(crate) extern "system" fn supported() -> bool {
     // SAFETY: CPUIDはx86_64の必須命令。XGETBVはXSAVE/OSXSAVE確認後だけ実行する。
-    // RBXはR11へ保存して復元し、変更する他のレジスターは両ABIでcaller-saved。
-    // スタックに触れず、失敗時はnull/falseの表現である0を返す。
+    // CPUIDが変更するcallee-savedのRBXは保存し、途中のunwindにも復元位置を示す。
+    // 他の変更レジスターは両ABIでcaller-saved。失敗時はfalseの0を返す。
     core::arch::naked_asm!(
-        "mov r11, rbx",
+        #[cfg(windows)] ".seh_proc {this}",
+        #[cfg(not(windows))] ".cfi_startproc\n# {this}",
+        "push rbx",
+        #[cfg(windows)] ".seh_pushreg rbx\n.seh_endprologue",
+        #[cfg(not(windows))] ".cfi_adjust_cfa_offset 8\n.cfi_offset rbx, -16",
         "xor eax, eax",
         "cpuid",
         "cmp eax, 7",
         "jb 2f",
         "mov eax, 1",
         "cpuid",
-        // FMA、XSAVE、OSXSAVE、AVXの4ビットが必要。
-        "and ecx, 0x1c001000",
-        "cmp ecx, 0x1c001000",
+        // AVX/FMAとOSの対応、およびAVX2のコンパイル時依存SSE3〜SSE4.2を確認する。
+        "and ecx, 0x1c181201",
+        "cmp ecx, 0x1c181201",
         "jne 2f",
         "xor ecx, ecx",
         "xgetbv",
@@ -32,25 +37,18 @@ macro_rules! gate {
         "cpuid",
         "test ebx, 32",
         "jz 2f",
-        "mov rbx, r11",
-        $success,
+        "mov eax, 1",
+        "jmp 3f",
         "2:",
         "xor eax, eax",
-        "mov rbx, r11",
+        "3:",
+        "pop rbx",
+        #[cfg(not(windows))] ".cfi_adjust_cfa_offset -8\n.cfi_restore rbx",
         "ret",
-        $($operand = sym $symbol,)*
+        #[cfg(windows)] ".seh_endproc",
+        #[cfg(not(windows))] ".cfi_endproc",
+        this = sym supported,
     );
-    };
-}
-
-#[cfg(not(miri))]
-pub(crate) use gate;
-
-/// 全体のコンパイル設定に関係なく、検出前は整数命令だけを実行する。
-#[cfg(not(miri))]
-#[unsafe(naked)]
-pub(crate) extern "system" fn supported() -> bool {
-    gate!("mov eax, 1; ret");
 }
 
 // Miriは実CPUを起動しない。命令セットの拒否はロード試験で検証する。
@@ -65,7 +63,12 @@ mod tests {
     fn detects_the_same_requirements_as_the_standard_library() {
         assert_eq!(
             super::supported(),
-            std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
+            std::is_x86_feature_detected!("avx2")
+                && std::is_x86_feature_detected!("fma")
+                && std::is_x86_feature_detected!("sse3")
+                && std::is_x86_feature_detected!("ssse3")
+                && std::is_x86_feature_detected!("sse4.1")
+                && std::is_x86_feature_detected!("sse4.2")
         );
     }
 }

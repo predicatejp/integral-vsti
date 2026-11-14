@@ -198,10 +198,26 @@ unsafe extern "system" fn create_instance(
 #[unsafe(no_mangle)]
 #[cfg_attr(not(miri), unsafe(naked))]
 pub extern "system" fn GetPluginFactory() -> This {
-    // SAFETY: 検出前にコンパイラー生成のAVX命令が入らないよう入口全体を固定する。
-    // スタックは変更せず、対応時だけ同じABIのRust実装へtail-callする。
+    // SAFETY: 検出前の命令を固定し、対応時だけRust実装を呼ぶ。
+    // 両ABIの呼出し時アラインメントとWindowsのshadow spaceを確保し、unwind情報も持つ。
     #[cfg(not(miri))]
-    cpu::gate!("jmp {factory}", factory = sym create_factory);
+    core::arch::naked_asm!(
+        #[cfg(windows)] ".seh_proc {this}\nsub rsp, 40\n.seh_stackalloc 40\n.seh_endprologue",
+        #[cfg(not(windows))] ".cfi_startproc\n# {this}\nsub rsp, 8\n.cfi_adjust_cfa_offset 8",
+        "call {supported}",
+        "test al, al",
+        "jz 2f",
+        "call {factory}",
+        "2:",
+        #[cfg(windows)] "add rsp, 40",
+        #[cfg(not(windows))] "add rsp, 8\n.cfi_adjust_cfa_offset -8",
+        "ret",
+        #[cfg(windows)] ".seh_endproc",
+        #[cfg(not(windows))] ".cfi_endproc",
+        this = sym GetPluginFactory,
+        supported = sym cpu::supported,
+        factory = sym create_factory,
+    );
     #[cfg(miri)]
     create_factory()
 }
