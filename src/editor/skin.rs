@@ -10,6 +10,13 @@ pub(super) const BUTTON_TEXT: Color32 = Color32::from_rgb(216, 220, 217);
 const METER_BACKGROUND: Color32 = Color32::from_rgb(25, 47, 34);
 const METER_ACTIVE: Color32 = Color32::from_rgb(113, 255, 143);
 
+/// 押下した要素の内側で離せば、移動量や長押し時間にかかわらず確定する。
+pub(super) fn released_inside(response: &egui::Response) -> bool {
+    response.clicked()
+        && (!response.ctx.input(|input| input.pointer.primary_released())
+            || response.contains_pointer())
+}
+
 /// 発光面の芯と、暗いガラス面に広がる控えめな光。
 fn light(painter: &egui::Painter, rect: Rect, color: Color32) {
     for (radius, alpha) in [(2.0, 12), (1.0, 25)] {
@@ -124,7 +131,7 @@ impl Editor {
                     .frame(false)
                     .min_size(rect.size());
             if let Some(on) = indicator {
-                button = button.selected(on).sense(egui::Sense::click_and_drag());
+                button = button.selected(on);
             }
             let response = ui.put(rect, button);
             let pressed = response.is_pointer_button_down_on();

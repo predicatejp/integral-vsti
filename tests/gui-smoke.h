@@ -503,22 +503,31 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {488, 144}, {563, 144},
     }};
     auto uiPixel = [](double point) { return static_cast<int>(std::lround(point * 1.2)); };
+    auto clickMoved = [&](int x, int y, bool hold = false) {
+        parent.pointer(x, y, true);
+        const auto started = std::chrono::steady_clock::now();
+        do { pump(); } while (hold && std::chrono::steady_clock::now() - started < std::chrono::milliseconds(900));
+        parent.pointer(x + 1, y, false);
+    };
+#ifdef _WIN32
+    constexpr uint32 hovered = RGB(62, 82, 75), selected = RGB(82, 106, 97);
+#else
+    constexpr uint32 hovered = 0x3e524b, selected = 0x526a61;
+#endif
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
         const auto label = "dropdown " + std::to_string(index) + " item " + std::to_string(item);
+        ParameterInfo info; assert(controller->getParameterInfo(index, info) == kResultOk);
+        const bool changes = std::lround(controller->getParamNormalized(info.id) * info.stepCount) != item;
         // 開く入力と選択する入力を同じ描画フレームへ蓄積させない。
         // 閉じたLCDの模様ではなく、選択予定行の表示とヒット判定の更新を待つ。
-#ifdef _WIN32
-        constexpr uint32 hovered = RGB(18, 48, 32), selected = RGB(27, 73, 46);
-#else
-        constexpr uint32 hovered = 0x123020, selected = 0x1b492e;
-#endif
         // 最下段の4択は画面内へ収まるよう上側に開く。
         const int firstItemY = index == 62 ? y - 112 : index == 44 ? y - 193 : y + 30;
         const int itemY = firstItemY + item * 27;
-        const int probeX = uiPixel(x + 30), probeY = uiPixel(itemY + 3);
+        // 中央揃えの文字を避け、行内の上辺寄りで背景色を検査する。
+        const int probeX = uiPixel(x + 30), probeY = uiPixel(itemY - 9);
         const auto before = parent.pixel(probeX, probeY);
-        parent.click(uiPixel(x), uiPixel(y));
+        clickMoved(uiPixel(x), uiPixel(y));
         waitFor([&] { return parent.pixel(probeX, probeY) != before; },
                 (label + " opened").c_str());
         assert(handler.sequence.empty());
@@ -528,13 +537,16 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             return color == hovered || color == selected;
         }, (label + " hovered").c_str());
         parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
-        parent.click(uiPixel(x), uiPixel(itemY));
-        waitFor([&] { return handler.sequence.size() >= 3; }, (label + " edited").c_str());
-        assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+        clickMoved(uiPixel(x), uiPixel(itemY));
+        if (changes) {
+            waitFor([&] { return handler.sequence.size() >= 3; }, (label + " edited").c_str());
+            assert(handler.sequence == (std::vector<int>{0, 1, 2}));
+        }
         waitFor([&] {
             const auto color = parent.pixel(probeX, probeY);
             return color != hovered && color != selected;
         }, (label + " closed").c_str());
+        if (!changes) assert(handler.sequence.empty());
         handler.sequence.clear();
     };
     for (int cycle = 0; cycle < 2; ++cycle) {
@@ -622,6 +634,77 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         }
         assert(controller->setParamNormalized(waveformId, 0.0) == kResultOk);
         pump(); assert(handler.sequence.empty());
+        if (cycle == 0) {
+            const int x = uiPixel(controls[0].first), y = uiPixel(controls[0].second);
+            const auto closedPixel = parent.pixel(uiPixel(205), uiPixel(115));
+            const auto waveOpen = [&] {
+                return parent.pixel(uiPixel(205), uiPixel(115)) != closedPixel;
+            };
+            const auto openWave = [&] {
+                clickMoved(x, y);
+                waitFor(waveOpen, "waveform opened");
+            };
+            // 移動して外へ離した押下は、選択欄でも項目でも値を確定しない。
+            parent.pointer(x, y, true); pump(); parent.pointer(4, 4, false); pump();
+            assert(!waveOpen() && handler.sequence.empty());
+            openWave();
+            parent.pointer(x, uiPixel(151), true); pump(); parent.pointer(4, 4, false); pump();
+            assert(controller->getParamNormalized(waveformId) == 0.0 && handler.sequence.empty());
+            if (waveOpen()) { clickMoved(x, y); waitFor([&] { return !waveOpen(); }, "waveform toggled closed"); }
+            // 外側は解放を待たずに閉じ、その後1px動かしても編集しない。
+            openWave();
+            parent.pointer(4, 4, true);
+            waitFor([&] { return !waveOpen(); }, "waveform outside press");
+            parent.pointer(5, 4, false); pump(); assert(handler.sequence.empty());
+            // 0.8秒のクリック制限を超えても、内側解放で開閉・選択できる。
+            clickMoved(x, y, true);
+            waitFor(waveOpen, "waveform held open");
+            clickMoved(x, uiPixel(151), true);
+            waitFor([&] { return handler.sequence.size() == 3; }, "waveform held selection");
+            assert(handler.sequence == (std::vector<int>{0, 1, 2}) && handler.value == .25);
+            waitFor([&] { return !waveOpen(); }, "waveform held selection closed");
+            handler.sequence.clear();
+            choose(0, 0);
+            choose(0, 0); // 同じ値では閉じるだけで通知しない。
+            openWave(); clickMoved(x, y);
+            waitFor([&] { return !waveOpen(); }, "waveform reclick closed");
+            // 他の選択欄への一度の操作で、開いているリストを切り替える。
+            openWave();
+            const auto [phaseX, phaseY] = controls[12];
+            clickMoved(uiPixel(phaseX), uiPixel(phaseY));
+            waitFor([&] {
+                const auto color = parent.pixel(uiPixel(phaseX + 30), uiPixel(phaseY + 21));
+                return !waveOpen() && (color == hovered || color == selected);
+            }, "dropdown switched");
+            parent.click(4, 4); pump(); assert(handler.sequence.empty());
+            openWave();
+            parent.pointer(x, y, true); pump();
+#ifdef _WIN32
+            SendMessageW(parent.child(), WM_KEYDOWN, VK_ESCAPE, 0);
+            SendMessageW(parent.child(), WM_KEYUP, VK_ESCAPE, 0);
+#else
+            XEvent escape {};
+            escape.xkey = {KeyPress, 0, True, parent.display, parent.child(), DefaultRootWindow(parent.display),
+                           0, CurrentTime, 0, 0, 0, 0, 0, XKeysymToKeycode(parent.display, XK_Escape), True};
+            XSendEvent(parent.display, parent.child(), False, KeyPressMask, &escape);
+            escape.xkey.type = KeyRelease;
+            XSendEvent(parent.display, parent.child(), False, KeyReleaseMask, &escape);
+            XFlush(parent.display);
+#endif
+            waitFor([&] { return !waveOpen(); }, "waveform escape");
+            parent.pointer(x, y, false); pump();
+            assert(!waveOpen() && handler.sequence.empty()); // 取消後の解放で再び開かない。
+            // 子ウィンドウからホストへの実フォーカス変更でもリストを閉じる。
+#ifdef _WIN32
+            SetFocus(parent.child());
+#else
+            XSetInputFocus(parent.display, parent.child(), RevertToParent, CurrentTime); XFlush(parent.display);
+#endif
+            pump(); openWave(); parent.pointer(x, y, true); pump(); parent.unfocus();
+            waitFor([&] { return !waveOpen(); }, "waveform focus loss");
+            parent.pointer(x, y, false); pump();
+            assert(!waveOpen() && handler.sequence.empty() && parent.focused());
+        }
         for (int item = 1; item <= 4; ++item) {
             choose(0, item);
             assert(handler.editedId == waveformId && handler.value == item / 4.0);
@@ -858,6 +941,15 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             const auto [logicalX, logicalY] = controls[i];
             const int x = uiPixel(logicalX), y = uiPixel(logicalY);
             parent.movePointer(x, y); pump();
+            // 半透明オーバーレイの四隅と、その直下の描画色を記録する。
+            const int overlayX = std::clamp(logicalX - 112, 0, 673);
+            const int overlayY = std::clamp(logicalY < 91 ? logicalY + 31 : logicalY - 91, 0, 580);
+            const std::array<std::pair<int, int>, 4> overlayPoints {{{4, 4}, {219, 4}, {4, 55}, {219, 55}}};
+            std::array<uint32, 4> overlayBackground;
+            for (size_t j = 0; j < overlayPoints.size(); ++j) {
+                const auto [dx, dy] = overlayPoints[j];
+                overlayBackground[j] = parent.pixel(uiPixel(overlayX + dx), uiPixel(overlayY + dy));
+            }
 #ifdef _WIN32
             const auto injectionsBefore = GuiReentry::injections;
             GuiReentry::arm(parent.child());
@@ -871,19 +963,22 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0}));
             waitFor([&] { return !parent.cursorVisible(); }, "knob cursor hidden");
             // 全ノブで224×60論理ポイントの同じ枠が画面内に描画される。
-            const int overlayX = std::clamp(logicalX - 112, 0, 673);
-            const int overlayY = std::clamp(logicalY < 91 ? logicalY + 31 : logicalY - 91, 0, 580);
 #ifdef _WIN32
             const uint32 overlayColor = RGB(23, 43, 38);
 #else
             const uint32 overlayColor = 0x172b26;
 #endif
             waitFor([&] {
-                return parent.pixel(uiPixel(overlayX + 4), uiPixel(overlayY + 4)) == overlayColor &&
-                       parent.pixel(uiPixel(overlayX + 219), uiPixel(overlayY + 4)) == overlayColor &&
-                       parent.pixel(uiPixel(overlayX + 4), uiPixel(overlayY + 55)) == overlayColor &&
-                       parent.pixel(uiPixel(overlayX + 219), uiPixel(overlayY + 55)) == overlayColor;
-            }, "fixed overlay bounds");
+                for (size_t j = 0; j < overlayPoints.size(); ++j) {
+                    const auto [dx, dy] = overlayPoints[j];
+                    const auto actual = parent.pixel(uiPixel(overlayX + dx), uiPixel(overlayY + dy));
+                    for (int shift : {0, 8, 16}) {
+                        const int expected = (((overlayColor >> shift) & 0xff) * 4 + ((overlayBackground[j] >> shift) & 0xff)) / 5;
+                        if (std::abs(static_cast<int>((actual >> shift) & 0xff) - expected) > 2) return false;
+                    }
+                }
+                return true;
+            }, "translucent overlay bounds");
 #ifdef _WIN32
             assert(parent.focused()); // 操作中にもホストの入力先を維持する。
 #endif

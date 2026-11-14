@@ -14,6 +14,7 @@ mod lcd;
 mod pointer;
 mod skin;
 use edits::{Edit, Edits};
+use skin::released_inside;
 
 use crate::parameters::{self, NAMES, SharedParameters};
 use baseview::{
@@ -133,6 +134,8 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
 const PANEL: egui::Color32 = egui::Color32::from_rgb(248, 249, 245);
 const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
+const OVERLAY_BACKGROUND: egui::Color32 =
+    egui::Color32::from_rgba_unmultiplied_const(23, 43, 38, 204);
 const KNOB_INK: egui::Color32 = egui::Color32::from_rgb(28, 34, 39);
 const LINE: egui::Color32 = egui::Color32::from_rgb(143, 160, 147);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(20, 96, 76);
@@ -461,6 +464,11 @@ impl Editor {
             view,
         };
         editor.context.set_theme(egui::Theme::Light);
+        // ボタンは解放位置で確定する。移動距離・押下時間を取消条件にしない。
+        editor.context.options_mut(|options| {
+            options.input_options.max_click_dist = f32::INFINITY;
+            options.input_options.max_click_duration = f64::INFINITY;
+        });
         editor.context.style_mut_of(egui::Theme::Light, |style| {
             for (text_style, font) in &mut style.text_styles {
                 font.size = if *text_style == egui::TextStyle::Heading {
@@ -595,7 +603,7 @@ impl Editor {
             layout.halign = egui::Align::Center;
             let text = painter.layout_job(layout);
             let bounds = overlay_rect(rect, ui.ctx().viewport_rect());
-            painter.rect_filled(bounds, 5.0, INK);
+            painter.rect_filled(bounds, 5.0, OVERLAY_BACKGROUND);
             painter.galley(
                 egui::pos2(bounds.center().x, bounds.center().y - text.size().y / 2.0),
                 text,
@@ -1014,7 +1022,7 @@ impl Editor {
                             )
                         });
                     }
-                    if response.clicked() {
+                    if released_inside(&response) {
                         self.edits.push(Edit::SwapEffects(if direction == 0 {
                             slot - 1
                         } else {
@@ -1027,12 +1035,25 @@ impl Editor {
         }
     }
 
+    fn cancel_interaction(&self) {
+        self.end_drag();
+        egui::Popup::close_all(&self.context);
+        // 取消後の解放を新しいクリックとして処理しない。
+        self.context
+            .input_mut(|input| input.pointer = egui::PointerState::default());
+        self.input
+            .borrow_mut()
+            .events
+            .retain(|event| !matches!(event, egui::Event::PointerButton { .. }));
+        self.window.request_redraw();
+    }
+
     fn keyboard_input(&self, event: KeyboardEvent) -> EventStatus {
         if event.state == KeyState::Down
             && event.key == Key::Named(NamedKey::Escape)
-            && self.state.borrow().drag.is_some()
+            && (self.state.borrow().drag.is_some() || egui::Popup::is_any_open(&self.context))
         {
-            self.end_drag();
+            self.cancel_interaction();
             return EventStatus::Captured;
         }
         if !self.context.egui_wants_keyboard_input() || event.is_composing {
@@ -1190,18 +1211,15 @@ impl WindowHandler for Editor {
             let limiter_tick = parameters::to_tick(108, selected[108]);
             let limiter = self.button(ui, limiter_rect, "Limiter", Some(limiter_tick != 0));
             let reset = self.button(ui, reset_rect, "Reset", None);
-            // 押下中の移動量・時間でクリック判定から外れても、内側で離せば切り替える。
-            if limiter.clicked()
-                || (limiter.drag_stopped_by(egui::PointerButton::Primary)
-                    && limiter.contains_pointer())
-            {
+            // 押したボタンの内側で離したときに確定する。
+            if released_inside(&limiter) {
                 self.edits.push(Edit::Set(
                     108,
                     parameters::to_normalized(108, f64::from(1 - limiter_tick)),
                 ));
                 limiter.surrender_focus();
             }
-            if reset.clicked() {
+            if released_inside(&reset) {
                 self.reset_requested.store(true, Ordering::Relaxed);
                 self.state.borrow_mut().peak_db = -60.0;
                 reset.surrender_focus();
@@ -1413,13 +1431,13 @@ impl WindowHandler for Editor {
                 let focused = matches!(event, Event::Window(WindowEvent::Focused))
                     || (self.state.borrow().drag.is_some() && self.drag_has_focus());
                 if !focused {
-                    self.end_drag();
+                    self.cancel_interaction();
                 }
                 self.input.borrow_mut().focused = focused;
                 egui::Event::WindowFocused(focused)
             }
             Event::Window(WindowEvent::WillClose) => {
-                self.end_drag();
+                self.cancel_interaction();
                 return EventStatus::Captured;
             }
             Event::Mouse(MouseEvent::CursorMoved { position, .. }) => {
