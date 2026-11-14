@@ -12,6 +12,7 @@ compile_error!("対応対象はLinux x86_64とWindows x86_64 MSVCです");
 mod abi;
 mod chorus;
 mod compressor;
+mod cpu;
 mod delay;
 mod distortion;
 mod editor;
@@ -195,7 +196,17 @@ unsafe extern "system" fn create_instance(
 
 /// ホストへ初期所有参照を1つ返す。以後はFUnknown::releaseで解放する。
 #[unsafe(no_mangle)]
+#[cfg_attr(not(miri), unsafe(naked))]
 pub extern "system" fn GetPluginFactory() -> This {
+    // SAFETY: 検出前にコンパイラー生成のAVX命令が入らないよう入口全体を固定する。
+    // スタックは変更せず、対応時だけ同じABIのRust実装へtail-callする。
+    #[cfg(not(miri))]
+    cpu::gate!("jmp {factory}", factory = sym create_factory);
+    #[cfg(miri)]
+    create_factory()
+}
+
+extern "system" fn create_factory() -> This {
     Box::into_raw(Box::new(Factory {
         vtable: &FACTORY_VTABLE,
         refs: AtomicU32::new(1),
@@ -206,8 +217,12 @@ pub extern "system" fn GetPluginFactory() -> This {
 /// Linuxのモジュール開始。共有資源は持たない。
 #[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
+#[cfg_attr(not(miri), unsafe(naked))]
 pub extern "C" fn ModuleEntry(_: This) -> bool {
-    true
+    #[cfg(not(miri))]
+    core::arch::naked_asm!("jmp {supported}", supported = sym cpu::supported);
+    #[cfg(miri)]
+    cpu::supported()
 }
 
 /// ホストがすべての所有参照を解放した後に呼ぶ。
@@ -220,8 +235,12 @@ pub extern "C" fn ModuleExit() -> bool {
 /// Windowsのモジュール開始。共有資源は持たないため複数回の呼び出しも許容する。
 #[cfg(target_os = "windows")]
 #[unsafe(no_mangle)]
+#[cfg_attr(not(miri), unsafe(naked))]
 pub extern "system" fn InitDll() -> bool {
-    true
+    #[cfg(not(miri))]
+    core::arch::naked_asm!("jmp {supported}", supported = sym cpu::supported);
+    #[cfg(miri)]
+    cpu::supported()
 }
 
 /// Windowsのモジュール終了。ホストが所有参照を解放した後に呼ぶ。
