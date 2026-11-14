@@ -3,10 +3,16 @@
 
 //! カテゴリ別のノブ・ドロップダウンとOpenGL描画を接続する。
 
+mod fixed;
+mod indicator;
+mod surfaces;
+use fixed::Layer;
 pub(crate) mod edits;
 #[cfg(target_os = "windows")]
 pub(crate) mod gl_context;
+mod lcd;
 mod pointer;
+mod skin;
 use edits::{Edit, Edits};
 
 use crate::parameters::{self, NAMES, SharedParameters};
@@ -127,12 +133,9 @@ fn knob_marks(index: usize) -> (&'static [u32], u32) {
 // 操作盤・選択欄・ノブ・オーバーレイで共通の配色。
 const PANEL: egui::Color32 = egui::Color32::from_rgb(248, 249, 245);
 const INK: egui::Color32 = egui::Color32::from_rgb(23, 43, 38);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(53, 71, 62);
-const SECTION_TITLE: egui::Color32 = egui::Color32::from_rgb(108, 123, 113);
+const KNOB_INK: egui::Color32 = egui::Color32::from_rgb(28, 34, 39);
 const LINE: egui::Color32 = egui::Color32::from_rgb(143, 160, 147);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(20, 96, 76);
-const METER_BACKGROUND: egui::Color32 = egui::Color32::from_rgb(224, 230, 224);
-const METER_ACTIVE: egui::Color32 = egui::Color32::from_rgb(0, 164, 102);
 
 /// 外周・グループ間・枠内の左右余白と、基本の縦間隔。
 const GAP: f32 = 8.0;
@@ -146,8 +149,35 @@ const KNOB_CELL: egui::Vec2 = egui::vec2(56.0, 64.0);
 const KNOB_CENTER_Y: f32 = 28.0;
 const FONT_SIZE: f32 = 16.0;
 const HEADING_FONT_SIZE: f32 = 22.0;
-/// 円盤・ガイド・目盛り・指針の描画倍率。
+/// 目盛りの描画倍率。
 const KNOB_SCALE: f32 = 0.82;
+/// 銀面・黒い外周・指針・発光線の描画倍率。
+const KNOB_BODY_SCALE: f32 = 0.92;
+
+fn knob_direction(position: f32) -> egui::Vec2 {
+    let angle = std::f32::consts::PI * (0.75 + 1.5 * position);
+    egui::vec2(angle.cos(), angle.sin())
+}
+
+/// 背景の目盛りとラベルの余白を同じ形状から求める。
+fn knob_mark_segments(
+    index: usize,
+    center: egui::Pos2,
+) -> impl Iterator<Item = ([egui::Pos2; 2], f32)> {
+    let (marks, reference) = knob_marks(index);
+    let maximum = parameters::max_tick(index);
+    marks.iter().map(move |&mark| {
+        let d = knob_direction(mark as f32 / maximum as f32);
+        let major = mark == reference || mark == 0 || mark == maximum;
+        (
+            [
+                center + d * (26.0 * KNOB_SCALE),
+                center + d * (if major { 32.0 } else { 30.0 } * KNOB_SCALE),
+            ],
+            if major { 2.0 * KNOB_SCALE } else { KNOB_SCALE },
+        )
+    })
+}
 
 /// 1論理ポイント当たりの物理px。描画とポインター座標の換算に共用する。
 const UI_SCALE: f32 = 1.2;
@@ -176,30 +206,54 @@ fn overlay_rect(knob: egui::Rect, viewport: egui::Rect) -> egui::Rect {
     )
 }
 
-/// 各パネルの共通枠。見出しはOsc1・Eff 1と同じ小さいスタイル。
-fn panel(painter: &egui::Painter, rect: egui::Rect, title: &str) {
-    painter.rect_filled(rect, 8.0, PANEL);
-    painter.rect_stroke(
-        rect,
-        8.0,
-        egui::Stroke::new(1.0, LINE),
-        egui::StrokeKind::Inside,
+/// 金属の溝。左上の暗部と右下の反射光を各1物理pxで描く。
+fn engraved_line(painter: &egui::Painter, start: egui::Pos2, end: egui::Pos2) {
+    let scale = painter.ctx().pixels_per_point();
+    let pixel = 1.0 / scale;
+    let points = [start, end]
+        .map(|p| ((p.to_vec2() * scale).floor() + egui::vec2(0.5, 0.5)).to_pos2() / scale);
+    let light_offset = if start.x == end.x {
+        egui::vec2(pixel, 0.0)
+    } else {
+        egui::vec2(0.0, pixel)
+    };
+    painter.line_segment(
+        points,
+        egui::Stroke::new(pixel, egui::Color32::from_black_alpha(140)),
     );
+    painter.line_segment(
+        points.map(|p| p + light_offset),
+        egui::Stroke::new(pixel, egui::Color32::from_white_alpha(210)),
+    );
+}
+
+/// 各グループの共通見出し。Osc1・Eff 1と同じ小さいスタイル。
+fn panel_heading(painter: &egui::Painter, rect: egui::Rect, title: &str) {
     if !title.is_empty() {
         painter.text(
             rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT / 2.0),
             egui::Align2::LEFT_CENTER,
             title,
             egui::FontId::proportional(FONT_SIZE),
-            SECTION_TITLE,
+            KNOB_INK,
         );
     }
 }
 
 struct EditorState {
+    /// 画面全体の生成済み金属テクスチャ。画面を開くときに一度だけ読み込む。
+    panel_texture: egui::TextureHandle,
+    /// SVGの輪郭から生成した透過の彫り込みロゴ。
+    logo_texture: egui::TextureHandle,
+    /// LCD選択欄のベゼル・表示面・影。端を固定して可変幅へ描く。
+    lcd_texture: egui::TextureHandle,
+    /// ラバーボタンの固定面・面取り・影。点灯バーは操作状態に応じて重ねる。
+    button_texture: egui::TextureHandle,
+    /// ノブの固定面と影。配置変更時だけ固定表示へ描く。
+    knob_texture: egui::TextureHandle,
     /// 現在操作しているノブ。終了時にtakeして二重終了を防ぐ。
     drag: Option<DragState>,
-    /// 最後の描画で配置したノブの当たり判定。
+    /// 最後の描画で配置したノブ。OffスロットのMixは表示専用。
     knobs: [egui::Rect; parameters::COUNT],
     /// 表示中のサンプルピーク（−60〜＋12 dBFS）。操作値ではない。
     peak_db: f32,
@@ -274,6 +328,10 @@ pub(super) struct Editor {
     gl: baseview::gl::GlContext,
     /// eguiのテクスチャ・描画資源。破棄時にもglを有効にする。
     painter: RefCell<egui_glow::Painter>,
+    /// 配置が変わるときだけ作り直す固定表示。
+    fixed: RefCell<fixed::FixedDisplay>,
+    /// 値が変わるノブだけ更新する指針・発光弧。
+    indicators: RefCell<indicator::KnobIndicators>,
     /// パラメーター行の配置と操作状態。
     context: egui::Context,
     /// 次フレームへ渡すマウスイベント。
@@ -316,19 +374,67 @@ impl Editor {
         let gl = window
             .gl_context()
             .ok_or_else(|| std::io::Error::other("OpenGL unavailable"))?;
+        let timer = window.create_timer(Duration::from_millis(16))?;
         // SAFETY: baseviewの描画スレッドで、このウィンドウのGLだけを使用する。
-        let painter = unsafe {
+        let (painter, fixed) = unsafe {
             gl.make_current()?;
             let context =
                 egui_glow::glow::Context::from_loader_function_cstr(|s| gl.get_proc_address(s));
-            let painter = egui_glow::Painter::new(Arc::new(context), "", None, false);
+            let result =
+                egui_glow::Painter::new(Arc::new(context), "", None, false).map(|mut painter| {
+                    let size = window.size().physical;
+                    let fixed = fixed::FixedDisplay::new(&mut painter, [size.width, size.height]);
+                    (painter, fixed)
+                });
+            // Painter作成の成否にかかわらず、この描画コンテキストを解除する。
             gl.make_not_current()?;
-            painter?
+            result?
         };
-        let timer = window.create_timer(Duration::from_millis(16))?;
+        let context = egui::Context::default();
+        let panel_image =
+            egui::ColorImage::from_rgb([1076, 768], include_bytes!("editor/panel-metal.rgb"));
+        let panel_texture =
+            context.load_texture("panel-metal", panel_image, egui::TextureOptions::NEAREST);
+        let knob_texture = context.load_texture(
+            "knob-body",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [72, 72],
+                include_bytes!("editor/knob-body.rgba"),
+            ),
+            egui::TextureOptions::NEAREST,
+        );
+        let logo_texture = context.load_texture(
+            "logo-engraved",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [256, 60],
+                include_bytes!("editor/logo-engraved.rgba"),
+            ),
+            egui::TextureOptions::NEAREST,
+        );
+        let lcd_texture = context.load_texture(
+            "lcd-display",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [96, 40],
+                include_bytes!("editor/lcd-display.rgba"),
+            ),
+            egui::TextureOptions::NEAREST,
+        );
+        let button_texture = context.load_texture(
+            "button-rubber",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [96, 40],
+                include_bytes!("editor/button-rubber.rgba"),
+            ),
+            egui::TextureOptions::NEAREST,
+        );
         output_peak.store(0, Ordering::Relaxed);
         let editor = Self {
             state: RefCell::new(EditorState {
+                panel_texture,
+                logo_texture,
+                lcd_texture,
+                button_texture,
+                knob_texture,
                 drag: None,
                 knobs: [egui::Rect::NOTHING; parameters::COUNT],
                 peak_db: -60.0,
@@ -337,7 +443,9 @@ impl Editor {
             window,
             gl,
             painter: RefCell::new(painter),
-            context: egui::Context::default(),
+            fixed: RefCell::new(fixed),
+            indicators: RefCell::new(indicator::KnobIndicators::default()),
+            context,
             input: RefCell::new(egui::RawInput::default()),
             pointer: Cell::new(egui::Pos2::ZERO),
             start: Instant::now(),
@@ -361,6 +469,9 @@ impl Editor {
                     FONT_SIZE
                 };
             }
+            // 全テキストへ同じ被覆率補正を使い、暗い表示面でも細線を読める濃さにする。
+            style.visuals.text_options.color_transfer_function =
+                egui::epaint::FontColorTransferFunction::TwoCoverageMinusCoverageSq;
             style.spacing.button_padding = egui::vec2(10.0, 3.0);
             style.animation_time = 0.0;
             style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, INK);
@@ -385,6 +496,22 @@ impl Editor {
         Ok(editor)
     }
 
+    fn paint_panel_background(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        tint: egui::Color32,
+    ) {
+        // 全画面画像を物理pxと等倍で描き、Off表示も同じ位置の模様を使う。
+        let texture = &self.state.borrow().panel_texture;
+        let scale = egui::Vec2::splat(self.context.pixels_per_point()) / texture.size_vec2();
+        let uv = egui::Rect::from_min_max(
+            (rect.min.to_vec2() * scale).to_pos2(),
+            (rect.max.to_vec2() * scale).to_pos2(),
+        );
+        painter.image(texture.id(), rect, uv, tint);
+    }
+
     fn knob(&self, ui: &mut egui::Ui, index: usize, selected: f64, width: f32) {
         let (area, _) =
             ui.allocate_exact_size(egui::vec2(width, KNOB_CELL.y), egui::Sense::hover());
@@ -396,87 +523,52 @@ impl Editor {
         state.knobs[index] = rect;
         let drag = state.drag.as_ref().filter(|d| d.index == index);
         let tick = drag.map_or_else(|| parameters::to_tick(index, selected), |d| d.tick);
-        let value = if drag.is_some_and(|d| d.changed) {
-            parameters::tick_to_plain(index, tick)
-        } else {
-            parameters::to_plain(index, selected)
-        };
-        let position = tick as f32 / parameters::max_tick(index) as f32;
-        let angle = |t: f32| std::f32::consts::PI * (0.75 + 1.5 * t);
-        let direction = |t: f32| egui::vec2(angle(t).cos(), angle(t).sin());
-        let center = rect.center();
+        let center = (rect.center().to_vec2() * UI_SCALE).round().to_pos2() / UI_SCALE;
         let painter = ui.painter().clone();
-        let (marks, reference) = knob_marks(index);
-        // 相対調整は中立値から伸ばす。Volumeは無音からの音量を示す。
-        let zero = if parameters::is_volume(index) {
-            0.0
-        } else {
-            reference as f32 / parameters::max_tick(index) as f32
-        };
-        let guide_stroke = egui::Stroke::new(2.0 * KNOB_SCALE, LINE);
-        let mut guide_left = center.x - 26.0 * KNOB_SCALE - guide_stroke.width / 2.0;
-        for &mark in marks {
-            let d = direction(mark as f32 / parameters::max_tick(index) as f32);
-            let major = mark == reference || mark == 0 || mark == parameters::max_tick(index);
-            let end = center + d * (if major { 32.0 } else { 30.0 } * KNOB_SCALE);
-            let stroke = if major {
-                guide_stroke
+        self.fixed(&painter, Layer::Base, |painter| {
+            let size = egui::vec2(72.0, 72.0) / UI_SCALE;
+            painter.image(
+                state.knob_texture.id(),
+                egui::Rect::from_center_size(center, size),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            for (points, width) in knob_mark_segments(index, center) {
+                painter.line_segment(points, egui::Stroke::new(width, KNOB_INK));
+            }
+        });
+        self.indicators
+            .borrow_mut()
+            .draw(&painter, index, tick, center);
+        self.fixed(&painter, Layer::Base, |painter| {
+            let (label_position, label_align) = if matches!(index, 13 | 21) {
+                let marks_left = knob_mark_segments(index, center)
+                    .map(|([_, end], width)| end.x - width / 2.0)
+                    .fold(center.x - 22.0 * KNOB_BODY_SCALE, f32::min);
+                (
+                    egui::pos2(marks_left - GAP / 2.0, center.y),
+                    egui::Align2::RIGHT_CENTER,
+                )
             } else {
-                egui::Stroke::new(KNOB_SCALE, LINE)
+                (
+                    egui::pos2(center.x, area.top() + 60.0),
+                    egui::Align2::CENTER_CENTER,
+                )
             };
-            guide_left = guide_left.min(end.x - stroke.width / 2.0);
-            painter.line_segment([center + d * (26.0 * KNOB_SCALE), end], stroke);
-        }
-        let arc = |from: f32, to: f32| {
-            (0..=32)
-                .map(|k| {
-                    center + direction(from + (to - from) * k as f32 / 32.0) * (26.0 * KNOB_SCALE)
-                })
-                .collect::<Vec<_>>()
-        };
-        painter.add(egui::Shape::line(arc(0.0, 1.0), guide_stroke));
-        painter.add(egui::Shape::line(
-            arc(zero, position),
-            egui::Stroke::new(3.0 * KNOB_SCALE, ACCENT),
-        ));
-        painter.circle_filled(
-            center + egui::vec2(0.0, 1.5 * KNOB_SCALE),
-            22.0 * KNOB_SCALE,
-            LINE,
-        );
-        painter.circle(
-            center,
-            22.0 * KNOB_SCALE,
-            egui::Color32::WHITE,
-            egui::Stroke::new(KNOB_SCALE, if drag.is_some() { ACCENT } else { LINE }),
-        );
-        let d = direction(position);
-        painter.line_segment(
-            [
-                center + d * (10.0 * KNOB_SCALE),
-                center + d * (18.0 * KNOB_SCALE),
-            ],
-            egui::Stroke::new(3.0 * KNOB_SCALE, ACCENT),
-        );
-        let (label_position, label_align) = if matches!(index, 13 | 21) {
-            (
-                egui::pos2(guide_left - GAP / 2.0, center.y),
-                egui::Align2::RIGHT_CENTER,
-            )
-        } else {
-            (
-                egui::pos2(center.x, area.top() + 56.0),
-                egui::Align2::CENTER_CENTER,
-            )
-        };
-        painter.text(
-            label_position,
-            label_align,
-            KNOB_NAMES[index],
-            egui::FontId::proportional(FONT_SIZE),
-            MUTED,
-        );
+            painter.text(
+                label_position,
+                label_align,
+                KNOB_NAMES[index],
+                egui::FontId::proportional(FONT_SIZE),
+                KNOB_INK,
+            );
+        });
         if drag.is_some() {
+            let value = if drag.is_some_and(|d| d.changed) {
+                parameters::tick_to_plain(index, tick)
+            } else {
+                parameters::to_plain(index, selected)
+            };
             let value_label = if let Some(label) = parameters::choices(index).get(tick as usize) {
                 (*label).to_owned()
             } else if parameters::is_volume(index) && value == f64::NEG_INFINITY {
@@ -513,6 +605,12 @@ impl Editor {
     }
 
     fn begin_drag(&self, index: usize) {
+        if parameters::EFFECT_SLOTS.iter().any(|indices| {
+            indices[1..].contains(&index)
+                && parameters::to_tick(indices[0], self.parameters.get(indices[0])) == 0
+        }) {
+            return;
+        }
         self.end_drag();
         let Some(anchor) = self.drag_pointer_position() else {
             return;
@@ -589,33 +687,10 @@ impl Editor {
         }
     }
 
-    fn choice(&self, ui: &mut egui::Ui, index: usize, selected: f64) {
-        if matches!(index, 12 | 31 | 45 | 48 | 60..=62) {
-            ui.painter().text(
-                ui.max_rect().center_top() - egui::vec2(0.0, GAP),
-                egui::Align2::CENTER_BOTTOM,
-                KNOB_NAMES[index],
-                egui::FontId::proportional(FONT_SIZE),
-                MUTED,
-            );
-        }
-        let names = parameters::choices(index);
-        let mut choice = parameters::to_plain(index, selected) as usize;
-        if egui::ComboBox::from_id_salt(index)
-            .width(ui.available_width())
-            .height(320.0)
-            .show_index(ui, &mut choice, names.len(), |i| names[i])
-            .changed()
-        {
-            self.edits.push(Edit::Set(
-                index,
-                parameters::to_normalized(index, choice as f64),
-            ));
-        }
-    }
-
     fn note_group(&self, ui: &mut egui::Ui, rect: egui::Rect, selected: &[f64; parameters::COUNT]) {
-        panel(ui.painter(), rect, "Note");
+        self.fixed(ui.painter(), Layer::Base, |painter| {
+            panel_heading(painter, rect, "Note")
+        });
         let choice_width = 112.0;
         let width = (rect.width() - GAP * 2.0 - choice_width) / 3.0;
         let top = rect.top() + GAP * 2.0 + HEADER_HEIGHT;
@@ -658,10 +733,14 @@ impl Editor {
             .iter()
             .position(|indices| choices.first() == Some(&indices[0]));
         // 全エフェクト共通のMixは右端の同じ位置へ分離する。
-        let (mix, knobs) = if effect.is_some() {
+        let (mix, knobs) = if let Some(slot) = effect {
             rows[0]
                 .split_last()
-                .map_or((None, &[][..]), |(mix, knobs)| (Some(*mix), knobs))
+                // OffにはMix値の割当がない。共通の目盛り・形状だけを0位置で表示する。
+                .map_or(
+                    (Some(parameters::EFFECT_SLOTS[slot][3]), &[][..]),
+                    |(mix, knobs)| (Some(*mix), knobs),
+                )
         } else {
             (None, rows[0])
         };
@@ -715,21 +794,25 @@ impl Editor {
         let painter = ui.painter().clone();
         if let Some(slot) = effect {
             if slot > 0 {
-                painter.hline(
-                    rect.left() + GAP..=rect.right() - GAP,
-                    rect.top(),
-                    egui::Stroke::new(1.0, LINE),
+                self.engraved_line(
+                    &painter,
+                    egui::pos2(rect.left() + GAP, rect.top()),
+                    egui::pos2(rect.right() - GAP, rect.top()),
                 );
             }
-            painter.text(
-                rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT / 2.0),
-                egui::Align2::LEFT_CENTER,
-                title,
-                egui::FontId::proportional(FONT_SIZE),
-                SECTION_TITLE,
-            );
+            self.fixed(&painter, Layer::Base, |painter| {
+                painter.text(
+                    rect.min + egui::vec2(GAP, GAP + HEADER_HEIGHT / 2.0),
+                    egui::Align2::LEFT_CENTER,
+                    title,
+                    egui::FontId::proportional(FONT_SIZE),
+                    KNOB_INK,
+                );
+            });
         } else {
-            panel(&painter, rect, title);
+            self.fixed(&painter, Layer::Base, |painter| {
+                panel_heading(painter, rect, title)
+            });
         }
         for (row, knobs) in rows.iter().enumerate() {
             if knobs.is_empty() {
@@ -737,10 +820,10 @@ impl Editor {
             }
             let row_top = body_y + row as f32 * row_step;
             if row > 0 && row_header_height > 0.0 {
-                painter.hline(
-                    rect.left() + GAP..=rect.right() - GAP,
-                    rect.top() + row_top - GAP,
-                    egui::Stroke::new(1.0, LINE),
+                self.engraved_line(
+                    &painter,
+                    egui::pos2(rect.left() + GAP, rect.top() + row_top - GAP),
+                    egui::pos2(rect.right() - GAP, rect.top() + row_top - GAP),
                 );
             }
             let width = (rect.width()
@@ -760,7 +843,7 @@ impl Editor {
                 );
                 // EQのMid・Highの手前で帯域を区切る。
                 if matches!(index, 37 | 40) {
-                    painter.vline(area.left(), area.y_range(), egui::Stroke::new(1.0, LINE));
+                    self.engraved_line(&painter, area.left_top(), area.left_bottom());
                 }
                 left += width;
                 ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
@@ -776,14 +859,46 @@ impl Editor {
                 ),
                 KNOB_CELL,
             );
-            painter.vline(
-                area.left() - GAP,
-                rect.top() + HEADER_HEIGHT + GAP * 2.0..=rect.bottom() - GAP,
-                egui::Stroke::new(1.0, LINE),
+            self.engraved_line(
+                &painter,
+                egui::pos2(area.left() - GAP, rect.top() + HEADER_HEIGHT + GAP * 2.0),
+                egui::pos2(area.left() - GAP, rect.bottom() - GAP),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                self.knob(ui, index, selected[index], KNOB_CELL.x);
+                self.knob(
+                    ui,
+                    index,
+                    if off { 0.0 } else { selected[index] },
+                    KNOB_CELL.x,
+                );
             });
+            if off {
+                let empty = egui::Rect::from_min_max(
+                    rect.min + egui::vec2(GAP, HEADER_HEIGHT + GAP * 2.0),
+                    egui::pos2(area.left() - GAP * 2.0, rect.bottom() - GAP),
+                );
+                self.fixed(&painter, Layer::Base, |painter| {
+                    let state = self.state.borrow();
+                    let logo = &state.logo_texture;
+                    // 透明な余白だけを除き、1pxの彫り込み陰影を物理ピクセル等倍で保つ。
+                    let crop =
+                        egui::Rect::from_min_max(egui::pos2(32.0, 8.0), egui::pos2(226.0, 53.0));
+                    let size = crop.size() / UI_SCALE;
+                    let min = ((empty.center() - size / 2.0).to_vec2() * UI_SCALE)
+                        .round()
+                        .to_pos2()
+                        / UI_SCALE;
+                    painter.image(
+                        logo.id(),
+                        egui::Rect::from_min_size(min, size),
+                        egui::Rect::from_min_max(
+                            (crop.min.to_vec2() / logo.size_vec2()).to_pos2(),
+                            (crop.max.to_vec2() / logo.size_vec2()).to_pos2(),
+                        ),
+                        egui::Color32::WHITE,
+                    );
+                });
+            }
         }
         let choice_rect = |row: usize| {
             if effect.is_some() && row > 0 {
@@ -827,26 +942,35 @@ impl Editor {
                 26 => "Osc3",
                 _ => continue,
             };
-            painter.text(
-                egui::pos2(rect.left() + GAP, choice_rect(row).center().y),
-                egui::Align2::LEFT_CENTER,
-                label,
-                egui::FontId::proportional(FONT_SIZE),
-                SECTION_TITLE,
-            );
+            self.fixed(&painter, Layer::Base, |painter| {
+                painter.text(
+                    egui::pos2(rect.left() + GAP, choice_rect(row).center().y),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    egui::FontId::proportional(FONT_SIZE),
+                    KNOB_INK,
+                );
+            });
         }
         if off {
-            // 背景色との50%合成により、影や文字を含む全体を同じ率で薄くする。
-            painter.rect_filled(
-                rect.expand(1.0),
-                0.0,
-                ui.visuals().panel_fill.gamma_multiply(0.5),
-            );
-        }
-        for (row, &index) in choices.iter().enumerate() {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(choice_rect(row)), |ui| {
-                self.choice(ui, index, selected[index]);
+            // 同じ位置の背景との50%合成で、影や文字を含む全体を薄くする。
+            self.fixed(&painter, Layer::Controls, |painter| {
+                self.paint_panel_background(
+                    painter,
+                    rect.expand(1.0),
+                    egui::Color32::WHITE.gamma_multiply(0.5),
+                );
             });
+        }
+        let mut selector = choice_rect(0);
+        for (row, &index) in choices.iter().enumerate() {
+            let response = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(choice_rect(row)), |ui| {
+                    self.choice(ui, index, selected[index])
+                });
+            if row == 0 {
+                selector = response.inner;
+            }
         }
         if let Some(slot) = effect {
             // 端では対応する方向だけ無効化する。選択と内部設定を一緒に移動する。
@@ -854,25 +978,42 @@ impl Editor {
                 let area = egui::Rect::from_min_size(
                     egui::pos2(
                         rect.right() - GAP - 52.0 + direction as f32 * 28.0,
-                        choice_rect(0).top(),
+                        selector.top(),
                     ),
-                    egui::vec2(24.0, CHOICE_HEIGHT),
+                    egui::vec2(24.0, selector.height()),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
                     let enabled = if direction == 0 { slot > 0 } else { slot < 2 };
-                    let response =
-                        ui.add_enabled(enabled, egui::Button::new("").min_size(area.size()));
-                    let center = response.rect.center();
-                    let sign = if direction == 0 { -1.0 } else { 1.0 };
-                    ui.painter().add(egui::Shape::convex_polygon(
-                        vec![
-                            center + egui::vec2(0.0, sign * 5.0),
-                            center + egui::vec2(-5.0, -sign * 3.0),
-                            center + egui::vec2(5.0, -sign * 3.0),
-                        ],
-                        if enabled { ACCENT } else { LINE },
-                        egui::Stroke::NONE,
-                    ));
+                    let response = ui
+                        .add_enabled_ui(enabled, |ui| self.button(ui, area, "", None))
+                        .inner;
+                    let arrow = |painter: &egui::Painter, center: egui::Pos2| {
+                        let sign = if direction == 0 { -1.0 } else { 1.0 };
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![
+                                center + egui::vec2(0.0, sign * 5.0),
+                                center + egui::vec2(-5.0, -sign * 3.0),
+                                center + egui::vec2(5.0, -sign * 3.0),
+                            ],
+                            if enabled {
+                                skin::BUTTON_TEXT
+                            } else {
+                                egui::Color32::from_gray(115)
+                            },
+                            egui::Stroke::NONE,
+                        ));
+                    };
+                    self.fixed(ui.painter(), Layer::Controls, |painter| {
+                        arrow(painter, response.rect.center())
+                    });
+                    if response.is_pointer_button_down_on() {
+                        self.front(ui.painter(), || {
+                            arrow(
+                                ui.painter(),
+                                response.rect.center() + egui::vec2(0.0, 1.0 / UI_SCALE),
+                            )
+                        });
+                    }
                     if response.clicked() {
                         self.edits.push(Edit::SwapEffects(if direction == 0 {
                             slot - 1
@@ -979,9 +1120,24 @@ impl WindowHandler for Editor {
         self.displayed.set(selected);
         let voice_count = self.active_voices.load(Ordering::Relaxed);
         self.displayed_voices.set(voice_count);
+        let key = [
+            size.width,
+            size.height,
+            UI_SCALE.to_bits(),
+            parameters::to_tick(42, selected[42]),
+            parameters::to_tick(43, selected[43]),
+            parameters::to_tick(44, selected[44]),
+            u32::from(parameters::to_tick(9, selected[9]) == 0),
+            u32::from(parameters::to_tick(34, selected[34]) == 0),
+        ];
+        self.fixed.borrow_mut().begin(key);
         let mut output = self.context.run_ui(input, |ui| {
-            ui.painter()
-                .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
+            self.fixed
+                .borrow()
+                .image(ui.painter(), Layer::Base, ui.max_rect());
+            self.fixed(ui.painter(), Layer::Base, |painter| {
+                self.paint_panel_background(painter, ui.max_rect(), egui::Color32::WHITE)
+            });
             let oscillator_width = GAP * 2.0 + KNOB_CELL.x * 4.0;
             let filter_width = GAP * 2.0 + KNOB_CELL.x * 6.0;
             let center_x = GAP + oscillator_width + GAP;
@@ -993,14 +1149,19 @@ impl WindowHandler for Editor {
                 egui::vec2(size.width as f32 / UI_SCALE - GAP * 2.0, TITLE_BAR_HEIGHT),
             );
             let painter = ui.painter().clone();
-            painter.rect_filled(title, 8.0, PANEL);
-            painter.text(
-                title.left_center() + egui::vec2(GAP, 0.0),
-                egui::Align2::LEFT_CENTER,
-                "Integral",
-                egui::FontId::proportional(HEADING_FONT_SIZE),
-                INK,
-            );
+            self.fixed(&painter, Layer::Base, |painter| {
+                let state = self.state.borrow();
+                let logo = &state.logo_texture;
+                let logo_size = logo.size_vec2() / UI_SCALE;
+                let min = title.left_center() + egui::vec2(GAP, -logo_size.y / 2.0);
+                let min = (min.to_vec2() * UI_SCALE).round().to_pos2() / UI_SCALE;
+                painter.image(
+                    logo.id(),
+                    egui::Rect::from_min_size(min, logo_size),
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            });
             let meter_x = effects_x + (side_width - 254.0) / 2.0;
             let button_size = egui::vec2(64.0, 32.0);
             let reset_rect = egui::Rect::from_min_size(
@@ -1017,7 +1178,7 @@ impl WindowHandler for Editor {
             // ラベル32pxとノブの間をGAPとし、2組を中央列へ収める。
             let control_width = 32.0 + GAP + KNOB_CELL.x;
             for (column, index) in [13, 21].into_iter().enumerate() {
-                let right = limiter_rect.left() - GAP * 2.0 - control_width * (1 - column) as f32;
+                let right = limiter_rect.left() - GAP * 2.5 - control_width * (1 - column) as f32;
                 let area = egui::Rect::from_min_size(
                     egui::pos2(right - KNOB_CELL.x, title.center().y - KNOB_CENTER_Y),
                     KNOB_CELL,
@@ -1027,22 +1188,8 @@ impl WindowHandler for Editor {
                 });
             }
             let limiter_tick = parameters::to_tick(108, selected[108]);
-            let (limiter, reset) = ui
-                .scope(|ui| {
-                    ui.spacing_mut().button_padding.x = 6.0;
-                    ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(185, 218, 199);
-                    ui.visuals_mut().selection.stroke = egui::Stroke::new(1.0, INK);
-                    (
-                        ui.put(
-                            limiter_rect,
-                            egui::Button::new("Limiter")
-                                .selected(limiter_tick != 0)
-                                .sense(egui::Sense::click_and_drag()),
-                        ),
-                        ui.put(reset_rect, egui::Button::new("Reset")),
-                    )
-                })
-                .inner;
+            let limiter = self.button(ui, limiter_rect, "Limiter", Some(limiter_tick != 0));
+            let reset = self.button(ui, reset_rect, "Reset", None);
             // 押下中の移動量・時間でクリック判定から外れても、内側で離せば切り替える。
             if limiter.clicked()
                 || (limiter.drag_stopped_by(egui::PointerButton::Primary)
@@ -1059,53 +1206,49 @@ impl WindowHandler for Editor {
                 self.state.borrow_mut().peak_db = -60.0;
                 reset.surrender_focus();
             }
-            let peak_db = self.state.borrow().peak_db;
-            let meter_height = (button_size.y - GAP) / 2.0;
-            let peak_rect = egui::Rect::from_min_size(
-                egui::pos2(meter_x, reset_rect.top()),
-                egui::vec2(254.0, meter_height),
+            self.draw_meters(
+                &painter,
+                egui::Rect::from_min_size(
+                    egui::pos2(meter_x, reset_rect.top()),
+                    egui::vec2(254.0, button_size.y),
+                ),
+                voice_count,
             );
-            painter.rect_filled(peak_rect, 1.0, METER_BACKGROUND);
-            let zero_x = meter_x + peak_rect.width() * 60.0 / 72.0;
-            for (start_db, end_db, color) in [
-                (-60.0, 0.0, METER_ACTIVE),
-                (0.0, 12.0, egui::Color32::from_rgb(232, 64, 48)),
-            ] {
-                let width = peak_rect.width() * (peak_db.min(end_db) - start_db).max(0.0) / 72.0;
-                if width > 0.0 {
-                    let start_x = meter_x + peak_rect.width() * (start_db + 60.0) / 72.0;
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(start_x, peak_rect.top()),
-                            egui::vec2(width, meter_height),
-                        ),
-                        0.0,
-                        color,
-                    );
-                }
-            }
-            painter.vline(zero_x, peak_rect.y_range(), egui::Stroke::new(1.0, INK));
-            for voice in 0..32 {
-                let segment = egui::Rect::from_min_size(
-                    egui::pos2(meter_x + voice as f32 * 8.0, peak_rect.bottom() + GAP),
-                    egui::vec2(6.0, meter_height),
-                );
-                painter.rect_filled(
-                    segment,
-                    1.0,
-                    if voice < voice_count {
-                        METER_ACTIVE
-                    } else {
-                        METER_BACKGROUND
-                    },
-                );
-            }
             let left_top = title.bottom() + GAP;
             let full_height = size.height as f32 / UI_SCALE - left_top - GAP;
             let eq_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
             let note_height = GAP * 3.0 + HEADER_HEIGHT + KNOB_CELL.y;
             let amp_top = left_top + note_height + GAP;
             let panel_height = full_height - GAP - eq_height;
+            // 各グループを囲まず、共有する余白の中央に一本ずつ溝を置く。
+            let top_line = left_top - GAP / 2.0;
+            let eq_line = left_top + panel_height + GAP / 2.0;
+            let center_line = center_x - GAP / 2.0;
+            let effects_line = effects_x - GAP / 2.0;
+            for (start, end) in [
+                (
+                    egui::pos2(GAP, top_line),
+                    egui::pos2(title.right(), top_line),
+                ),
+                (
+                    egui::pos2(center_line, top_line),
+                    egui::pos2(center_line, eq_line),
+                ),
+                (
+                    egui::pos2(effects_line, top_line),
+                    egui::pos2(effects_line, left_top + full_height),
+                ),
+                (egui::pos2(GAP, eq_line), egui::pos2(effects_line, eq_line)),
+            ] {
+                self.engraved_line(&painter, start, end);
+            }
+            for y in [amp_top - GAP / 2.0, amp_top + note_height + GAP / 2.0] {
+                self.engraved_line(
+                    &painter,
+                    egui::pos2(center_line, y),
+                    egui::pos2(effects_line, y),
+                );
+            }
             self.note_group(
                 ui,
                 egui::Rect::from_min_size(
@@ -1119,14 +1262,6 @@ impl WindowHandler for Editor {
             let filter_height = panel_height - note_height - amp_height - GAP * 2.0;
             let effects_body_y = left_top;
             let effect_height = full_height / 3.0;
-            panel(
-                ui.painter(),
-                egui::Rect::from_min_size(
-                    egui::pos2(effects_x, left_top),
-                    egui::vec2(side_width, full_height),
-                ),
-                "",
-            );
             let effect_kinds = parameters::EFFECT_SLOTS
                 .map(|[kind, ..]| parameters::to_plain(kind, selected[kind]) as usize);
             let groups = [
@@ -1236,10 +1371,11 @@ impl WindowHandler for Editor {
             for (title, choices, rows, rect) in groups {
                 self.group(ui, title, choices, rows, rect, &selected);
             }
+            self.fixed.borrow_mut().finish(ui.painter(), ui.max_rect());
         });
         let shapes = self
             .context
-            .tessellate(output.shapes, output.pixels_per_point);
+            .tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
         #[cfg(target_os = "windows")]
         let _restore = gl_context::RestoreContext::capture();
         // SAFETY: GL処理をこの描画呼び出し内に限定する。Windowsでは元の設定を復元する。
@@ -1247,11 +1383,12 @@ impl WindowHandler for Editor {
             self.gl.make_current()?;
         }
         painter.clear([size.width, size.height], [0.0, 0.0, 0.0, 1.0]);
-        painter.paint_and_update_textures(
+        self.fixed.borrow_mut().paint(
+            &mut painter,
+            &self.context,
             [size.width, size.height],
-            output.pixels_per_point,
+            &mut output,
             &shapes,
-            &mut output.textures_delta,
         );
         let result = self.gl.swap_buffers();
         // SAFETY: 上で有効にした同じコンテキスト。
@@ -1391,6 +1528,7 @@ impl Drop for Editor {
         // SAFETY: baseviewは描画スレッドでhandlerを破棄する。GL資源も同じ場所で解放する。
         unsafe {
             if self.gl.make_current().is_ok() {
+                self.fixed.get_mut().destroy(self.painter.get_mut());
                 self.painter.get_mut().destroy();
                 let _ = self.gl.make_not_current();
             }
