@@ -422,6 +422,18 @@ void checkGlContext(IEditController* controller) {
 #endif
 
 void checkGui(IComponent* component, IAudioProcessor* processor, IEditController* controller) {
+    std::vector<unsigned char> panelPixels(1076 * 768 * 3);
+    std::ifstream panelTexture("src/editor/panel-metal.rgb", std::ios::binary);
+    panelTexture.read(reinterpret_cast<char*>(panelPixels.data()), panelPixels.size());
+    assert(panelTexture.gcount() == static_cast<std::streamsize>(panelPixels.size()));
+    auto backgroundPixel = [&](int x, int y) {
+        const auto* rgb = &panelPixels[(y * 1076 + x) * 3];
+#ifdef _WIN32
+        return static_cast<uint32>(RGB(rgb[0], rgb[1], rgb[2]));
+#else
+        return static_cast<uint32>((rgb[0] << 16) | (rgb[1] << 8) | rgb[2]);
+#endif
+    };
 #ifdef _WIN32
     checkGlContext(controller);
 #endif
@@ -468,8 +480,8 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
     std::array<std::pair<int, int>, 134> controls {{
         {175, 94}, {292, 268}, {348, 268}, {404, 268}, {460, 268}, {516, 268},
         {44, 159}, {100, 159}, {413, 144}, {535, 342}, {306, 392}, {390, 392},
-        {316, 152}, {324, 36}, {298, 464}, {365, 464}, {432, 464}, {499, 464},
-        {566, 464}, {474, 392}, {156, 159}, {420, 36}, {212, 159}, {175, 239},
+        {316, 152}, {320, 36}, {298, 464}, {365, 464}, {432, 464}, {499, 464},
+        {566, 464}, {474, 392}, {156, 159}, {416, 36}, {212, 159}, {175, 239},
         {53, 304}, {128, 304}, {175, 385}, {53, 449}, {128, 449}, {203, 304},
         {203, 449}, {669, 179}, {765, 179}, {852, 179}, {535, 538}, {58, 588},
         {141, 588}, {225, 588}, {308, 588}, {391, 588}, {475, 588}, {558, 588},
@@ -490,36 +502,39 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
         {716, 588}, {777, 517}, {777, 588}, {852, 553}, {572, 268}, {558, 392},
         {488, 144}, {563, 144},
     }};
-    auto uiPixel = [](int point) { return static_cast<int>(std::lround(point * 1.2)); };
+    auto uiPixel = [](double point) { return static_cast<int>(std::lround(point * 1.2)); };
     auto choose = [&](int index, int item) {
         const auto [x, y] = controls[index];
         const auto label = "dropdown " + std::to_string(index) + " item " + std::to_string(item);
         // 開く入力と選択する入力を同じ描画フレームへ蓄積させない。
-        // 文字・矢印の下の背景色で、表示とヒット判定の更新を待つ。
-        constexpr uint32 open = 0xdcdcdc;
+        // 閉じたLCDの模様ではなく、選択予定行の表示とヒット判定の更新を待つ。
 #ifdef _WIN32
-        constexpr uint32 hovered = RGB(219, 232, 222), selected = RGB(20, 96, 76);
+        constexpr uint32 hovered = RGB(18, 48, 32), selected = RGB(27, 73, 46);
 #else
-        constexpr uint32 hovered = 0xdbe8de, selected = 0x14604c;
+        constexpr uint32 hovered = 0x123020, selected = 0x1b492e;
 #endif
-        parent.click(uiPixel(x), uiPixel(y));
-        waitFor([&] { return parent.pixel(uiPixel(x + 30), uiPixel(y + 5)) == open; },
-                (label + " opened").c_str());
-        assert(handler.sequence.empty());
         // 最下段の4択は画面内へ収まるよう上側に開く。
         const int firstItemY = index == 62 ? y - 112 : index == 44 ? y - 193 : y + 30;
         const int itemY = firstItemY + item * 27;
+        const int probeX = uiPixel(x + 30), probeY = uiPixel(itemY + 3);
+        const auto before = parent.pixel(probeX, probeY);
+        parent.click(uiPixel(x), uiPixel(y));
+        waitFor([&] { return parent.pixel(probeX, probeY) != before; },
+                (label + " opened").c_str());
+        assert(handler.sequence.empty());
         parent.movePointer(uiPixel(x), uiPixel(itemY));
         waitFor([&] {
-            const auto color = parent.pixel(uiPixel(x + 30), uiPixel(itemY + 3));
+            const auto color = parent.pixel(probeX, probeY);
             return color == hovered || color == selected;
         }, (label + " hovered").c_str());
         parent.screenshot(("target/gui-menu-" + std::to_string(index) + ".ppm").c_str());
         parent.click(uiPixel(x), uiPixel(itemY));
         waitFor([&] { return handler.sequence.size() >= 3; }, (label + " edited").c_str());
         assert(handler.sequence == (std::vector<int>{0, 1, 2}));
-        waitFor([&] { return parent.pixel(uiPixel(x + 30), uiPixel(y + 5)) != open; },
-                (label + " closed").c_str());
+        waitFor([&] {
+            const auto color = parent.pixel(probeX, probeY);
+            return color != hovered && color != selected;
+        }, (label + " closed").c_str());
         handler.sequence.clear();
     };
     for (int cycle = 0; cycle < 2; ++cycle) {
@@ -552,13 +567,13 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             audio.numOutputs = 1; audio.outputs = &bus;
             audio.inputParameterChanges = &changes; audio.inputEvents = &events;
 #ifdef _WIN32
-            const uint32 lit = RGB(0, 164, 102), unlit = RGB(224, 230, 224), over = RGB(232, 64, 48);
+            const uint32 lit = RGB(113, 255, 143), unlit = RGB(25, 47, 34), over = RGB(255, 103, 82);
 #else
-            const uint32 lit = 0x00a466, unlit = 0xe0e6e0, over = 0xe84030;
+            const uint32 lit = 0x71ff8f, unlit = 0x192f22, over = 0xff6752;
 #endif
             auto meter = [&](int count) {
                 for (int i = 0; i < 32; ++i) {
-                    if (parent.pixel(uiPixel(628 + i * 8), uiPixel(46)) != (i < count ? lit : unlit)) return false;
+                    if (parent.pixel(uiPixel(631.875 + i * 7.75), uiPixel(43.5)) != (i < count ? lit : unlit)) return false;
                 }
                 return true;
             };
@@ -569,7 +584,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             for (int i = 0; i < 16; ++i) assert(processor->process(audio) == kResultOk);
             waitFor([&] {
                 assert(processor->process(audio) == kResultOk);
-                return parent.pixel(uiPixel(710), uiPixel(26)) == lit && parent.pixel(uiPixel(875), uiPixel(26)) == over;
+                return parent.pixel(uiPixel(710), uiPixel(28.5)) == lit && parent.pixel(uiPixel(873), uiPixel(28.5)) == over;
             }, "peak at +12 dBFS: green below zero, red above");
             parent.screenshot("target/gui-voices.ppm");
             audio.inputEvents = &events;
@@ -601,7 +616,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             waitFor([&] { return meter(3); }, "notes play after reset");
             assert(processor->setProcessing(false) == kResultOk);
             waitFor([&] { return meter(0); }, "voices after stop");
-            waitFor([&] { return parent.pixel(uiPixel(628), uiPixel(26)) == unlit; }, "peak decays to silence");
+            waitFor([&] { return parent.pixel(uiPixel(632), uiPixel(28.5)) == unlit; }, "peak decays to silence");
             assert(component->setActive(false) == kResultOk);
             assert(component->setState(&original) == kResultOk);
         }
@@ -650,7 +665,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
                  {0, false}, {1, false}, {1, true}, {16, false}}}) for (int initial : {0, 1}) {
             assert(controller->setParamNormalized(limiterInfo.id, initial) == kResultOk);
             parent.movePointer(4, 4); pump(); assert(handler.sequence.empty());
-            const auto before = parent.pixel(uiPixel(limiterX + 26), uiPixel(limiterY));
+            const auto before = parent.pixel(uiPixel(limiterX), uiPixel(limiterY - 9));
             parent.movePointer(uiPixel(limiterX), uiPixel(limiterY)); pump();
             parent.knobButton(true); pump();
             if (hold) {
@@ -664,7 +679,7 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence == (std::vector<int>{0, 1, 2}));
             assert(handler.editedId == limiterInfo.id && handler.value == 1 - initial);
             parent.movePointer(4, 4); pump();
-            assert(parent.pixel(uiPixel(limiterX + 26), uiPixel(limiterY)) != before);
+            assert(parent.pixel(uiPixel(limiterX), uiPixel(limiterY - 9)) != before);
             handler.sequence.clear();
         }
         parent.movePointer(uiPixel(limiterX), uiPixel(limiterY)); pump();
@@ -744,30 +759,32 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             assert(handler.sequence[i*3] == 0 && handler.sequence[i*3+1] == 1 && handler.sequence[i*3+2] == 2);
         }
         handler.sequence.clear(); pump();
-        // Offでは枠・見出し・表示中のノブを背景へ50%合成し、選択欄は通常の色を維持する。
+        // Offでは見出し・表示中のノブを背景へ50%合成し、選択欄は通常の色を維持する。
         for (const auto& check : std::array<std::array<int, 3>, 5>{{
-            {9, 10, 266}, {34, 35, 18}, {42, 32, 616}, {43, 46, 616}, {44, 49, 616}}}) {
+            {9, 10, 266}, {34, 35, 18}, {42, 32, 626}, {43, 46, 626}, {44, 49, 626}}}) {
             const auto [choiceIndex, knobIndex, headerX] = check;
             ParameterInfo info; assert(controller->getParameterInfo(choiceIndex, info) == kResultOk);
             assert(controller->setParamNormalized(info.id, 0.0) == kResultOk);
+            const auto [choiceX, choiceY] = controls[choiceIndex];
+            const auto [knobX, knobY] = controls[knobIndex];
+            // エフェクタは種類によって内部配置が異なるため、見出しの2点を照合する。
+            const std::array<std::pair<int, int>, 3> positions {{
+                {headerX, choiceY},
+                {choiceIndex >= 42 ? 634 : knobX, choiceIndex >= 42 ? choiceY : knobY},
+                {choiceX + 40, choiceY - 8}}};
             auto pixels = [&] {
-                const auto [choiceX, choiceY] = controls[choiceIndex];
-                const auto [knobX, knobY] = controls[knobIndex];
-                return std::array<uint32, 3>{
-                    parent.pixel(uiPixel(headerX), uiPixel(choiceY)),
-                    // Offスロットのノブは非表示なので、枠と見出しを照合する。
-                    parent.pixel(uiPixel(choiceIndex >= 42 ? 634 : knobX),
-                                 uiPixel(choiceIndex >= 42 ? choiceY : knobY)),
-                    parent.pixel(uiPixel(choiceX + 40), uiPixel(choiceY - 8))};
+                std::array<uint32, 3> result;
+                for (size_t i = 0; i < positions.size(); ++i)
+                    result[i] = parent.pixel(uiPixel(positions[i].first), uiPixel(positions[i].second));
+                return result;
             };
             parent.movePointer(4, 4); pump();
             const auto off = pixels();
-            assert(off[2] == parent.pixel(uiPixel(controls[0].first + 40), uiPixel(controls[0].second - 8)));
             choose(choiceIndex, 1);
             parent.movePointer(4, 4); pump();
             const auto on = pixels();
-            const auto background = parent.pixel(4, 4);
             for (int sample = 0; sample < 2; ++sample) {
+                const auto background = backgroundPixel(uiPixel(positions[sample].first), uiPixel(positions[sample].second));
                 for (int shift : {0, 8, 16}) {
                     const int expected = (((on[sample] >> shift) & 0xff) + ((background >> shift) & 0xff) + 1) / 2;
                     const int actual = (off[sample] >> shift) & 0xff;
@@ -779,19 +796,51 @@ void checkGui(IComponent* component, IAudioProcessor* processor, IEditController
             parent.movePointer(4, 4); pump();
             assert(pixels() == off);
         }
-        // Offは内部選択欄・ノブ・ラベルを描画せず、旧ノブ位置でも編集を始めない。
+        // Offは薄いMix・区切り線・ロゴを表示し、表示用のMixで保存値を変更しない。
         for (int slot = 0; slot < 3; ++slot) {
+            ParameterInfo kind, mix;
+            assert(controller->getParameterInfo(42 + slot, kind) == kResultOk);
+            assert(controller->getParameterInfo(std::array<int, 3>{33, 47, 50}[slot], mix) == kResultOk);
+            assert(controller->setParamNormalized(mix.id, 0.5) == kResultOk);
+            assert(controller->setParamNormalized(kind.id, 4.0 / 6) == kResultOk);
             parent.movePointer(4, 4); pump();
-            const int y = controls[53 + slot * 3].second;
-            const auto empty = parent.pixel(uiPixel(634), uiPixel(y - 40));
-            for (int x : {634, 656, 688, 720, 752, 784, 816, 848, 870}) {
-                assert(parent.pixel(uiPixel(x), uiPixel(y)) == empty);
-                assert(parent.pixel(uiPixel(x), uiPixel(y + 40)) == empty);
+            const auto [mixX, y] = controls[53 + slot * 3];
+            const std::array<std::pair<int, int>, 2> positions {{{mixX, y}, {816, y}}};
+            std::array<uint32, 2> on;
+            for (size_t i = 0; i < positions.size(); ++i)
+                on[i] = parent.pixel(uiPixel(positions[i].first), uiPixel(positions[i].second));
+            const auto needle = parent.pixel(uiPixel(mixX), uiPixel(y - 10));
+            assert(controller->setParamNormalized(kind.id, 0.0) == kResultOk); pump();
+            assert(controller->getParamNormalized(mix.id) == 0.5);
+            for (size_t i = 0; i < positions.size(); ++i) {
+                const auto [x, sampleY] = positions[i];
+                const auto background = backgroundPixel(uiPixel(x), uiPixel(sampleY));
+                const auto off = parent.pixel(uiPixel(x), uiPixel(sampleY));
+                assert(off != background);
+                for (int shift : {0, 8, 16}) {
+                    const int expected = (((on[i] >> shift) & 0xff) + ((background >> shift) & 0xff) + 1) / 2;
+                    assert(std::abs(static_cast<int>((off >> shift) & 0xff) - expected) <= 2);
+                }
             }
-            assert(parent.pixel(uiPixel(669), uiPixel(y)) == empty);
-            parent.movePointer(uiPixel(720), uiPixel(y)); pump(); parent.knobButton(true); pump();
-            assert(handler.sequence.empty() && parent.cursorVisible());
-            parent.knobButton(false); pump();
+            int logoPixels = 0;
+            for (int x : {656, 672, 688, 704, 720, 736, 752, 768, 784})
+                for (int dy : {-16, -8, 0, 8, 16})
+                    logoPixels += parent.pixel(uiPixel(x), uiPixel(y + dy)) != backgroundPixel(uiPixel(x), uiPixel(y + dy));
+            assert(logoPixels >= 8);
+            // 表示用Mixと非表示の旧コントロールは、押下・移動しても編集を開始しない。
+            for (const auto& [x, pressY] : std::array<std::pair<int, int>, 3>{{{mixX, y}, {720, y}, {765, y - 35}}}) {
+                parent.movePointer(uiPixel(x), uiPixel(pressY)); pump(); parent.knobButton(true); pump();
+                assert(handler.sequence.empty() && parent.cursorVisible());
+                parent.movePointer(uiPixel(x), uiPixel(pressY - 12)); pump();
+                assert(handler.sequence.empty() && parent.cursorVisible());
+                parent.knobButton(false); pump();
+                assert(handler.sequence.empty() && parent.cursorVisible());
+            }
+            assert(controller->setParamNormalized(kind.id, 4.0 / 6) == kResultOk);
+            parent.movePointer(4, 4); pump();
+            assert(controller->getParamNormalized(mix.id) == 0.5);
+            assert(parent.pixel(uiPixel(mixX), uiPixel(y - 10)) == needle);
+            assert(controller->setParamNormalized(kind.id, 0.0) == kResultOk); pump();
         }
         parent.movePointer(4, 4); pump(); parent.screenshot("target/gui-effects-off.ppm");
         // Offのグループを含む全ノブを実マウス入力で操作する。1ドラッグはbegin/value/endの一組。
