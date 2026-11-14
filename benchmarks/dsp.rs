@@ -346,7 +346,7 @@ fn main() {
                 if matches!(mode, "width" | "width-changing" | "pan-changing") {
                     values[20] = 1.0;
                 }
-                synth.set_parameters(values);
+                synth.set_parameters(&values);
                 if mode != "idle" {
                     for i in 0..polyphony {
                         synth.note_on(note(i), 0.0, 1.0);
@@ -381,7 +381,7 @@ fn main() {
                             values[21] = (i % 1000) as f64 / 999.0;
                         }
                         if mode != "render" {
-                            synth.set_parameters(black_box(values));
+                            synth.set_parameters(black_box(&values));
                         }
                         black_box(&mut synth).generate_sample()
                     },
@@ -392,12 +392,12 @@ fn main() {
     let mut synth = Synthesizer::new();
     let mut values = parameters::defaults();
     values[8] = 1.0;
-    synth.set_parameters(values);
+    synth.set_parameters(&values);
     measure("events/note-on/p32", "operation", selection, |i| {
         f64::from(synth.note_on(black_box(note((i % 32) as i32)), 0.0, 1.0))
     });
     measure("parameters/unchanged", "operation", selection, |_| {
-        f64::from(synth.set_parameters(black_box(values)))
+        f64::from(synth.set_parameters(black_box(&values)))
     });
     measure(
         "parameters/resonance-changing",
@@ -405,7 +405,7 @@ fn main() {
         selection,
         |i| {
             values[11] = 0.05 + (i % 256) as f64 / 512.0;
-            f64::from(synth.set_parameters(black_box(values)))
+            f64::from(synth.set_parameters(black_box(&values)))
         },
     );
 }

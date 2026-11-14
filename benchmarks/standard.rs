@@ -389,7 +389,7 @@ impl Playback {
     fn new(scenario: &Scenario, rate: usize) -> Self {
         let mut synth = synth::Synthesizer::new();
         assert!(synth.set_sample_rate(rate as f64));
-        synth.set_parameters(scenario.parameters);
+        synth.set_parameters(&scenario.parameters);
         if scenario.parameter == Some(parameters::PITCH_BEND_INDEX) {
             synth.set_pitch_bend(scenario.automation[0]);
         }
@@ -440,7 +440,7 @@ impl Playback {
                             s.synth.set_pitch_bend(black_box(value));
                         } else {
                             s.parameters[index] = value;
-                            s.synth.set_parameters(black_box(s.parameters));
+                            s.synth.set_parameters(black_box(&s.parameters));
                         }
                     }
                     while let Some(event) = scenario.events.get(s.event) {

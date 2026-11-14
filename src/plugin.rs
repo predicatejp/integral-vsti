@@ -986,7 +986,7 @@ unsafe extern "system" fn process(this: This, data: *mut ProcessData) -> TResult
     // synthの参照・ホストのイベントやバッファのポインターを呼び出し後へ保持しない。
     let synth = unsafe { &mut *plugin.synth.get() };
     let values = plugin.processor_parameters.snapshot();
-    synth.set_parameters(values);
+    synth.set_parameters(&values);
     // SAFETY: 音色設定とProgramのカーソルはこのprocess中だけホストのキューを借用する。
     let mut changes = unsafe { ParameterPoints::all(data, &values, synth.pitch_bend()) };
     let event_active = plugin.event_active.load(Ordering::Relaxed);
@@ -1215,7 +1215,7 @@ fn apply_parameters(
             values[i] = changes[i].value_at(offset);
         }
     }
-    let changed = synth.set_parameters(*values);
+    let changed = synth.set_parameters(values);
     if loaded {
         plugin.processor_parameters.store(*values);
     } else if changed {
@@ -1256,7 +1256,7 @@ mod meter_tests {
             values[21] = parameters::to_normalized(21, 100.0);
             plugin.processor_parameters.store(values);
             let synth = &mut *plugin.synth.get();
-            synth.set_parameters(values);
+            synth.set_parameters(&values);
             synth.note_on(
                 Note {
                     id: 1,
