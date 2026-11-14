@@ -116,9 +116,31 @@ impl Synthesizer {
         }
     }
 
-    /// 設定は有効な枠の入力へ反映し、Polyphony増加時は追加した枠も同期する。
-    pub fn set_parameters(&mut self, values: [f64; parameters::COUNT]) -> bool {
-        let changes = parameters::ParameterChanges::new(&values, &self.state.parameters);
+    /// 設定は呼出し中だけ借用し、有効な枠へ反映する。Polyphony増加時は追加枠も同期する。
+    pub fn set_parameters(&mut self, values: &[f64; parameters::COUNT]) -> bool {
+        let changes = parameters::ParameterChanges::new(values, &self.state.parameters);
+        self.apply_parameters(values, changes)
+    }
+
+    /// キューが更新した項目だけ比較する。候補外の設定は既存値から変えないこと。
+    pub fn set_automated_parameters(
+        &mut self,
+        values: &[f64; parameters::COUNT],
+        candidates: [u64; parameters::COUNT.div_ceil(64)],
+    ) -> bool {
+        let changes = parameters::ParameterChanges::from_candidates(
+            values,
+            &self.state.parameters,
+            candidates,
+        );
+        self.apply_parameters(values, changes)
+    }
+
+    fn apply_parameters(
+        &mut self,
+        values: &[f64; parameters::COUNT],
+        changes: parameters::ParameterChanges,
+    ) -> bool {
         if !changes.any(0, parameters::COUNT) {
             return false;
         }
@@ -131,7 +153,7 @@ impl Synthesizer {
             self.state.master_gain = gain;
             // 全体の音量だけが変わる場合は、各Voiceへの設定配送を省く。
             if !changes.any(0, 13) && !changes.any(14, parameters::COUNT) {
-                self.save_parameters(&values, &changes);
+                self.save_parameters(values, &changes);
                 return true;
             }
         }
@@ -155,11 +177,11 @@ impl Synthesizer {
         }
         self.state.limiter.set_enabled(values[108] >= 0.5);
         if changes.any(31, 34) || changes.any(42, 130) {
-            self.state.effects.set_parameters(&values, &changes);
+            self.state.effects.set_parameters(values, &changes);
         }
         // Voiceへ渡す入力が同じなら、合成後の処理だけを更新して終える。
         if !changes.any(0, 13) && !changes.any(14, 31) && !changes.any(130, parameters::COUNT) {
-            self.save_parameters(&values, &changes);
+            self.save_parameters(values, &changes);
             return true;
         }
         let previous = &self.state.parameters;
@@ -214,7 +236,7 @@ impl Synthesizer {
                 if update {
                     // 初期実値と正規化値の往復で丸めが変わるため、初回は従来と同じ全換算。
                     if *envelope == DEFAULT_ENVELOPE {
-                        *envelope = parameters::envelope(&values, first);
+                        *envelope = parameters::envelope(values, first);
                         continue;
                     }
                     for (i, field) in [
@@ -323,7 +345,7 @@ impl Synthesizer {
                 voice.set_resonance(resonance_q);
             }
         }
-        self.save_parameters(&values, &changes);
+        self.save_parameters(values, &changes);
         true
     }
 
@@ -562,11 +584,49 @@ impl Synthesizer {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn automation_candidates_match_full_parameter_updates() {
+        let mut actual = Synthesizer::new();
+        assert!(actual.set_sample_rate(48000.0));
+        let mut values = parameters::sine_preset();
+        actual.set_parameters(&values);
+        let mut reference = actual.clone();
+        for first in 0..parameters::COUNT {
+            let mut candidates = [0; parameters::COUNT.div_ceil(64)];
+            for index in [
+                first,
+                (first + 63) % parameters::COUNT,
+                (first + 127) % parameters::COUNT,
+            ] {
+                values[index] = (values[index] + 0.25) % 1.0;
+                candidates[index / 64] |= 1 << (index % 64);
+            }
+            assert_eq!(
+                actual.set_automated_parameters(&values, candidates),
+                reference.set_parameters(&values)
+            );
+            assert!(!actual.set_automated_parameters(&values, candidates));
+            if first % 17 == 0 {
+                let note = Note {
+                    id: first as i32,
+                    channel: 0,
+                    pitch: 60 + (first % 12) as i16,
+                };
+                actual.note_on(note, 0.0, 0.8);
+                reference.note_on(note, 0.0, 0.8);
+            }
+            assert_eq!(actual.parameters(), reference.parameters());
+            for _ in 0..8 {
+                assert_eq!(actual.generate_sample(), reference.generate_sample());
+            }
+        }
+    }
+
+    #[test]
     fn numeric_snapshot_preserves_audio_with_mixed_signed_zero_changes() {
         let mut actual = super::Synthesizer::new();
         assert!(actual.set_sample_rate(44100.0));
         let mut values = crate::parameters::sine_preset();
-        actual.set_parameters(values);
+        actual.set_parameters(&values);
         actual.note_on(
             crate::voice::Note {
                 id: 1,
@@ -584,8 +644,8 @@ mod tests {
                 }
             }
             values[13] = crate::parameters::to_normalized(13, [-12.0, -6.0, 0.0][step % 3]);
-            actual.set_parameters(values);
-            reference.set_parameters(values);
+            actual.set_parameters(&values);
+            reference.set_parameters(&values);
             reference.state.parameters = values;
             assert_eq!(actual.parameters(), values);
             let mut a = [[0.0; 2]; 257];
@@ -605,7 +665,7 @@ mod tests {
         let mut synth = Synthesizer::new();
         let mut values = parameters::defaults();
         values[9] = 0.0;
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         synth
     }
 
@@ -619,7 +679,7 @@ mod tests {
         let mut values = parameters::sine_preset();
         values[parameters::PORTAMENTO] = parameters::to_normalized(parameters::PORTAMENTO, 10.0);
         values[parameters::PITCH] = 1.0;
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         synth.note_on(
             Note {
                 id: 1,
@@ -654,7 +714,7 @@ mod tests {
             440.0
         );
         values[8] = parameters::to_normalized(8, 2.0);
-        synth.set_parameters(values); // Poly変更は進行中の移行も終了する。
+        synth.set_parameters(&values); // Poly変更は進行中の移行も終了する。
         assert_eq!(
             synth.state.voices[0].state.oscillator_inputs[0].frequency_hz,
             880.0
@@ -674,7 +734,7 @@ mod tests {
         );
         synth.set_pitch_bend(1.0);
         values[parameters::PITCH] = 0.0;
-        synth.set_parameters(values); // 幅0では受信値によらず元の音高。
+        synth.set_parameters(&values); // 幅0では受信値によらず元の音高。
         assert_eq!(
             synth.state.voices[0].state.oscillator_inputs[0].frequency_hz,
             220.0
@@ -715,7 +775,7 @@ mod tests {
                     values[indices[0]] = parameters::to_normalized(indices[0], kind as f64);
                     values[indices[4]] = 0.0; // 最短音価で再発音後のテンポ依存も照合する。
                 }
-                synth.set_parameters(values);
+                synth.set_parameters(&values);
                 synth.set_tempo(173.0);
                 let mut fresh = synth.clone();
                 for id in 0..3 {
@@ -766,15 +826,15 @@ mod tests {
                 let mut values = parameters::sine_preset();
                 values[5] = parameters::to_normalized(5, 100.0);
                 values[8] = parameters::to_normalized(8, if resized { 2.0 } else { 1.0 });
-                synth.set_parameters(values);
+                synth.set_parameters(&values);
                 synth.set_sample_rate(48000.0);
                 if resized {
                     // 2枠目を停止して外し、再拡大後も未使用のままにする。
                     values[8] = parameters::to_normalized(8, 1.0);
-                    synth.set_parameters(values);
+                    synth.set_parameters(&values);
                     synth.generate_samples(&mut [[0.0; 2]; 8]);
                     values[8] = parameters::to_normalized(8, 2.0);
-                    synth.set_parameters(values);
+                    synth.set_parameters(&values);
                     assert!(synth.note_on(note(1, 0, 60), 0.0, 0.0));
                 } else {
                     synth.stop();
@@ -823,7 +883,7 @@ mod tests {
             }
             let mut serial = Synthesizer::new();
             serial.set_sample_rate(48000.);
-            serial.set_parameters(values);
+            serial.set_parameters(&values);
             // ノイズ・Random位相を含む全ての初期乱数状態を同じにする。
             let mut series = serial.clone();
             let mut heard = false;
@@ -899,7 +959,7 @@ mod tests {
                     if step == 17 {
                         synth.set_sample_rate(96000.);
                     }
-                    synth.set_parameters(values);
+                    synth.set_parameters(&values);
                     for &(on, id, pitch) in events {
                         if on {
                             assert!(synth.note_on(note(id, 0, pitch), 0., 0.8));
@@ -963,7 +1023,7 @@ mod tests {
             if (14..20).contains(&index) || index == 8 {
                 expected[1] = parameters::envelope(&values, 14);
             }
-            synth.set_parameters(values);
+            synth.set_parameters(&values);
             for voice in &synth.state.voices[..synth.state.polyphony] {
                 assert_eq!(voice.envelope_parameters(), expected);
             }
@@ -979,7 +1039,7 @@ mod tests {
         values[8] = parameters::to_normalized(8, 4.0);
         for synth in [&mut delayed, &mut reference] {
             synth.set_sample_rate(48000.0);
-            synth.set_parameters(values);
+            synth.set_parameters(&values);
             for id in 0..4 {
                 assert!(synth.note_on(note(id, 0, 60 + id as i16), 0.0, 0.8));
             }
@@ -988,9 +1048,9 @@ mod tests {
             }
             let mut limited = values;
             limited[8] = 0.0;
-            synth.set_parameters(limited);
+            synth.set_parameters(&limited);
         }
-        reference.set_parameters(values);
+        reference.set_parameters(&values);
         for (i, plain) in [
             (0, 3.),
             (1, 2.),
@@ -1027,11 +1087,11 @@ mod tests {
         ] {
             values[i] = parameters::to_normalized(i, plain);
         }
-        reference.set_parameters(values);
+        reference.set_parameters(&values);
         let mut limited = values;
         limited[8] = 0.0;
-        delayed.set_parameters(limited);
-        delayed.set_parameters(values);
+        delayed.set_parameters(&limited);
+        delayed.set_parameters(&values);
         for id in 0..4 {
             let n = note(id + 20, 0, 48 + id as i16 * 3);
             assert!(delayed.note_on(n, 0.0, 0.7));
@@ -1051,7 +1111,7 @@ mod tests {
         values[8] = parameters::to_normalized(8, 32.0);
         values[6] = 1.0; // ユニゾン7でもVoiceの数は変わらない。
         values[7] = 1.0;
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         assert_eq!(synth.active_voice_count(), 0);
         for id in 0..33 {
             assert!(synth.note_on(note(id, 0, 60), 0.0, 1.0));
@@ -1074,12 +1134,12 @@ mod tests {
             synth.note_on(note(id, 0, 60), 0.0, 1.0);
         }
         values[8] = parameters::to_normalized(8, 2.0);
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         assert_eq!(synth.active_voice_count(), 2);
         synth.stop();
         assert_eq!(synth.active_voice_count(), 0);
         values[8] = 1.0;
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         assert_eq!(synth.active_voice_count(), 0);
         synth.mix_sample();
         assert_eq!(synth.active_voice_count(), 0);
@@ -1108,7 +1168,7 @@ mod tests {
                     values[index] = parameters::to_normalized(index, 12.0);
                 }
                 values[9] = parameters::to_normalized(9, 2.0);
-                synth.set_parameters(values);
+                synth.set_parameters(&values);
                 for id in 0..32 {
                     assert!(synth.note_on(note(id, 0, 127), 0.0, 1.0));
                 }
@@ -1145,7 +1205,7 @@ mod tests {
                             values[7] = parameters::to_normalized(7, detune);
                             values[20] = parameters::to_normalized(20, width * 100.0);
                             values[21] = parameters::to_normalized(21, pan * 100.0);
-                            synth.set_parameters(values);
+                            synth.set_parameters(&values);
                             let count = if detune == 0.0 { 1 } else { unison };
                             let mut expected = [0.0; 2];
                             for (k, phase) in phases.iter_mut().enumerate().take(count) {
@@ -1180,12 +1240,12 @@ mod tests {
             values[12] = parameters::to_normalized(12, 1.0); // 再発音時の位相を揃える。
             values[20] = 0.43;
             values[21] = 0.31;
-            synth.set_parameters(values);
+            synth.set_parameters(&values);
             assert_eq!(synth.mix_sample(), [0.0; 2]);
             // 保存復元と同じ、発音前の設定配送が新しい全枠へ適用される。
             let mut restored = Synthesizer::new();
             restored.set_sample_rate(48000.0);
-            restored.set_parameters(values);
+            restored.set_parameters(&values);
             for id in 0..polyphony {
                 synth.note_on(note(id as i32, 0, 0), 0.0, 1.0);
                 restored.note_on(note(id as i32, 0, 0), 0.0, 1.0);
@@ -1209,10 +1269,10 @@ mod tests {
                     } else {
                         value
                     };
-                    synth.set_parameters(values);
+                    synth.set_parameters(&values);
                     // 設定を配送した後に使用枠を増やす。
                     values[8] = parameters::to_normalized(8, f64::from(count));
-                    synth.set_parameters(values);
+                    synth.set_parameters(&values);
                     let mut reference = Voice::new();
                     reference.set_parameters(
                         parameters::from_normalized(values[0]).unwrap(),
@@ -1292,8 +1352,8 @@ mod tests {
                 if sample == 768 {
                     values[8] = parameters::to_normalized(8, 1.0);
                 }
-                synth.set_parameters(values);
-                reference.set_parameters(values);
+                synth.set_parameters(&values);
+                reference.set_parameters(&values);
                 // Amountの更新でも従来どおりAHDSR全体を通知する基準経路。
                 for voice in &mut reference.state.voices[..reference.state.polyphony] {
                     voice.set_cutoff_envelope(
@@ -1338,7 +1398,7 @@ mod tests {
         values[4] = 1.0;
         values[5] = 0.0;
         values[8] = parameters::to_normalized(8, count as f64);
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         synth.set_sample_rate(48000.0);
         synth
     }
@@ -1350,7 +1410,7 @@ mod tests {
         let mut values = parameters::sine_preset();
         values[34] = 1.0;
         values[36] = parameters::to_normalized(36, 6.0);
-        reference.set_parameters(values);
+        reference.set_parameters(&values);
         reference.note_on(note(1, 0, 60), 0.0, 1.0);
         let mut batched = reference.clone();
         for block in 0..128 {
@@ -1387,12 +1447,12 @@ mod tests {
             values[14] = parameters::to_normalized(14, 0.5);
             values[16] = parameters::to_normalized(16, 1.0);
             values[19] = parameters::to_normalized(19, 1200.0);
-            synth.set_parameters(values);
+            synth.set_parameters(&values);
             let mut references: [Synthesizer; 2] = std::array::from_fn(|_| {
                 let mut single = Synthesizer::new();
                 let mut values = values;
                 values[8] = 0.0;
-                single.set_parameters(values);
+                single.set_parameters(&values);
                 single
             });
             let mut delayed_expected =
@@ -1406,7 +1466,7 @@ mod tests {
                     _ => 0.0,
                 };
                 values[13] = parameters::to_normalized(13, db);
-                synth.set_parameters(values);
+                synth.set_parameters(&values);
                 for (at, slot, id, pitch) in [(0, 0, 1, 57), (3, 1, 2, 81), (32, 0, 3, 69)] {
                     if n == at {
                         synth.note_on(note(id, 0, pitch), 0.0, 1.0);
@@ -1419,7 +1479,7 @@ mod tests {
                 }
                 if n == 64 {
                     values[8] = 0.0;
-                    synth.set_parameters(values);
+                    synth.set_parameters(&values);
                     references[1].stop();
                 }
                 let expected: f64 = references.iter_mut().map(|s| s.mix_sample()[0]).sum();
@@ -1479,12 +1539,12 @@ mod tests {
         values[5] = parameters::to_normalized(5, 10.0);
         values[6] = 1.0;
         values[7] = 0.37;
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         let mut references: [Synthesizer; 3] = std::array::from_fn(|_| {
             let mut single = polyphonic(1);
             let mut settings = values;
             settings[8] = 0.0;
-            single.set_parameters(settings);
+            single.set_parameters(&settings);
             single
         });
         // 発音時刻・音高・ベロシティが異なる3音。4音目は0番を再使用。
@@ -1528,12 +1588,12 @@ mod tests {
         assert_eq!(synth.active_voice_count(), 3);
         let mut values = synth.state.parameters;
         values[8] = parameters::to_normalized(8, 2.0);
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         assert_eq!(synth.state.next_oscillator_id, 1); // 3 % 2
         synth.mix_sample();
         assert_eq!(synth.active_voice_count(), 2);
         values[8] = parameters::to_normalized(8, 4.0);
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         synth.mix_sample();
         assert_eq!(synth.active_voice_count(), 2); // 除外したノートは復活しない。
         synth.note_on(note(4, 0, 60), 0.0, 1.0); // 1番を上書き。
@@ -1542,10 +1602,10 @@ mod tests {
         assert_eq!(synth.active_voice_count(), 3);
         // サンプル処理を挟まず減少→増加→再割り当てしても古い振幅を引き継がない。
         values[8] = 0.0;
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         values[8] = parameters::to_normalized(8, 4.0);
         values[1] = parameters::to_normalized(1, 10.0);
-        synth.set_parameters(values);
+        synth.set_parameters(&values);
         synth.note_on(note(6, 0, 60), 0.0, 1.0);
         synth.note_on(note(7, 0, 60), 0.0, 1.0);
         let phase = 4.0 * 440.0 * 2.0_f64.powf(-9.0 / 12.0) / 48000.0;
@@ -1741,7 +1801,7 @@ mod distortion_tests {
             let mut p = settings();
             p[31] = parameters::to_normalized(31, clipper);
             for synth in [&mut mixed, &mut wet, &mut dry] {
-                synth.set_parameters(p);
+                synth.set_parameters(&p);
                 for id in 0..4 {
                     synth.note_on(
                         Note {
@@ -1756,13 +1816,13 @@ mod distortion_tests {
             }
             let mut bypass = p;
             bypass[42] = 0.0;
-            dry.set_parameters(bypass);
+            dry.set_parameters(&bypass);
             let mut mixes =
                 std::collections::VecDeque::from(vec![0.0; mixed.latency_samples() - 1]);
             for n in 0..500 {
                 // Gainの段差・ランプ、Mixの急変。Mixは遅延前の値を使わない。
                 p[32] = (n % 71) as f64 / 70.0;
-                wet.set_parameters(p);
+                wet.set_parameters(&p);
                 let mix = if n % 17 < 8 {
                     0.0
                 } else {
@@ -1770,7 +1830,7 @@ mod distortion_tests {
                 };
                 let mut m = p;
                 m[33] = mix;
-                mixed.set_parameters(m);
+                mixed.set_parameters(&m);
                 let dry_sample = dry.generate_sample();
                 let wet_sample = wet.generate_sample();
                 let actual = mixed.generate_sample();
@@ -1794,8 +1854,8 @@ mod distortion_tests {
         let mut native = Synthesizer::new();
         let mut p = settings();
         p[42] = 0.0;
-        synth.set_parameters(p);
-        native.set_parameters(p);
+        synth.set_parameters(&p);
+        native.set_parameters(&p);
         let mut expected =
             std::collections::VecDeque::from(vec![[0.0; 2]; synth.latency_samples()]);
         for n in 0..600 {
@@ -1845,7 +1905,7 @@ mod distortion_tests {
             ] {
                 p[index] = parameters::to_normalized(index, value);
             }
-            synth.set_parameters(p);
+            synth.set_parameters(&p);
             let settings = parameters::distortion(&p, 0);
             let mut distortion = Distortion::new();
             let mut eq = Eq::new(44100.0, parameters::eq(&p));
@@ -1863,7 +1923,7 @@ mod distortion_tests {
                 let mut s = Synthesizer::new();
                 let mut p = p;
                 p[8] = 0.0;
-                s.set_parameters(p);
+                s.set_parameters(&p);
                 s
             });
             for (i, s) in references.iter_mut().enumerate() {
@@ -1887,14 +1947,14 @@ mod distortion_tests {
                 }
                 if n == 100 {
                     p[8] = 0.0;
-                    synth.set_parameters(p);
+                    synth.set_parameters(&p);
                     for reference in &mut references[1..] {
                         reference.stop();
                     }
                 }
                 if n == 150 {
                     p[8] = parameters::to_normalized(8, 4.0);
-                    synth.set_parameters(p);
+                    synth.set_parameters(&p);
                     for (i, reference) in references.iter_mut().enumerate() {
                         let note = Note {
                             id: 10 + i as i32,
@@ -1937,7 +1997,7 @@ mod distortion_tests {
             let mut synth = Synthesizer::new();
             synth.set_sample_rate(rate);
             let mut p = settings();
-            synth.set_parameters(p);
+            synth.set_parameters(&p);
             synth.note_on(
                 Note {
                     id: 1,
@@ -1953,7 +2013,7 @@ mod distortion_tests {
                     synth.generate_sample();
                 }
                 p[31] = parameters::to_normalized(31, target);
-                synth.set_parameters(p);
+                synth.set_parameters(&p);
                 for n in 0..66 + delay {
                     let out = synth.generate_sample();
                     assert!(out.into_iter().all(f64::is_finite));
@@ -1971,10 +2031,10 @@ mod distortion_tests {
         let mut reference = Synthesizer::new();
         let mut p = settings();
         p[33] = 0.0;
-        synth.set_parameters(p);
+        synth.set_parameters(&p);
         let mut bypass = p;
         bypass[42] = 0.0;
-        reference.set_parameters(bypass);
+        reference.set_parameters(&bypass);
         for s in [&mut synth, &mut reference] {
             s.note_on(
                 Note {
@@ -1990,7 +2050,7 @@ mod distortion_tests {
         for n in 0..if cfg!(miri) { 1200 } else { 3000 } {
             if n % 300 == 0 {
                 p[31] = ((n / 300) % 2) as f64;
-                synth.set_parameters(p);
+                synth.set_parameters(&p);
             }
             assert_eq!(synth.generate_sample(), reference.generate_sample());
         }

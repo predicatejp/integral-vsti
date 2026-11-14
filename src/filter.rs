@@ -75,28 +75,76 @@ struct SvfCoefficients {
     inverse_denominator: f64,
 }
 
-/// 1段のTPT SVF。フィルタタイプ・多段化・ノートを扱わない。
+/// 1段の台形積分器の履歴。係数cacheは含まない。
 #[derive(Default)]
 #[cfg_attr(test, derive(Clone))]
-pub struct SvfState {
-    /// 台形積分器の履歴。[帯域通過側, 低域通過側]。設定変更時も保持する。
+struct SvfStageState {
+    /// [帯域通過側, 低域通過側]。設定変更時も保持する。
     integrators: [f64; 2],
-    /// 最後に使用した係数。検証済み正レートのbitを非ゼロ整数で保持し、Noneの判別領域を共有する。
+}
+
+/// 係数を受け取り、積分器を更新してlow・band・highを生成する。
+#[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
+struct SvfStage {
+    /// この段の積分器履歴。
+    state: SvfStageState,
+}
+
+/// 同じ段の左右積分器を各2laneにまとめた履歴。
+#[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
+struct StereoSvfStageState {
+    /// [帯域通過側の左右, 低域通過側の左右]。左右間で履歴を混合しない。
+    integrators: [[f64; 2]; 2],
+}
+
+/// 左右の積分器を同じ係数で処理し、3種類のステレオ出力を生成する。
+#[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
+struct StereoSvfStage {
+    /// この段の左右積分器履歴。
+    state: StereoSvfStageState,
+}
+
+/// 同じHz・Q・レートで共用する最後の係数。
+#[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
+struct SvfCoefficientCacheState {
+    /// 検証済み正レートのbitを非ゼロ整数で保持し、Noneの判別領域を共有する。
     coefficients: Option<(FilterParameters, std::num::NonZeroU64, SvfCoefficients)>,
 }
 
-/// TPT SVFの処理。Stateは積分器の履歴と計算済み係数を保持する。
+/// パラメーターとレートを照合して必要な場合だけ係数を再計算する。
+#[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
+struct SvfCoefficientCache {
+    /// 最後の要求と計算済み係数。
+    state: SvfCoefficientCacheState,
+}
+
+/// 単体SVF用の積分器と係数cache。
+#[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
+pub struct SvfState {
+    /// 3出力を生成する1段の積分器。
+    stage: SvfStage,
+    /// 単体APIでも未変更の係数を再計算しない。
+    cache: SvfCoefficientCache,
+}
+
+/// 単体SVFの入力検証、係数準備と積分器処理を担当する。
 #[derive(Default)]
 #[cfg_attr(test, derive(Clone))]
 pub struct Svf {
-    /// この段の積分器の状態。
+    /// 単体処理用の積分器と係数。
     state: SvfState,
 }
 
 impl Svf {
     /// 3出力を生成してから次サンプル用の状態を更新する。確保・ロック・I/Oは行わない。
     /// 不正入力では状態を保持して無音、演算オーバーフローでは状態を消去して無音を返す。
-    #[allow(dead_code)] // SVF単体の入口。多段Filterは係数を共用してprocess_prepared_sampleを呼ぶ。
+    #[allow(dead_code)] // 単体SVFの入口。多段FilterはStageと係数cacheを直接所有する。
     #[inline]
     pub fn process_sample(
         &mut self,
@@ -108,13 +156,20 @@ impl Svf {
             return SvfOutput::default();
         }
         // 厳密に無入力・無履歴のときだけ省略する。微小な通常数の残響は打ち切らない。
-        if sample == 0.0 && self.state.integrators == [0.0; 2] {
+        if sample == 0.0 && self.state.stage.state.integrators == [0.0; 2] {
             return SvfOutput::default();
         }
-        let coefficients = self.prepare_coefficients(parameters, sample_rate);
-        self.process_prepared_sample(sample, coefficients)
+        let coefficients = self
+            .state
+            .cache
+            .prepare_coefficients(parameters, sample_rate);
+        self.state
+            .stage
+            .process_prepared_sample(sample, coefficients)
     }
+}
 
+impl SvfCoefficientCache {
     #[inline]
     fn prepare_coefficients(
         &mut self,
@@ -162,7 +217,9 @@ impl Svf {
         ));
         coefficients
     }
+}
 
+impl SvfStage {
     // 呼び出し側で検証済みの入力・係数を使い、この段の積分器だけを更新する。
     #[inline]
     fn process_prepared_sample(&mut self, sample: f64, coefficients: SvfCoefficients) -> SvfOutput {
@@ -183,21 +240,21 @@ impl Svf {
         self.state.integrators = next;
         SvfOutput { low, band, high }
     }
+}
+
+impl StereoSvfStage {
     /// 左右独立の履歴へ同じ係数を適用し、3種類のステレオ出力を返す。
     #[inline(always)]
-    fn process_stereo_prepared_sample(
+    fn process_prepared_sample(
         &mut self,
-        right: &mut Self,
         samples: [f64; 2],
         coefficients: SvfCoefficients,
     ) -> StereoSvfOutput {
         // SAFETY: 対応先x86_64はSSE2を備える。読み書きは各2要素配列の範囲内。
         unsafe {
             use std::arch::x86_64::*;
-            let left = self.state.integrators;
-            let right_values = right.state.integrators;
-            let s1 = _mm_set_pd(right_values[0], left[0]);
-            let s2 = _mm_set_pd(right_values[1], left[1]);
+            let s1 = _mm_loadu_pd(self.state.integrators[0].as_ptr());
+            let s2 = _mm_loadu_pd(self.state.integrators[1].as_ptr());
             let sample = _mm_loadu_pd(samples.as_ptr());
             let g = _mm_set1_pd(coefficients.g);
             let high = _mm_mul_pd(
@@ -223,8 +280,8 @@ impl Svf {
             );
             let a = _mm_and_pd(a, finite);
             let b = _mm_and_pd(b, finite);
-            _mm_storeu_pd(self.state.integrators.as_mut_ptr(), _mm_unpacklo_pd(a, b));
-            _mm_storeu_pd(right.state.integrators.as_mut_ptr(), _mm_unpackhi_pd(a, b));
+            _mm_storeu_pd(self.state.integrators[0].as_mut_ptr(), a);
+            _mm_storeu_pd(self.state.integrators[1].as_mut_ptr(), b);
             let mut output = StereoSvfOutput {
                 low: [0.0; 2],
                 band: [0.0; 2],
@@ -248,8 +305,10 @@ fn valid_input(sample: f64, parameters: &FilterParameters, sample_rate: f64) -> 
 /// SVFの外側で出力を選択し、必要な段数だけ直列接続するコンポーネント。
 #[cfg_attr(test, derive(Clone))]
 pub struct FilterState {
-    /// [左右][段]のSVF。左右の履歴を独立させ、未使用の段は消去する。
-    stages: [[Svf; 2]; 2],
+    /// 2段のステレオSVF。左右の履歴を独立させ、未使用の段は消去する。
+    stages: [StereoSvfStage; 2],
+    /// 全段・左右で共用する係数cache。
+    cache: SvfCoefficientCache,
 }
 
 /// Filterの処理を担当し、専用のStateを所有するコンポーネント。
@@ -263,15 +322,16 @@ impl Filter {
     pub fn new() -> Self {
         Self {
             state: FilterState {
-                stages: std::array::from_fn(|_| [Svf::default(), Svf::default()]),
+                stages: std::array::from_fn(|_| StereoSvfStage::default()),
+                cache: SvfCoefficientCache::default(),
             },
         }
     }
 
     /// 処理停止・再初期化用。残響を即座に消去する。
     pub fn reset(&mut self) {
-        for stage in self.state.stages.iter_mut().flatten() {
-            stage.state.integrators = [0.0; 2];
+        for stage in &mut self.state.stages {
+            stage.state.integrators = [[0.0; 2]; 2];
         }
     }
 
@@ -284,11 +344,11 @@ impl Filter {
         sample_rate: f64,
     ) -> [f64; 2] {
         if matches!(filter_type, FilterType::None) {
-            // 履歴を進める前には必ず先頭SVFで係数を準備する。
+            // 履歴を進める前には必ず共用cacheで係数を準備する。
             // 初回バイパスで両方を消去すれば、以降のゼロ書込みは不要。
-            if self.state.stages[0][0].state.coefficients.is_some() {
+            if self.state.cache.state.coefficients.is_some() {
                 self.reset();
-                self.state.stages[0][0].state.coefficients = None;
+                self.state.cache.state.coefficients = None;
             }
             return samples;
         }
@@ -299,22 +359,23 @@ impl Filter {
         let count = 1 + (kind & 1);
         let output_index = kind / 2;
         let keep_second = 0_u64.wrapping_sub((count - 1) as u64);
-        for channel in &mut self.state.stages {
-            for value in &mut channel[1].state.integrators {
+        for integrators in &mut self.state.stages[1].state.integrators {
+            for value in integrators {
                 *value = f64::from_bits(value.to_bits() & keep_second);
             }
         }
         if samples == [0.0; 2]
-            && self.state.stages.iter().all(|channel| {
-                channel[..count]
-                    .iter()
-                    .all(|s| s.state.integrators == [0.0; 2])
-            })
+            && self.state.stages[..count]
+                .iter()
+                .all(|s| s.state.integrators == [[0.0; 2]; 2])
         {
             return [0.0; 2];
         }
         // 左右・両段で係数を共用し、積分器の履歴だけ独立させる。
-        let coefficients = self.state.stages[0][0].prepare_coefficients(parameters, sample_rate);
+        let coefficients = self
+            .state
+            .cache
+            .prepare_coefficients(parameters, sample_rate);
         match output_index {
             0 => self.process_selected_sample::<0>(samples, coefficients, count),
             1 => self.process_selected_sample::<1>(samples, coefficients, count),
@@ -330,13 +391,8 @@ impl Filter {
         count: usize,
     ) -> [f64; 2] {
         let mut output = samples;
-        let (left, right) = self.state.stages.split_at_mut(1);
-        for stage in 0..count {
-            let result = left[0][stage].process_stereo_prepared_sample(
-                &mut right[0][stage],
-                output,
-                coefficients,
-            );
+        for stage in &mut self.state.stages[..count] {
+            let result = stage.process_prepared_sample(output, coefficients);
             output = [result.low, result.high, result.band][OUTPUT];
         }
         output
@@ -465,14 +521,14 @@ mod tests {
     fn silence_keeps_tails_and_clears_unused_stages() {
         let mut filter = Filter::new();
         // 第1段が無音でも、第2段に残った信号は処理する。
-        filter.state.stages[0][1].state.integrators = [1e-100, 2e-100];
+        filter.state.stages[1].state.integrators = [[1e-100, 0.0], [2e-100, 0.0]];
         assert_ne!(
             filter.process_sample([0.0; 2], FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0)[0],
             0.0
         );
-        assert_ne!(filter.state.stages[0][1].state.integrators, [0.0; 2]);
+        assert_ne!(filter.state.stages[1].state.integrators, [[0.0; 2]; 2]);
         filter.process_sample([0.0; 2], FilterType::LowPass1, &TEST_PARAMETERS, 48_000.0);
-        assert_eq!(filter.state.stages[0][1].state.integrators, [0.0; 2]);
+        assert_eq!(filter.state.stages[1].state.integrators, [[0.0; 2]; 2]);
         assert_eq!(
             filter.process_sample([0.0; 2], FilterType::LowPass2, &TEST_PARAMETERS, 48_000.0)[0],
             0.0
@@ -553,10 +609,10 @@ mod tests {
             state.process_sample([0.0; 2], filter_type, &parameters, 48_000.0)[0],
             0.0
         );
-        assert_ne!(state.state.stages[0][1].state.integrators, [0.0; 2]);
+        assert_ne!(state.state.stages[1].state.integrators, [[0.0; 2]; 2]);
         filter_type = FilterType::BandPass1;
         state.process_sample([0.0; 2], filter_type, &parameters, 48_000.0);
-        assert_eq!(state.state.stages[0][1].state.integrators, [0.0; 2]);
+        assert_eq!(state.state.stages[1].state.integrators, [[0.0; 2]; 2]);
         state.reset();
         assert_eq!(
             state.process_sample([0.0; 2], filter_type, &parameters, 48_000.0)[0],
@@ -637,13 +693,13 @@ mod tests {
     fn invalid_values_do_not_poison_state() {
         let mut state = Svf::default();
         state.process_sample(1.0, &TEST_PARAMETERS, 48_000.0);
-        let previous = state.state.integrators;
+        let previous = state.state.stage.state.integrators;
         let silent = |output: SvfOutput| {
             assert_eq!([output.low, output.band, output.high], [0.0; 3]);
         };
         for rate in [1.0, 22_050.0, 32_000.0, MIN_SAMPLE_RATE.next_down()] {
             silent(state.process_sample(1.0, &TEST_PARAMETERS, rate));
-            assert_eq!(state.state.integrators, previous);
+            assert_eq!(state.state.stage.state.integrators, previous);
         }
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0] {
             silent(state.process_sample(1.0, &TEST_PARAMETERS, bad));
@@ -655,7 +711,7 @@ mod tests {
                 },
                 48_000.0,
             ));
-            assert_eq!(state.state.integrators, previous);
+            assert_eq!(state.state.stage.state.integrators, previous);
         }
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             silent(state.process_sample(bad, &TEST_PARAMETERS, 48_000.0));
@@ -667,7 +723,7 @@ mod tests {
                 },
                 48_000.0,
             ));
-            assert_eq!(state.state.integrators, previous);
+            assert_eq!(state.state.stage.state.integrators, previous);
         }
         for q in [0.499, 10.1] {
             assert!(
@@ -689,7 +745,7 @@ mod tests {
             );
         }
         silent(state.process_sample(f64::MAX, &TEST_PARAMETERS, 48_000.0));
-        assert_eq!(state.state.integrators, [0.0; 2]);
+        assert_eq!(state.state.stage.state.integrators, [0.0; 2]);
         assert!(
             state
                 .process_sample(1.0, &TEST_PARAMETERS, 48_000.0)

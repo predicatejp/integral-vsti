@@ -1668,7 +1668,7 @@ int wmain(int argc, wchar_t** argv) {
     const auto entry = reinterpret_cast<bool (PLUGIN_API*)()>(GetProcAddress(module, "InitDll"));
     const auto exit = reinterpret_cast<bool (PLUGIN_API*)()>(GetProcAddress(module, "ExitDll"));
     const auto getFactory = reinterpret_cast<IPluginFactory* (PLUGIN_API*)()>(GetProcAddress(module, "GetPluginFactory"));
-    assert(entry && exit && getFactory && entry());
+    assert(entry && exit && getFactory);
     const std::wstring wideVersion(argv[2]);
     const std::string expectedVersion(wideVersion.begin(), wideVersion.end());
 #else
@@ -1679,9 +1679,27 @@ int main(int argc, char** argv) {
     const auto entry = reinterpret_cast<bool (*)(void*)>(dlsym(module, "ModuleEntry"));
     const auto exit = reinterpret_cast<bool (*)()>(dlsym(module, "ModuleExit"));
     const auto getFactory = reinterpret_cast<IPluginFactory* (*)()>(dlsym(module, "GetPluginFactory"));
-    assert(entry && exit && getFactory && entry(module));
+    assert(entry && exit && getFactory);
     const std::string expectedVersion(argv[2]);
 #endif
+    const bool expectUnsupported = expectedVersion == "--unsupported-cpu";
+    if (expectUnsupported) assert(getFactory() == nullptr);
+#ifdef _WIN32
+    const bool started = entry();
+#else
+    const bool started = entry(module);
+#endif
+    if (expectUnsupported) {
+        assert(!started && getFactory() == nullptr && exit());
+#ifdef _WIN32
+        assert(FreeLibrary(module));
+#else
+        assert(dlclose(module) == 0);
+#endif
+        std::cout << "Unsupported CPU rejected before factory creation\n";
+        return 0;
+    }
+    assert(started);
     auto* factory = getFactory();
     auto* factory2 = query<IPluginFactory2>(factory, IPluginFactory2_iid);
     auto* factoryIdentity = query<FUnknown>(factory2, FUnknown_iid);

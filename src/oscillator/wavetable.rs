@@ -8,10 +8,15 @@ use super::Waveform;
 #[path = "wavetable_data.rs"]
 mod data;
 
-static COEFFICIENTS: &[u8] = include_bytes!("wavetable.bin");
+// 32byteセルを同じ境界に配置し、ベクトル読出しのcacheline跨ぎを避ける。
+#[repr(align(32))]
+struct AlignedCoefficients([u8; include_bytes!("wavetable.bin").len()]);
+static ALIGNED_COEFFICIENTS: AlignedCoefficients =
+    AlignedCoefficients(*include_bytes!("wavetable.bin"));
+static COEFFICIENTS: &[u8] = &ALIGNED_COEFFICIENTS.0;
 
 struct Table {
-    /// 各区間4個のlittle-endian f32係数を格納した位置（バイト）。
+    /// 各区間4個のlittle-endian f64係数を格納した位置（バイト）。
     offset: usize,
     /// 対称性で省略する前の、1周期の区間数。
     length: f64,
@@ -27,10 +32,10 @@ impl Table {
         // 生成済みテーブルのlengthは最大131072なのでpositionは有限の[0,65536]。
         let index = unsafe { position.to_int_unchecked::<i32>() };
         let t = position - f64::from(index);
-        let at = self.offset + index as u32 as usize * 16;
-        let bytes: &[u8; 16] = COEFFICIENTS[at..at + 16].try_into().unwrap();
-        let coefficient = |i| f64::from(f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()));
-        coefficient(0) + t * (coefficient(4) + t * (coefficient(8) + t * coefficient(12)))
+        let at = self.offset + index as u32 as usize * 32;
+        let bytes: &[u8; 32] = COEFFICIENTS[at..at + 32].try_into().unwrap();
+        let coefficient = |i| f64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
+        coefficient(0) + t * (coefficient(8) + t * (coefficient(16) + t * coefficient(24)))
     }
 }
 
@@ -42,25 +47,25 @@ fn read_pair_sample(
     phase: std::arch::x86_64::__m128d,
 ) -> std::arch::x86_64::__m128d {
     use std::arch::x86_64::*;
-    // SAFETY: x86_64必須のSSE2だけを使う。位相の折返しと生成済みlengthから
-    // positionは有限の[0,65536]。各読出しは範囲検査済みの16byteセル内。
+    // SAFETY: 製品必須のAVX2を使う。位相の折返しと生成済みlengthから
+    // positionは有限の[0,65536]。各読出しは範囲検査済みの32byteセル内。
     unsafe {
         let position = _mm_mul_pd(phase, _mm_set_pd(b.length, a.length));
         let indexes = _mm_cvttpd_epi32(position);
         let i = _mm_cvtsi128_si32(indexes) as u32 as usize;
         let j = _mm_cvtsi128_si32(_mm_shuffle_epi32::<0x55>(indexes)) as u32 as usize;
-        let at_a = a.offset + i * 16;
-        let at_b = b.offset + j * 16;
-        let bytes_a = &COEFFICIENTS[at_a..at_a + 16];
-        let bytes_b = &COEFFICIENTS[at_b..at_b + 16];
-        let a = _mm_loadu_ps(bytes_a.as_ptr().cast::<f32>());
-        let b = _mm_loadu_ps(bytes_b.as_ptr().cast::<f32>());
-        let lo = _mm_unpacklo_ps(a, b);
-        let hi = _mm_unpackhi_ps(a, b);
-        let c0 = _mm_cvtps_pd(lo);
-        let c1 = _mm_cvtps_pd(_mm_movehl_ps(lo, lo));
-        let c2 = _mm_cvtps_pd(hi);
-        let c3 = _mm_cvtps_pd(_mm_movehl_ps(hi, hi));
+        let at_a = a.offset + i * 32;
+        let at_b = b.offset + j * 32;
+        let bytes_a = &COEFFICIENTS[at_a..at_a + 32];
+        let bytes_b = &COEFFICIENTS[at_b..at_b + 32];
+        let a = _mm256_loadu_pd(bytes_a.as_ptr().cast::<f64>());
+        let b = _mm256_loadu_pd(bytes_b.as_ptr().cast::<f64>());
+        let lo = _mm256_unpacklo_pd(a, b);
+        let hi = _mm256_unpackhi_pd(a, b);
+        let c0 = _mm256_castpd256_pd128(lo);
+        let c1 = _mm256_castpd256_pd128(hi);
+        let c2 = _mm256_extractf128_pd::<1>(lo);
+        let c3 = _mm256_extractf128_pd::<1>(hi);
         let t = _mm_sub_pd(position, _mm_cvtepi32_pd(indexes));
         _mm_add_pd(
             c0,
@@ -239,6 +244,7 @@ mod tests {
 
     #[test]
     fn generated_table_positions_fit_fast_integer_conversion() {
+        assert_eq!(COEFFICIENTS.as_ptr() as usize % 32, 0);
         for wave in [Waveform::Sawtooth, Waveform::Square, Waveform::Triangle] {
             let end = if wave == Waveform::Sawtooth {
                 0.5

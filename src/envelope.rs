@@ -240,6 +240,7 @@ impl Envelope {
     }
 
     /// 設定済み入力を使って次サンプルへ進める。
+    #[cfg_attr(not(windows), inline(always))]
     pub fn update_sample(&mut self) {
         if self.state.active && self.state.input.is_some() {
             self.state.elapsed_samples = self.state.elapsed_samples.saturating_add(1);

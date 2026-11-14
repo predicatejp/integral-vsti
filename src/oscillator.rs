@@ -76,7 +76,8 @@ fn detune_ratio(cents: f64) -> f64 {
 /// 1/4周期1024区間と対称性による正弦波。入力位相は[0, 1)。実効値補正は行わない。
 fn sine_sample(phase: f64) -> f64 {
     let position = phase * 4.0;
-    let quadrant = position as u32;
+    // SAFETY: 検証済みの保持位相は有限の[0,1]で、positionは[0,4]。
+    let quadrant = unsafe { position.to_int_unchecked::<i32>() };
     let fraction = position - f64::from(quadrant);
     // 偶数象限はfraction、奇数象限は1-fractionへ折り返す。
     let folded = (f64::from(quadrant & 1) - fraction).abs();
@@ -502,6 +503,12 @@ impl Oscillator {
     fn update_sample<const SINGLE: bool>(&mut self) {
         // generate_prepared_sampleが発音中であることを確認してから呼ぶ。
         let count = if SINGLE { 1 } else { self.state.rendered_count };
+        // 1発振器では不要なlaneとmaskを構築せず、同じ式を直接評価する。
+        if count == 1 {
+            let next = self.state.phases[0] + self.state.phase_increments[0];
+            self.state.phases[0] = next - f64::from((next >= 1.0) as u8);
+            return;
+        }
         for (phase, increment) in self.state.phases[..count]
             .iter_mut()
             .zip(&self.state.phase_increments)
@@ -1351,7 +1358,7 @@ mod tests {
         assert_eq!(detune_ratio(0.0), 1.0);
         for edge in [0.0_f64, 0.25, 0.5, 0.75, 1.0] {
             for phase in [edge.next_down(), edge, edge.next_up()] {
-                if (0.0..1.0).contains(&phase) {
+                if (0.0..=1.0).contains(&phase) {
                     assert!(
                         (sine_sample(phase) - (std::f64::consts::TAU * phase).sin()).abs() < 1e-14
                     );

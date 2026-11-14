@@ -36,7 +36,7 @@ def generate():
             a, b, c, d = padded[:-3], padded[1:-2], padded[2:-1], padded[3:]
             coefficients = np.column_stack((
                 b, (-2*a - 3*b + 6*c - d)/6, (a - 2*b + c)/2, (-a + 3*b - 3*c + d)/6,
-            )).astype("<f4")
+            )).astype("<f4").astype("<f8")
             offset = len(data)
             data.extend(coefficients.tobytes())
             rows.append(f"    Table {{ offset: {offset}, length: {length}.0, "

@@ -6,7 +6,8 @@
 ## 標準性能回帰スイート
 
 `standard.rs`は現在の音源構成を対象とする41ケース（固定設定25・連続操作16）です。発振器・音量／カットオフAHDSR・各Voiceのフィルタ、Voice合成後の3エフェクトスロット・EQ・Limiter・Masterを通して測定します。全パラメーターを明示し、製品の初期値変更から独立させています。単体エフェクトは先頭スロット、連結ケースは3スロットをすべて使います。
-変更前・変更後のGit worktreeを指定し、同一のハーネス・コンパイラー・オプションでそれぞれの`src/`のコピーをビルドします。
+変更前・変更後のGit worktreeを指定し、同一のハーネス・コンパイラー・最適化オプションでそれぞれの`src/`のコピーをビルドします。
+設定配列を値渡しする旧Rust APIには`owned_parameter_api`のcfgで呼出しを適応します。設定値・変更時刻は共通とし、現行APIには製品と同じ変更候補を渡します。
 基準値JSONを後日の測定と比較する方式は使わず、同じ実験の同じブロック内で変更前後を対応付けます。
 固定設定のケースはノート境界で区切って`Synthesizer::generate_samples`を呼び、オートメーション中は各サンプルの設定を適用して`generate_sample`を呼びます。
 Pitch Bendは`set_pitch_bend`を使い、テンポは各音声ブロックで120 BPMを通知します。
@@ -82,14 +83,14 @@ burn-inの10msは実時間の下限で、上限ではありません。最低1�
 
 ### 保存・検証
 
-JSONにはソースのコミット・変更有無・ソースとバイナリのハッシュ、共通ハーネスのハッシュ、Python／SciPy／NumPy／Rust・OS・CPU、
+JSONにはソースのコミット・変更有無・ソースとバイナリのハッシュ、共通ハーネスのハッシュ、各側のcfgと実コンパイル引数、Python／SciPy／NumPy／Rust・OS・CPU、
 CPU affinity、seed、全実行の順序・開始終了時刻・burn-in実時間／周回数・本測定の実時間（`measurement_ns`）、ブロックごとの測定値、音声ハッシュ・ピーク・RMS、全解析結果を保存します。
 同じ実装・ケースの反復出力は一致を要求し、変更前後の音声一致は`audio_same`で別に記録します。
 ペア不足・重複・不正値は検定前に拒否します。旧方式の独立した測定JSONを対応ペアとして再利用しません。
 回帰テストは次のコマンドで実行します。Rust側ではケース設定、レガート／残響のイベント列、値保持と補間、分割生成の時刻継続を検査します。Python側では無作為化・対応付け・統計解析・burn-inを検査します。
 
 ```sh
-rustc --edition=2024 -D warnings -C opt-level=2 --test benchmarks/standard.rs -o target/standard-tests
+rustc --edition=2024 -D warnings -C opt-level=2 -C target-feature=+avx2,+fma --test benchmarks/standard.rs -o target/standard-tests
 target/standard-tests suite_tests:: --test-threads=1
 target/bench-venv/bin/python tests/bench-standard.py
 ```
@@ -174,7 +175,7 @@ Linux x86_64での実行例（Rust 1.95以上）:
 
 ```sh
 mkdir -p target
-rustc --edition=2024 -D warnings -C opt-level=3 -C panic=abort -C codegen-units=16 benchmarks/dsp.rs -o target/bench-dsp
+rustc --edition=2024 -D warnings -C opt-level=3 -C panic=abort -C codegen-units=16 -C target-feature=+avx2,+fma benchmarks/dsp.rs -o target/bench-dsp
 taskset -c 0 target/bench-dsp 48000 > target/dsp-48000.csv
 taskset -c 0 target/bench-dsp 96000 > target/dsp-96000.csv
 taskset -c 0 target/bench-dsp 48000 '' --flush-subnormals > target/dsp-48000-ftz.csv

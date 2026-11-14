@@ -15,6 +15,7 @@ Integralは、3基のオシレータと最大32音のポリフォニーを備え
 | 項目 | 対応 |
 | --- | --- |
 | OS | Windows x86_64、Linux x86_64（GNU） |
+| CPU | AVX2・FMA3対応（OSによるAVX状態の保存・復元も必要） |
 | プラグイン形式 | VST3 Instrument / Synth |
 | 音声出力 | ステレオ、float32 / float64 |
 | サンプルレート | 44.1 kHz以上 |
