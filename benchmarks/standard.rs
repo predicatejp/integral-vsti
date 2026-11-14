@@ -389,6 +389,10 @@ impl Playback {
     fn new(scenario: &Scenario, rate: usize) -> Self {
         let mut synth = synth::Synthesizer::new();
         assert!(synth.set_sample_rate(rate as f64));
+        // 比較対象の旧Rust APIだけ型を適応する。音色・変更点は共通。
+        #[cfg(owned_parameter_api)]
+        synth.set_parameters(scenario.parameters);
+        #[cfg(not(owned_parameter_api))]
         synth.set_parameters(&scenario.parameters);
         if scenario.parameter == Some(parameters::PITCH_BEND_INDEX) {
             synth.set_pitch_bend(scenario.automation[0]);
@@ -440,10 +444,15 @@ impl Playback {
                             s.synth.set_pitch_bend(black_box(value));
                         } else {
                             s.parameters[index] = value;
-                            let mut candidates = [0; parameters::COUNT.div_ceil(64)];
-                            candidates[index / 64] = 1 << (index % 64);
-                            s.synth
-                                .set_automated_parameters(black_box(&s.parameters), candidates);
+                            #[cfg(owned_parameter_api)]
+                            s.synth.set_parameters(black_box(s.parameters));
+                            #[cfg(not(owned_parameter_api))]
+                            {
+                                let mut candidates = [0; parameters::COUNT.div_ceil(64)];
+                                candidates[index / 64] = 1 << (index % 64);
+                                s.synth
+                                    .set_automated_parameters(black_box(&s.parameters), candidates);
+                            }
                         }
                     }
                     while let Some(event) = scenario.events.get(s.event) {

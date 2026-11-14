@@ -51,8 +51,14 @@ def build(tree, destination, harness):
                 "dirty": bool(capture("git", "status", "--porcelain", "--", "src", cwd=tree)),
                 "source_sha256": digest.hexdigest()}
     binary = destination / ("standard.exe" if os.name == "nt" else "standard")
-    subprocess.run(["rustc", *FLAGS, "benchmarks/standard.rs", "-o", str(binary)],
-                   cwd=destination, check=True)
+    # 同じハーネスを旧Rust APIへ接続するため、呼出し型だけを適応する。
+    owned = "pub fn set_parameters(&mut self, values: [f64; parameters::COUNT])" in (
+        destination / "src/synth.rs").read_text()
+    cfg = ["owned_parameter_api"] if owned else []
+    cfg_flags = [arg for name in cfg for arg in ("--cfg", name)]
+    command = ["rustc", *FLAGS, *cfg_flags, "benchmarks/standard.rs", "-o", str(binary)]
+    subprocess.run(command, cwd=destination, check=True)
+    metadata.update(cfg=cfg, command=command)
     metadata["binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
     return binary, metadata
 
