@@ -125,6 +125,10 @@ impl Delay {
         }
     }
 
+    pub fn set_feedback(&mut self, feedback: f64) {
+        self.state.parameters.feedback = feedback;
+    }
+
     /// 有効フラグを確認したホストBPMを受け取る。欠測・不正値は保持する。
     pub fn set_tempo(&mut self, tempo: f64) {
         if tempo.is_finite() && tempo > 0.0 && tempo != self.state.tempo {
@@ -156,8 +160,10 @@ impl Delay {
     }
 
     fn read_sample(&self, delay: f64) -> [f64; 2] {
-        let whole = delay as usize;
-        let frac = delay - whole as f64;
+        // prepareで履歴を2^22 frames以下に制限済み。u64相当のusizeとの変換を避ける。
+        let whole = delay as u32;
+        let frac = delay - f64::from(whole);
+        let whole = whole as usize;
         let mask = self.state.buffer.len() - 1;
         let index = self.state.write.wrapping_sub(whole) & mask;
         let a = if whole <= self.state.valid {
@@ -237,6 +243,34 @@ mod tests {
                     assert!((actual[0] - weight).abs() < 1e-10);
                     assert!((actual[1] + 0.25 * weight).abs() < 1e-10);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn feedback_update_preserves_time_fades_and_reset_history() {
+        for rate in [44100.0, 48000.0, 96000.0] {
+            let mut full = make(rate, 0, 0.5, 0.5, 120.0);
+            let mut direct = full.clone();
+            for n in 0..24000 {
+                if n % 193 == 0 {
+                    let feedback = (n % 101) as f64 * 0.01;
+                    full.set_parameters(DelayParameters {
+                        feedback,
+                        ..full.state.parameters
+                    });
+                    direct.set_feedback(feedback);
+                }
+                if n == 8000 {
+                    full.set_tempo(137.0);
+                    direct.set_tempo(137.0);
+                }
+                if n == 16000 {
+                    full.reset();
+                    direct.reset();
+                }
+                let input = [(n as f64 * 0.13).sin(), (n as f64 * 0.37).cos()];
+                assert_eq!(full.process_sample(input), direct.process_sample(input));
             }
         }
     }

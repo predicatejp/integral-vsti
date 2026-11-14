@@ -110,14 +110,16 @@ impl Table {
         // Each table includes its endpoint cell.
         let i = unsafe { x.to_int_unchecked::<i32>() };
         (
-            i as usize,
+            i as u32 as usize,
             x - f64::from(i),
             if FOLDED { 1.0_f64.copysign(phase) } else { 1.0 },
         )
     }
     #[inline]
     fn coefficients(self, i: usize) -> [f64; 6] {
-        read_coefficients(SECOND, self.offset + 6 * i)
+        let at = (self.offset + 6 * i) * 8;
+        let bytes = &SECOND[at..at + 48];
+        std::array::from_fn(|k| f64::from_le_bytes(bytes[k * 8..k * 8 + 8].try_into().unwrap()))
     }
     fn p1<const FOLDED: bool>(self, q: f64) -> f64 {
         let (i, t, _) = self.loc::<FOLDED>(q);
@@ -183,19 +185,31 @@ impl Table {
     }
 }
 
-#[inline]
-fn read_coefficients<const N: usize>(data: &[u8], offset: usize) -> [f64; N] {
-    std::array::from_fn(|i| {
-        let at = (offset + i) * 8;
-        f64::from_le_bytes(data[at..at + 8].try_into().unwrap())
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::oscillator::Waveform;
     use std::f64::consts::TAU;
+
+    #[test]
+    fn all_primitive_tables_include_the_endpoint_cell() {
+        for table in tables::SINE
+            .iter()
+            .chain(&tables::TRIANGLE)
+            .chain(&tables::SQUARE)
+            .chain(&tables::SAW)
+        {
+            let cells = if table.n == 4096. {
+                table.n
+            } else {
+                table.n * 0.5
+            } as usize;
+            assert!((table.offset + (cells + 1) * 6) * 8 <= SECOND.len());
+            for i in [0, cells / 2, cells] {
+                assert!(table.coefficients(i).iter().all(|value| value.is_finite()));
+            }
+        }
+    }
 
     #[test]
     fn sine_divided_differences_match_analytic_primitives() {

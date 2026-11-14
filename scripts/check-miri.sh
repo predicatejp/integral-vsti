@@ -15,7 +15,10 @@ mapfile -t cases < <(printf '%s\n' "$listing" | sed -n -E \
 (( ${#cases[@]} > 0 ))
 cargo +"$CI_NIGHTLY" miri test --locked --lib -- --exact "${cases[@]}" \
   oscillator::wavetable::tests::generated_table_positions_fit_fast_integer_conversion \
+  oscillator::wavetable::tests::paired_unison_matches_scalar_cells_and_crossfades \
+  oscillator::adaa::tests::all_primitive_tables_include_the_endpoint_cell \
   oscillator::adaa::tests::folded_lookup_covers_valid_phase_endpoints \
-  oscillator::tests::phase_modulation_wraps_without_changing_stored_phase \
+  oscillator::tests::single_voice_path_preserves_samples_and_state_at_changes \
+  oscillator::tests::disabled_modulation_reads_held_phase_without_changing_it \
   oscillator::tests::invalid_inputs_preserve_state_and_never_emit_nonfinite_samples \
   filter::tests::stereo_channels_share_coefficients_but_not_history

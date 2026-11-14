@@ -133,18 +133,24 @@ void checkPrograms(IPluginFactory* factory, const TUID cid, int32 precision) {
     StateStream unchanged; assert(component->getState(&unchanged) == kResultOk);
     assert(unchanged.bytes[8] == 2); // Square
     // Programの切替後はプリセット値から次のVolume点まで補間する。
-    Points phase, volume;
+    Points phase, volume, range, bend;
     phase.id = 0x50484153; phase.values = {{0, .5}}; // Zero
     volume.id = 0x4d564f4c; volume.values = {{8, 480.0/720}}; // -12 dB
     wave.values = {{0, 0.0}}; program.values = {{4, 0.0}};
-    changes.queues = {&program, &wave, &phase, &volume};
-    data.numSamples = 9; events.values = {note(true, 0, 3)};
+    range.id = 0x50495443; range.values = {{0, 1.0}, {4, 1.0}}; // 1200 cent
+    bend.id = 0x42454e44; bend.values = {{0, 1.0}, {4, .5}, {8, 1.0}};
+    changes.queues = {&program, &wave, &phase, &volume, &range, &bend};
+    // ProgramとPitchの同位置・別位置を通し、Note境界でsnapshotを取り直す。
+    data.numSamples = 9; events.values = {note(true, 0, 3), note(true, 6, 4)};
     assert(processor->process(data) == kResultOk);
+    double oscillatorPhase = 0;
     for (int i = 0; i < 9; ++i) {
         const auto db = i < 4 ? -12.0 * (i + 1) / 9 : -12.0 * (i - 4) / 4;
         const auto gain = std::pow(10.0, db / 20);
-        const auto expected = .5 * std::sqrt(2.0) * std::sin(2 * std::acos(-1.0) * i * 440 / 48000.0);
+        const auto expected = .5 * std::sqrt(2.0) * std::sin(2 * std::acos(-1.0) * oscillatorPhase);
         assert(std::abs(left[i] - reference.next(expected) * gain) < 1e-6 && left[i] == right[i]);
+        const auto pitch = i <= 4 ? 1.0 - i / 8.0 : .5 + (i - 4) / 8.0;
+        oscillatorPhase += 440.0 * std::exp2(2.0 * pitch - 1.0) / 48000.0;
     }
     reference.scaleHistory(std::pow(10.0, -12.0 / 20));
     changes.queues = {&wave, &program};

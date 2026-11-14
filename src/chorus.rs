@@ -120,6 +120,14 @@ impl Chorus {
         }
     }
 
+    pub fn set_depth_ms(&mut self, depth_ms: f64) {
+        self.state.parameters.depth_ms = depth_ms;
+        if self.state.sample_rate != 0.0 {
+            self.state.delay[1] =
+                (depth_ms * self.state.sample_rate * 0.001).min(self.state.delay[0] - 1.0);
+        }
+    }
+
     fn update_delay(&mut self) {
         let p = self.state.parameters;
         let center = p.time_ms * self.state.sample_rate * 0.001;
@@ -163,8 +171,10 @@ impl Chorus {
         let mut output = input;
         for ch in 0..2 {
             let delay = (state.delay[0] + state.delay[1] * state.sine[ch]).max(1.0);
-            let whole = delay as usize;
-            let fraction = delay - whole as f64;
+            // 準備時の上限は2^20 sample。u64相当のusizeとの浮動小数点変換を避ける。
+            let whole = delay as u32;
+            let fraction = delay - f64::from(whole);
+            let whole = whole as usize;
             let a = if whole < state.valid {
                 state.buffer[state.write.wrapping_sub(whole) & mask][ch]
             } else {
@@ -199,6 +209,30 @@ mod tests {
             detune: 0.0,
             feedback: 0.0,
             mix: 0.5,
+        }
+    }
+
+    #[test]
+    fn depth_update_matches_full_settings_with_live_history() {
+        let mut p = settings();
+        let mut full = Chorus::new(p);
+        let mut depth = full.clone();
+        depth.set_depth_ms(3.0);
+        p.depth_ms = 3.0;
+        full.set_parameters(p);
+        assert_eq!(depth.state.parameters, full.state.parameters);
+        for rate in [44100.0, 48000.0, 96000.0] {
+            assert!(full.prepare(rate));
+            assert!(depth.prepare(rate));
+            for n in 0..10000 {
+                if n % 37 == 0 {
+                    p.depth_ms = (n % 101) as f64 * 0.1;
+                    full.set_parameters(p);
+                    depth.set_depth_ms(p.depth_ms);
+                }
+                let input = [(n as f64 * 0.13).sin(), (n as f64 * 0.37).cos()];
+                assert_eq!(full.process_sample(input), depth.process_sample(input));
+            }
         }
     }
 

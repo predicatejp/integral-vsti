@@ -54,7 +54,7 @@ pub const DELAY_BEATS: [&str; 14] = [
 ];
 
 /// 同じ種類の設定は全スロットで同じ単位・量子化を用いる。
-pub fn control_kind(index: usize) -> usize {
+pub const fn control_kind(index: usize) -> usize {
     match index {
         PORTAMENTO => 1, // AHDSRと同じ時間軸。
         45 | 48 => 31,
@@ -87,6 +87,74 @@ pub fn control_kind(index: usize) -> usize {
             kind => 109 + kind,
         },
         _ => index,
+    }
+}
+
+/// 1回の比較で得た変更位置を、Synthと各エフェクトへ共有する。
+pub(crate) struct ParameterChanges([u64; COUNT.div_ceil(64)]);
+
+impl ParameterChanges {
+    #[inline]
+    pub fn new(values: &[f64; COUNT], previous: &[f64; COUNT]) -> Self {
+        use std::arch::x86_64::*;
+        let mut words = [0; COUNT.div_ceil(64)];
+        for (word, output) in words.iter_mut().enumerate().take(COUNT / 64) {
+            for group in 0..4 {
+                let offset = word * 64 + group * 16;
+                // 対応するx86_64ではSSE2を常備する。offset..offset+16は両配列内。
+                // !=比較はNaNを変更、+0/-0を同値とし、符号付きpackは-1/0を保持する。
+                let bits = unsafe {
+                    let pairs = std::array::from_fn::<_, 8, _>(|pair| {
+                        _mm_cmpneq_pd(
+                            _mm_loadu_pd(values.as_ptr().add(offset + pair * 2)),
+                            _mm_loadu_pd(previous.as_ptr().add(offset + pair * 2)),
+                        )
+                    });
+                    let quarters = std::array::from_fn::<_, 4, _>(|i| {
+                        _mm_castps_si128(_mm_shuffle_ps::<0x88>(
+                            _mm_castpd_ps(pairs[2 * i]),
+                            _mm_castpd_ps(pairs[2 * i + 1]),
+                        ))
+                    });
+                    _mm_movemask_epi8(_mm_packs_epi16(
+                        _mm_packs_epi32(quarters[0], quarters[1]),
+                        _mm_packs_epi32(quarters[2], quarters[3]),
+                    ))
+                };
+                *output |= (bits as u64) << (group * 16);
+            }
+        }
+        for index in COUNT / 64 * 64..COUNT {
+            words[index / 64] |= u64::from(values[index] != previous[index]) << (index % 64);
+        }
+        Self(words)
+    }
+
+    /// DSPの保存値を更新するための、64項目ずつの数値変更mask。
+    #[inline]
+    pub fn words(&self) -> [u64; COUNT.div_ceil(64)] {
+        self.0
+    }
+
+    #[inline]
+    pub fn contains(&self, index: usize) -> bool {
+        self.0[index / 64] & (1 << (index % 64)) != 0
+    }
+
+    #[inline]
+    pub fn any(&self, first: usize, end: usize) -> bool {
+        let first_word = first / 64;
+        let last_word = (end - 1) / 64;
+        let low = u64::MAX << (first % 64);
+        let high = u64::MAX >> (63 - (end - 1) % 64);
+        if first_word == last_word {
+            self.0[first_word] & low & high != 0
+        } else {
+            (self.0[first_word] & low | self.0[last_word] & high) != 0
+                || self.0[first_word + 1..last_word]
+                    .iter()
+                    .any(|word| *word != 0)
+        }
     }
 }
 
@@ -646,7 +714,17 @@ pub fn tick_to_plain(index: usize, tick: u32) -> f64 {
     }
 }
 pub fn to_plain(index: usize, normalized: f64) -> f64 {
-    let index = control_kind(index);
+    control_to_plain(control_kind(index), normalized)
+}
+
+/// 対象コントロールが既知のDSPでは、種別の検索をコンパイル時に済ませる。
+#[inline]
+pub fn plain_for<const INDEX: usize>(normalized: f64) -> f64 {
+    control_to_plain(const { control_kind(INDEX) }, normalized)
+}
+
+#[inline]
+fn control_to_plain(index: usize, normalized: f64) -> f64 {
     if is_volume(index) {
         return if normalized == 0.0 {
             f64::NEG_INFINITY
@@ -982,8 +1060,8 @@ pub fn eq(values: &[f64; COUNT]) -> crate::eq::EqParameters {
 pub fn distortion(values: &[f64; COUNT], slot: usize) -> DistortionParameters {
     let [_, clipper, gain, mix, ..] = EFFECT_SLOTS[slot];
     DistortionParameters {
-        clipper: CLIPPER_TYPES[to_plain(clipper, values[clipper]) as usize],
-        gain: 10.0_f64.powf(to_plain(gain, values[gain]) / 20.0),
+        clipper: CLIPPER_TYPES[plain_for::<31>(values[clipper]) as usize],
+        gain: 10.0_f64.powf(plain_for::<32>(values[gain]) / 20.0),
         mix: values[mix],
     }
 }
@@ -991,8 +1069,8 @@ pub fn distortion(values: &[f64; COUNT], slot: usize) -> DistortionParameters {
 pub fn delay(values: &[f64; COUNT], slot: usize) -> crate::delay::DelayParameters {
     let [_, _, _, _, beat, feedback, mix, stereo, ..] = EFFECT_SLOTS[slot];
     crate::delay::DelayParameters {
-        division: to_plain(beat, values[beat]) as usize,
-        stereo: DELAY_STEREO_MODES[to_plain(stereo, values[stereo]) as usize],
+        division: plain_for::<51>(values[beat]) as usize,
+        stereo: DELAY_STEREO_MODES[plain_for::<60>(values[stereo]) as usize],
         feedback: values[feedback],
         mix: values[mix],
     }
@@ -1001,9 +1079,9 @@ pub fn delay(values: &[f64; COUNT], slot: usize) -> crate::delay::DelayParameter
 pub fn reverb(values: &[f64; COUNT], slot: usize) -> crate::reverb::ReverbParameters {
     let [_, _, _, _, _, _, _, _, decay, damping, size, mix, ..] = EFFECT_SLOTS[slot];
     crate::reverb::ReverbParameters {
-        decay_seconds: to_plain(decay, values[decay]),
-        damping_hz: to_plain(damping, values[damping]),
-        size: to_plain(size, values[size]) / 100.0,
+        decay_seconds: plain_for::<63>(values[decay]),
+        damping_hz: plain_for::<64>(values[damping]),
+        size: plain_for::<65>(values[size]) / 100.0,
         mix: values[mix],
     }
 }
@@ -1012,11 +1090,11 @@ pub fn chorus(values: &[f64; COUNT], slot: usize) -> crate::chorus::ChorusParame
     let [time, depth, rate, detune, feedback, mix] =
         [12, 13, 14, 15, 16, 17].map(|i| EFFECT_SLOTS[slot][i]);
     crate::chorus::ChorusParameters {
-        time_ms: to_plain(time, values[time]),
-        depth_ms: to_plain(depth, values[depth]),
-        rate_hz: to_plain(rate, values[rate]),
-        detune: to_plain(detune, values[detune]),
-        feedback: to_plain(feedback, values[feedback]) / 100.0,
+        time_ms: plain_for::<75>(values[time]),
+        depth_ms: plain_for::<76>(values[depth]),
+        rate_hz: plain_for::<77>(values[rate]),
+        detune: plain_for::<78>(values[detune]),
+        feedback: plain_for::<79>(values[feedback]) / 100.0,
         mix: values[mix],
     }
 }
@@ -1024,10 +1102,10 @@ pub fn chorus(values: &[f64; COUNT], slot: usize) -> crate::chorus::ChorusParame
 pub fn phaser(values: &[f64; COUNT], slot: usize) -> crate::phaser::PhaserParameters {
     let [center, depth, rate, feedback, mix] = [18, 19, 20, 21, 22].map(|i| EFFECT_SLOTS[slot][i]);
     crate::phaser::PhaserParameters {
-        center_hz: to_plain(center, values[center]),
-        depth_cents: to_plain(depth, values[depth]),
-        rate_hz: to_plain(rate, values[rate]),
-        feedback: to_plain(feedback, values[feedback]) / 100.0,
+        center_hz: plain_for::<93>(values[center]),
+        depth_cents: plain_for::<94>(values[depth]),
+        rate_hz: plain_for::<95>(values[rate]),
+        feedback: plain_for::<96>(values[feedback]) / 100.0,
         mix: values[mix],
     }
 }
@@ -1035,12 +1113,12 @@ pub fn phaser(values: &[f64; COUNT], slot: usize) -> crate::phaser::PhaserParame
 pub fn compressor(values: &[f64; COUNT], slot: usize) -> crate::compressor::CompressorParameters {
     let [.., threshold, ratio, attack, release, knee, makeup, mix] = EFFECT_SLOTS[slot];
     crate::compressor::CompressorParameters {
-        threshold_db: to_plain(threshold, values[threshold]),
-        ratio: to_plain(ratio, values[ratio]),
-        attack_ms: to_plain(attack, values[attack]),
-        release_ms: to_plain(release, values[release]),
-        knee_db: to_plain(knee, values[knee]),
-        makeup_db: to_plain(makeup, values[makeup]),
+        threshold_db: plain_for::<109>(values[threshold]),
+        ratio: plain_for::<110>(values[ratio]),
+        attack_ms: plain_for::<111>(values[attack]),
+        release_ms: plain_for::<112>(values[release]),
+        knee_db: plain_for::<113>(values[knee]),
+        makeup_db: plain_for::<114>(values[makeup]),
         mix: values[mix],
     }
 }
@@ -1346,6 +1424,57 @@ pub unsafe fn write_state(stream: This, values: [f64; COUNT]) -> TResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_fields_use_the_same_conversion_in_every_slot() {
+        for indices in &EFFECT_SLOTS[1..] {
+            for (&first, &other) in EFFECT_SLOTS[0].iter().zip(indices) {
+                assert_eq!(control_kind(first), control_kind(other));
+                for step in 0..=100 {
+                    let value = f64::from(step) / 100.0;
+                    assert_eq!(to_plain(first, value), to_plain(other, value));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn change_mask_preserves_float_comparison_and_range_membership() {
+        let mut values = [0.0; COUNT];
+        let mut previous = values;
+        for index in 0..COUNT {
+            for (a, b) in [
+                (0.0, -0.0),
+                (0.0, 0.5),
+                (0.5, 0.5),
+                (f64::NAN, f64::NAN),
+                (f64::INFINITY, f64::INFINITY),
+                (-0.5, 0.5),
+            ] {
+                values[index] = a;
+                previous[index] = b;
+                let changes = ParameterChanges::new(&values, &previous);
+                for position in 0..COUNT {
+                    assert_eq!(changes.contains(position), index == position && a != b);
+                }
+                if cfg!(miri) {
+                    // Miriでは全SIMD laneの読出しを上で検査し、全範囲の総当たりは通常テストで行う。
+                    assert_eq!(changes.any(0, COUNT), a != b);
+                    continue;
+                }
+                for first in 0..COUNT {
+                    for end in first + 1..=COUNT {
+                        assert_eq!(
+                            changes.any(first, end),
+                            (first..end).contains(&index) && a != b
+                        );
+                    }
+                }
+            }
+            values[index] = 0.0;
+            previous[index] = 0.0;
+        }
+    }
 
     #[test]
     fn knob_values_increase_and_round_trip_with_exact_defaults() {

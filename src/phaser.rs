@@ -85,6 +85,9 @@ impl Phaser {
             self.update_rate();
         }
     }
+    pub fn set_center_hz(&mut self, center_hz: f64) {
+        self.state.parameters.center_hz = center_hz;
+    }
     fn update_rate(&mut self) {
         let s = &mut self.state;
         let cosine = (s.lfo[1] + s.lfo[0] * s.half[0]) / s.half[1];
@@ -155,6 +158,24 @@ mod tests {
             mix: 1.0,
         }
     }
+    #[test]
+    fn center_only_update_matches_full_settings() {
+        let mut p = settings();
+        p.depth_cents = 1200.0;
+        p.feedback = 0.5;
+        let mut direct = Phaser::new(p);
+        let mut full = direct.clone();
+        for n in 0..10000 {
+            if n % 37 == 0 {
+                p.center_hz = [100.0, 1000.0, 4000.0][n / 37 % 3];
+                direct.set_center_hz(p.center_hz);
+                full.set_parameters(p);
+            }
+            let input = [(n as f64 * 0.13).sin(), (n as f64 * 0.17).cos()];
+            assert_eq!(direct.process_sample(input), full.process_sample(input));
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)] // 長い数値応答の照合は実CPUで行う。
     fn fixed_allpass_preserves_impulse_energy_and_channel_independence() {

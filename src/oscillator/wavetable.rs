@@ -27,10 +27,48 @@ impl Table {
         // 生成済みテーブルのlengthは最大131072なのでpositionは有限の[0,65536]。
         let index = unsafe { position.to_int_unchecked::<i32>() };
         let t = position - f64::from(index);
-        let at = self.offset + index as usize * 16;
+        let at = self.offset + index as u32 as usize * 16;
         let bytes: &[u8; 16] = COEFFICIENTS[at..at + 16].try_into().unwrap();
         let coefficient = |i| f64::from(f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()));
         coefficient(0) + t * (coefficient(4) + t * (coefficient(8) + t * coefficient(12)))
+    }
+}
+
+/// 同一時刻の2ユニゾンを同じHorner順で評価する。
+#[inline]
+fn read_pair_sample(
+    a: &Table,
+    b: &Table,
+    phase: std::arch::x86_64::__m128d,
+) -> std::arch::x86_64::__m128d {
+    use std::arch::x86_64::*;
+    // SAFETY: x86_64必須のSSE2だけを使う。位相の折返しと生成済みlengthから
+    // positionは有限の[0,65536]。各読出しは範囲検査済みの16byteセル内。
+    unsafe {
+        let position = _mm_mul_pd(phase, _mm_set_pd(b.length, a.length));
+        let indexes = _mm_cvttpd_epi32(position);
+        let i = _mm_cvtsi128_si32(indexes) as u32 as usize;
+        let j = _mm_cvtsi128_si32(_mm_shuffle_epi32::<0x55>(indexes)) as u32 as usize;
+        let at_a = a.offset + i * 16;
+        let at_b = b.offset + j * 16;
+        let bytes_a = &COEFFICIENTS[at_a..at_a + 16];
+        let bytes_b = &COEFFICIENTS[at_b..at_b + 16];
+        let a = _mm_loadu_ps(bytes_a.as_ptr().cast::<f32>());
+        let b = _mm_loadu_ps(bytes_b.as_ptr().cast::<f32>());
+        let lo = _mm_unpacklo_ps(a, b);
+        let hi = _mm_unpackhi_ps(a, b);
+        let c0 = _mm_cvtps_pd(lo);
+        let c1 = _mm_cvtps_pd(_mm_movehl_ps(lo, lo));
+        let c2 = _mm_cvtps_pd(hi);
+        let c3 = _mm_cvtps_pd(_mm_movehl_ps(hi, hi));
+        let t = _mm_sub_pd(position, _mm_cvtepi32_pd(indexes));
+        _mm_add_pd(
+            c0,
+            _mm_mul_pd(
+                t,
+                _mm_add_pd(c1, _mm_mul_pd(t, _mm_add_pd(c2, _mm_mul_pd(t, c3)))),
+            ),
+        )
     }
 }
 
@@ -88,6 +126,41 @@ impl Selection {
         }
     }
 
+    /// 同一時刻の2ユニゾンを並列に読む。各位相は有限の[0,1]。
+    #[inline(always)]
+    pub fn generate_pair_sample(a: &Self, b: &Self, wave: Waveform, phases: [f64; 2]) -> [f64; 2] {
+        use std::arch::x86_64::*;
+        // SAFETY: x86_64必須のSSE2。load/storeは2要素の配列内。
+        unsafe {
+            let phase = _mm_loadu_pd(phases.as_ptr());
+            let half_cycle = _mm_set1_pd(0.5);
+            let sign_bit = _mm_set1_pd(-0.0);
+            let half = _mm_sub_pd(
+                half_cycle,
+                _mm_andnot_pd(sign_bit, _mm_sub_pd(phase, half_cycle)),
+            );
+            let folded = if wave == Waveform::Sawtooth {
+                half
+            } else {
+                let quarter = _mm_set1_pd(0.25);
+                _mm_sub_pd(quarter, _mm_andnot_pd(sign_bit, _mm_sub_pd(half, quarter)))
+            };
+            let mut value = read_pair_sample(a.hi, b.hi, folded);
+            if a.mix != 0.0 || b.mix != 0.0 {
+                let mix = _mm_set_pd(b.mix, a.mix);
+                let low = read_pair_sample(a.lo, b.lo, folded);
+                let blended = _mm_add_pd(value, _mm_mul_pd(_mm_sub_pd(low, value), mix));
+                let changed = _mm_cmpneq_pd(mix, _mm_setzero_pd());
+                value = _mm_or_pd(_mm_and_pd(changed, blended), _mm_andnot_pd(changed, value));
+            }
+            let signs = _mm_and_pd(sign_bit, _mm_sub_pd(half_cycle, phase));
+            let gain = _mm_or_pd(_mm_set_pd(b.gain, a.gain), signs);
+            let mut result = [0.0; 2];
+            _mm_storeu_pd(result.as_mut_ptr(), _mm_mul_pd(value, gain));
+            result
+        }
+    }
+
     /// phaseは発振器の保持位相または変調後の、有限の[0,1]。
     #[inline(always)] // 帯域別のユニゾンループ内へ展開し、サンプルごとの呼出しを省く。
     pub fn generate_sample(&self, wave: Waveform, phase: f64) -> f64 {
@@ -134,6 +207,31 @@ mod tests {
             for exponent in 0..2047_u64 {
                 for mantissa in [0, 1, 1 << 50, 1 << 51, (1 << 52) - 2, (1 << 52) - 1] {
                     check(f64::from_bits((exponent << 52) | mantissa));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paired_unison_matches_scalar_cells_and_crossfades() {
+        for wave in [Waveform::Sawtooth, Waveform::Square, Waveform::Triangle] {
+            for table in tables(wave) {
+                for factor in [0.88, 0.91, 0.95, 0.999, 1.01] {
+                    let a = Selection::new(wave, factor * 0.5 / table.harmonic);
+                    let b = Selection::new(wave, factor * 0.5 / (table.harmonic * 1.013));
+                    let steps = if cfg!(miri) { 4 } else { 1024 };
+                    for n in 0..=steps {
+                        let phases = [
+                            f64::from(n) / f64::from(steps),
+                            f64::from((n * 137) % (steps + 1)) / f64::from(steps),
+                        ];
+                        let actual = Selection::generate_pair_sample(&a, &b, wave, phases);
+                        let expected = [
+                            a.generate_sample(wave, phases[0]),
+                            b.generate_sample(wave, phases[1]),
+                        ];
+                        assert_eq!(actual.map(f64::to_bits), expected.map(f64::to_bits));
+                    }
                 }
             }
         }

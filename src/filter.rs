@@ -81,8 +81,8 @@ struct SvfCoefficients {
 pub struct SvfState {
     /// 台形積分器の履歴。[帯域通過側, 低域通過側]。設定変更時も保持する。
     integrators: [f64; 2],
-    /// 最後に使用した係数。未計算時はNone。
-    coefficients: Option<(FilterParameters, f64, SvfCoefficients)>,
+    /// 最後に使用した係数。検証済み正レートのbitを非ゼロ整数で保持し、Noneの判別領域を共有する。
+    coefficients: Option<(FilterParameters, std::num::NonZeroU64, SvfCoefficients)>,
 }
 
 /// TPT SVFの処理。Stateは積分器の履歴と計算済み係数を保持する。
@@ -123,7 +123,7 @@ impl Svf {
     ) -> SvfCoefficients {
         if let Some((previous, rate, cached)) = self.state.coefficients
             && previous == *parameters
-            && rate == sample_rate
+            && rate.get() == sample_rate.to_bits()
         {
             return cached;
         }
@@ -134,10 +134,15 @@ impl Svf {
         // Qも同じなら全係数を再利用し、次回の高速判定用に要求値だけ更新する。
         let g = match self.state.coefficients {
             Some((previous, rate, cached))
-                if previous.cutoff_hz.clamp(20.0, 20_000.0) == cutoff_hz && rate == sample_rate =>
+                if previous.cutoff_hz.clamp(20.0, 20_000.0) == cutoff_hz
+                    && rate.get() == sample_rate.to_bits() =>
             {
                 if previous.resonance_q == parameters.resonance_q {
-                    self.state.coefficients = Some((*parameters, sample_rate, cached));
+                    self.state.coefficients = Some((
+                        *parameters,
+                        std::num::NonZeroU64::new(sample_rate.to_bits()).unwrap(),
+                        cached,
+                    ));
                     return cached;
                 }
                 cached.g
@@ -150,7 +155,11 @@ impl Svf {
             damping_plus_g: damping + g,
             inverse_denominator: 1.0 / (1.0 + g * (g + damping)),
         };
-        self.state.coefficients = Some((*parameters, sample_rate, coefficients));
+        self.state.coefficients = Some((
+            *parameters,
+            std::num::NonZeroU64::new(sample_rate.to_bits()).unwrap(),
+            coefficients,
+        ));
         coefficients
     }
 
