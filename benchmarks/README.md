@@ -89,7 +89,7 @@ CPU affinity、seed、全実行の順序・開始終了時刻・burn-in実時間
 回帰テストは次のコマンドで実行します。Rust側ではケース設定、レガート／残響のイベント列、値保持と補間、分割生成の時刻継続を検査します。Python側では無作為化・対応付け・統計解析・burn-inを検査します。
 
 ```sh
-rustc --edition=2024 -D warnings -C opt-level=2 --test benchmarks/standard.rs -o target/standard-tests
+rustc --edition=2024 -D warnings -C opt-level=2 -C target-feature=+avx2,+fma --test benchmarks/standard.rs -o target/standard-tests
 target/standard-tests suite_tests:: --test-threads=1
 target/bench-venv/bin/python tests/bench-standard.py
 ```
@@ -174,7 +174,7 @@ Linux x86_64での実行例（Rust 1.95以上）:
 
 ```sh
 mkdir -p target
-rustc --edition=2024 -D warnings -C opt-level=3 -C panic=abort -C codegen-units=16 benchmarks/dsp.rs -o target/bench-dsp
+rustc --edition=2024 -D warnings -C opt-level=3 -C panic=abort -C codegen-units=16 -C target-feature=+avx2,+fma benchmarks/dsp.rs -o target/bench-dsp
 taskset -c 0 target/bench-dsp 48000 > target/dsp-48000.csv
 taskset -c 0 target/bench-dsp 96000 > target/dsp-96000.csv
 taskset -c 0 target/bench-dsp 48000 '' --flush-subnormals > target/dsp-48000-ftz.csv

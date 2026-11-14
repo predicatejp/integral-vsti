@@ -1358,7 +1358,7 @@ mod tests {
         assert_eq!(detune_ratio(0.0), 1.0);
         for edge in [0.0_f64, 0.25, 0.5, 0.75, 1.0] {
             for phase in [edge.next_down(), edge, edge.next_up()] {
-                if (0.0..1.0).contains(&phase) {
+                if (0.0..=1.0).contains(&phase) {
                     assert!(
                         (sine_sample(phase) - (std::f64::consts::TAU * phase).sin()).abs() < 1e-14
                     );

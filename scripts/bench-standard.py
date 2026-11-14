@@ -27,7 +27,8 @@ from scipy import stats
 
 ROOT = Path(__file__).resolve().parent.parent
 FLAGS = ["--edition=2024", "-D", "warnings", "-C", "opt-level=3",
-         "-C", "panic=abort", "-C", "codegen-units=16"]
+         "-C", "panic=abort", "-C", "codegen-units=16",
+         "-C", "target-feature=+avx2,+fma"]
 SIDES = ("before", "after")
 ALPHA = 0.05
 
