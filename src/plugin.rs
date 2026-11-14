@@ -1136,7 +1136,8 @@ unsafe fn generate_samples(
     };
     // ノートと同位置のパラメーターを先に適用。0サンプルフラッシュもここを通る。
     if range.end < data.num_samples || data.num_samples == 0 {
-        apply_parameters(plugin, synth, changes, automated, range.end);
+        let mut values = synth.parameters();
+        apply_parameters(plugin, synth, changes, automated, range.end, &mut values);
     }
     nonzero
 }
@@ -1150,13 +1151,13 @@ fn generate_output_samples(
     range: std::ops::Range<i32>,
     mut write: impl FnMut(usize, [f64; 2]) -> u64,
 ) -> u64 {
+    const PITCH_ONLY: AutomationMask = {
+        let mut mask = [0; parameters::HOST_COUNT.div_ceil(64)];
+        mask[parameters::PITCH_BEND_INDEX / 64] = 1 << (parameters::PITCH_BEND_INDEX % 64);
+        mask
+    };
     let mut nonzero = 0;
-    if automated.iter().any(|&word| word != 0) {
-        for offset in range {
-            apply_parameters(plugin, synth, changes, automated, offset);
-            nonzero |= write(offset as usize, synth.generate_sample());
-        }
-    } else {
+    if automated.iter().all(|&word| word == 0) {
         let mut samples = [[0.0; 2]; 32];
         for start in (range.start..range.end).step_by(samples.len()) {
             let count = (range.end - start).min(samples.len() as i32) as usize;
@@ -1164,6 +1165,20 @@ fn generate_output_samples(
             for (offset, &sample) in samples[..count].iter().enumerate() {
                 nonzero |= write(start as usize + offset, sample);
             }
+        }
+        return nonzero;
+    }
+    if automated == PITCH_ONLY {
+        // Pitch Bendだけの区間は、音色設定の複製・比較を必要としない。
+        for offset in range {
+            synth.set_pitch_bend(changes[parameters::PITCH_BEND_INDEX].value_at(offset));
+            nonzero |= write(offset as usize, synth.generate_sample());
+        }
+    } else {
+        let mut values = synth.parameters();
+        for offset in range {
+            apply_parameters(plugin, synth, changes, automated, offset, &mut values);
+            nonzero |= write(offset as usize, synth.generate_sample());
         }
     }
     nonzero
@@ -1175,14 +1190,14 @@ fn apply_parameters(
     changes: &mut [ParameterPoints<'_>; parameters::HOST_COUNT],
     automated: AutomationMask,
     offset: i32,
+    values: &mut [f64; parameters::COUNT],
 ) {
     let loaded =
         automated[parameters::PROGRAM_INDEX / 64] & (1 << (parameters::PROGRAM_INDEX % 64)) != 0
             && changes[parameters::PROGRAM_INDEX].take_program_at(offset);
-    let mut values = synth.parameters();
     if loaded {
-        values = parameters::sine_preset();
-        for (change, value) in changes.iter_mut().zip(values) {
+        *values = parameters::sine_preset();
+        for (change, value) in changes.iter_mut().zip(*values) {
             change.reset_value(offset, value);
         }
     }
@@ -1200,9 +1215,9 @@ fn apply_parameters(
             values[i] = changes[i].value_at(offset);
         }
     }
-    let changed = synth.set_parameters(values);
+    let changed = synth.set_parameters(*values);
     if loaded {
-        plugin.processor_parameters.store(values);
+        plugin.processor_parameters.store(*values);
     } else if changed {
         for (word, mut pending) in controls.into_iter().enumerate() {
             while pending != 0 {

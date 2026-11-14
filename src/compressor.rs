@@ -77,6 +77,7 @@ impl Compressor {
     pub fn set_parameters(&mut self, parameters: CompressorParameters) {
         let sample_rate = self.state.sample_rate;
         let old = self.state.parameters;
+        self.state.parameters = parameters;
         if parameters.attack_ms != old.attack_ms {
             self.state.coefficients[0] = coefficient(parameters.attack_ms, sample_rate);
         }
@@ -87,10 +88,18 @@ impl Compressor {
             self.state.makeup_gain = 10.0_f64.powf(parameters.makeup_db / 20.0);
         }
         if parameters.threshold_db != old.threshold_db || parameters.knee_db != old.knee_db {
-            self.state.lower_gain =
-                10.0_f64.powf((parameters.threshold_db - parameters.knee_db * 0.5) / 20.0);
+            self.update_lower_gain();
         }
-        self.state.parameters = parameters;
+    }
+
+    pub fn set_threshold_db(&mut self, threshold_db: f64) {
+        self.state.parameters.threshold_db = threshold_db;
+        self.update_lower_gain();
+    }
+
+    fn update_lower_gain(&mut self) {
+        let p = self.state.parameters;
+        self.state.lower_gain = 10.0_f64.powf((p.threshold_db - p.knee_db * 0.5) / 20.0);
     }
 
     pub fn reset(&mut self) {
@@ -175,6 +184,27 @@ mod tests {
             let expected = quiet.process_sample(input);
             assert_ne!(expected[0], 0.0);
             assert_eq!(silent.process_sample(input), expected);
+        }
+    }
+
+    #[test]
+    fn threshold_only_update_matches_full_settings() {
+        let mut p = parameters();
+        p.attack_ms = 10.0;
+        p.release_ms = 100.0;
+        p.knee_db = 6.0;
+        p.makeup_db = 3.0;
+        let mut direct = Compressor::new(p);
+        let mut full = direct.clone();
+        for threshold in [-60.0, -18.0, 0.0, -30.0, -30.0] {
+            p.threshold_db = threshold;
+            direct.set_threshold_db(threshold);
+            full.set_parameters(p);
+            assert!(direct.state.parameters == full.state.parameters);
+            for n in 0..1000 {
+                let input = [(n as f64 * 0.13).sin(), (n as f64 * 0.17).cos()];
+                assert_eq!(direct.process_sample(input), full.process_sample(input));
+            }
         }
     }
 

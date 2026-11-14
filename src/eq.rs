@@ -66,6 +66,10 @@ impl Eq {
         self.state.parameters.enabled
     }
 
+    pub fn parameters(&self) -> EqParameters {
+        self.state.parameters
+    }
+
     pub fn set_parameters(&mut self, parameters: EqParameters) {
         let old = self.state.parameters;
         self.state.parameters = parameters;

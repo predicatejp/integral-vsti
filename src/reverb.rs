@@ -104,6 +104,10 @@ impl Reverb {
         self.state.sample_rate == sample_rate && sample_rate >= 44100.0
     }
 
+    pub fn set_mix(&mut self, mix: f64) {
+        self.state.parameters.mix = mix;
+    }
+
     pub fn set_parameters(&mut self, parameters: ReverbParameters) {
         let old = self.state.parameters;
         self.state.parameters = parameters;

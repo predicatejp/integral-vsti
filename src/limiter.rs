@@ -120,7 +120,14 @@ impl Limiter {
         self.state.sum = 0.0;
     }
 
+    #[inline(never)]
     pub fn process_sample(&mut self, input: [f64; 2]) -> [f64; 2] {
+        self.process_one_sample(input)
+    }
+
+    /// 系列ではloop内へ展開し、単sampleの呼出し側を大きくしない。
+    #[inline(always)]
+    fn process_one_sample(&mut self, input: [f64; 2]) -> [f64; 2] {
         let s = &mut self.state;
         let peak = input[0].abs().max(input[1].abs());
         let size = s.history.len();
@@ -167,7 +174,7 @@ impl Limiter {
 
     pub fn process_samples(&mut self, samples: &mut [[f64; 2]]) {
         for sample in samples {
-            *sample = self.process_sample(*sample);
+            *sample = self.process_one_sample(*sample);
         }
     }
 }

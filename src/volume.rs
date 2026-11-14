@@ -3,7 +3,7 @@
 
 //! 発振器の生波形に対する実効値補正・ユニゾン合成・Vol・定位。
 
-use crate::oscillator::{PanningGains, Waveform};
+use crate::oscillator::Waveform;
 
 /// 波形の実効値補正とユニゾン補正にVolの線形倍率を掛ける。設定変更時に計算する。
 /// countは検証済みの実発音数（1〜7）。
@@ -19,7 +19,7 @@ pub fn gain(waveform: Waveform, count: usize, volume: f64) -> f64 {
 /// 同時刻のユニゾン波形を定位・加算し、計算済みの音量倍率を適用する。
 /// valuesは最大7要素。空の場合は無音。
 #[inline]
-pub fn process_sample(values: &[f64], panning: &PanningGains, gain: f64) -> [f64; 2] {
+pub fn process_sample(values: &[f64], panning: &[[f64; 2]], gain: f64) -> [f64; 2] {
     let mut sum = [0.0; 2];
     for (&value, gains) in values.iter().zip(panning) {
         sum[0] += value * gains[0];

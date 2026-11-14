@@ -7,6 +7,8 @@ use crate::eq::Eq;
 use crate::limiter::Limiter;
 use crate::oscillator::{PanningGains, panning_gains};
 use crate::parameters;
+#[cfg(windows)]
+use crate::voice::CutoffRatioCache;
 use crate::voice::{Note, Voice};
 
 #[cfg_attr(test, derive(Clone))]
@@ -116,30 +118,56 @@ impl Synthesizer {
 
     /// 設定は有効な枠の入力へ反映し、Polyphony増加時は追加した枠も同期する。
     pub fn set_parameters(&mut self, values: [f64; parameters::COUNT]) -> bool {
-        if values == self.state.parameters {
+        let changes = parameters::ParameterChanges::new(&values, &self.state.parameters);
+        if !changes.any(0, parameters::COUNT) {
             return false;
         }
-        if values[13] != self.state.parameters[13] {
-            self.state.master_gain = 10.0_f64.powf(parameters::to_plain(13, values[13]) / 20.0);
+        if changes.contains(13) {
+            let db = parameters::to_plain(13, values[13]);
+            #[cfg(windows)]
+            let gain = (db * (std::f64::consts::LN_10 / 20.0)).exp();
+            #[cfg(not(windows))]
+            let gain = (db * (std::f64::consts::LOG2_10 / 20.0)).exp2();
+            self.state.master_gain = gain;
             // 全体の音量だけが変わる場合は、各Voiceへの設定配送を省く。
-            if values[..13] == self.state.parameters[..13]
-                && values[14..] == self.state.parameters[14..]
-            {
-                self.state.parameters = values;
+            if !changes.any(0, 13) && !changes.any(14, parameters::COUNT) {
+                self.save_parameters(&values, &changes);
                 return true;
             }
         }
-        if values[34..42] != self.state.parameters[34..42] {
-            self.state.eq.set_parameters(parameters::eq(&values));
+        if changes.any(34, 42) {
+            let mut eq = self.state.eq.parameters();
+            eq.enabled = values[34] >= 0.5;
+            for (indices, fields) in [
+                ([35, 37, 40], &mut eq.frequencies_hz),
+                ([36, 38, 41], &mut eq.gains_db),
+            ] {
+                for (i, field) in indices.into_iter().zip(fields) {
+                    if changes.contains(i) {
+                        *field = parameters::to_plain(i, values[i]);
+                    }
+                }
+            }
+            if changes.contains(39) {
+                eq.mid_q = parameters::to_plain(39, values[39]);
+            }
+            self.state.eq.set_parameters(eq);
         }
         self.state.limiter.set_enabled(values[108] >= 0.5);
+        if changes.any(31, 34) || changes.any(42, 130) {
+            self.state.effects.set_parameters(&values, &changes);
+        }
+        // Voiceへ渡す入力が同じなら、合成後の処理だけを更新して終える。
+        if !changes.any(0, 13) && !changes.any(14, 31) && !changes.any(130, parameters::COUNT) {
+            self.save_parameters(&values, &changes);
+            return true;
+        }
         let previous = &self.state.parameters;
         // 有効範囲が広がるときは、休止していた枠へ現在の全設定を配送する。
         let expanded = values[8] > previous[8];
-        let oscillator_changed =
-            expanded || values[..8] != previous[..8] || values[12] != previous[12];
-        let envelope_changed = expanded || values[14..20] != previous[14..20];
-        if values[8] != previous[8] {
+        let oscillator_changed = expanded || changes.any(0, 8) || changes.contains(12);
+        let envelope_changed = expanded || changes.any(14, 20);
+        if changes.contains(8) {
             let count = parameters::to_plain(8, values[8]) as usize;
             for voice in &mut self.state.voices[count..self.state.polyphony.max(count)] {
                 voice.stop();
@@ -149,9 +177,7 @@ impl Synthesizer {
             self.state.used_voices = self.state.used_voices.min(count);
             self.state.next_oscillator_id %= count;
         }
-        if values[8] != previous[8]
-            || values[parameters::PORTAMENTO] != previous[parameters::PORTAMENTO]
-        {
+        if changes.contains(8) || changes.contains(parameters::PORTAMENTO) {
             let time = if self.state.polyphony == 1 {
                 parameters::to_plain(parameters::PORTAMENTO, values[parameters::PORTAMENTO])
             } else {
@@ -161,14 +187,14 @@ impl Synthesizer {
                 voice.set_portamento(time);
             }
         }
-        if expanded || values[parameters::PITCH] != previous[parameters::PITCH] {
+        if expanded || changes.contains(parameters::PITCH) {
             let cents = parameters::to_plain(parameters::PITCH, values[parameters::PITCH]);
             let ratio = ((self.state.pitch_bend * 2.0 - 1.0) * cents / 1200.0).exp2();
             for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_pitch_ratio(ratio);
             }
         }
-        if expanded || values[130..132] != previous[130..132] {
+        if expanded || changes.any(130, 132) {
             for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_velocity_sensitivity([values[130], values[131]]);
             }
@@ -177,6 +203,8 @@ impl Synthesizer {
         if oscillator_changed || envelope_changed {
             // Voice 0は常に有効で、適用済みの実単位を保持している。
             let mut envelopes = self.state.voices[0].envelope_parameters();
+            let cutoff_shape_changed =
+                expanded || changes.any(14, 19) || envelopes[1] == DEFAULT_ENVELOPE;
             for (update, first, envelope) in [oscillator_changed, envelope_changed]
                 .into_iter()
                 .zip([1, 14])
@@ -199,7 +227,7 @@ impl Synthesizer {
                     .into_iter()
                     .enumerate()
                     {
-                        if values[first + i] != previous[first + i] {
+                        if changes.contains(first + i) {
                             *field = parameters::to_plain(first + i, values[first + i]);
                         }
                     }
@@ -226,11 +254,15 @@ impl Synthesizer {
                 let cutoff_envelope = envelopes[1];
                 let cutoff_amount = parameters::to_plain(19, values[19]);
                 for voice in &mut self.state.voices[..self.state.polyphony] {
-                    voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
+                    if cutoff_shape_changed {
+                        voice.set_cutoff_envelope(cutoff_envelope, cutoff_amount);
+                    } else {
+                        voice.set_cutoff_amount(cutoff_amount);
+                    }
                 }
             }
         }
-        if values[21] != previous[21] {
+        if changes.contains(21) {
             self.state.mono_gains =
                 panning_gains(1, 0.0, parameters::to_plain(21, values[21]) / 100.0)[0];
         }
@@ -238,9 +270,9 @@ impl Synthesizer {
             let wave = [0, 23, 26][osc];
             let tune = [None, Some(24), Some(27)][osc];
             if expanded
-                || values[volume] != previous[volume]
-                || values[wave] != previous[wave]
-                || tune.is_some_and(|i| values[i] != previous[i])
+                || changes.contains(volume)
+                || changes.contains(wave)
+                || tune.is_some_and(|i| changes.contains(i))
             {
                 let waveform =
                     parameters::from_normalized(values[wave]).expect("validated waveform");
@@ -253,14 +285,12 @@ impl Synthesizer {
                 }
             }
         }
-        if expanded || values[29..31] != previous[29..31] {
+        if expanded || changes.any(29, 31) {
             for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_phase_modulation([values[29] * 2.0, values[30] * 2.0]);
             }
         }
-        if values[20..22] != previous[20..22]
-            || values[6] != previous[6]
-            || (values[7] == 0.0) != (previous[7] == 0.0)
+        if changes.any(20, 22) || changes.contains(6) || (values[7] == 0.0) != (previous[7] == 0.0)
         {
             let count = if values[7] == 0.0 {
                 1
@@ -272,10 +302,7 @@ impl Synthesizer {
             } else {
                 parameters::to_plain(6, previous[6]) as usize
             };
-            if count != old_count
-                || values[21] != previous[21]
-                || (count > 1 && values[20] != previous[20])
-            {
+            if count != old_count || changes.contains(21) || (count > 1 && changes.contains(20)) {
                 self.state.panning_gains = panning_gains(
                     count,
                     parameters::to_plain(20, values[20]) / 100.0,
@@ -283,24 +310,39 @@ impl Synthesizer {
                 );
             }
         }
-        if values[31..34] != previous[31..34] || values[42..130] != previous[42..130] {
-            self.state.effects.set_parameters(&values, previous);
-        }
-        if expanded || values[9..11] != previous[9..11] {
+        if expanded || changes.any(9, 11) {
             let filter_type = parameters::FILTER_TYPES[parameters::to_plain(9, values[9]) as usize];
             let cutoff_cents = parameters::to_plain(10, values[10]);
             let resonance_q = parameters::to_plain(11, values[11]);
             for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_filter(filter_type, cutoff_cents, resonance_q);
             }
-        } else if values[11] != previous[11] {
+        } else if changes.contains(11) {
             let resonance_q = parameters::to_plain(11, values[11]);
             for voice in &mut self.state.voices[..self.state.polyphony] {
                 voice.set_resonance(resonance_q);
             }
         }
-        self.state.parameters = values;
+        self.save_parameters(&values, &changes);
         true
+    }
+
+    /// 数値が変わった項目だけを保存する。±0の符号だけなら既存のDSP値を保つ。
+    /// VSTの保存値・表示値はPluginが別に保持する。
+    #[cfg_attr(windows, inline(never))]
+    #[cfg_attr(not(windows), inline)]
+    fn save_parameters(
+        &mut self,
+        values: &[f64; parameters::COUNT],
+        changes: &parameters::ParameterChanges,
+    ) {
+        for (word, mut pending) in changes.words().into_iter().enumerate() {
+            while pending != 0 {
+                let index = word * 64 + pending.trailing_zeros() as usize;
+                self.state.parameters[index] = values[index];
+                pending &= pending - 1;
+            }
+        }
     }
 
     pub fn note_on(&mut self, note: Note, tuning: f32, velocity: f32) -> bool {
@@ -359,6 +401,16 @@ impl Synthesizer {
         if self.state.unused_pending {
             self.update_unused_sample();
         }
+        #[cfg(windows)]
+        if self.state.used_voices > 1
+            && parameters::plain_for::<9>(self.state.parameters[9]) != 0.0
+            && parameters::plain_for::<19>(self.state.parameters[19]) != 0.0
+        {
+            self.mix_cached_samples(output);
+            self.state.effects.process_samples(output);
+            self.finish_samples(output);
+            return;
+        }
         if let Some((first, rest)) = self.state.voices[..self.state.used_voices].split_first_mut() {
             // 先頭Voiceは直接出力し、ゼロ埋め・最初の加算・小区間ごとの再準備を省く。
             first.generate_samples(
@@ -389,6 +441,40 @@ impl Synthesizer {
         self.finish_samples(output);
     }
 
+    /// 32サンプルごとにVoiceを巡回し、同時刻のカットオフ倍率を共用する。
+    #[cfg(windows)]
+    fn mix_cached_samples(&mut self, output: &mut [[f64; 2]]) {
+        let Some((first, rest)) = self.state.voices[..self.state.used_voices].split_first_mut()
+        else {
+            output.fill([0.0; 2]);
+            return;
+        };
+        let mut voice_output = [[0.0; 2]; 32];
+        for chunk in output.chunks_mut(32) {
+            let mut caches = std::array::from_fn(|_| CutoffRatioCache::new());
+            first.generate_cached_samples(
+                self.state.sample_rate,
+                &self.state.panning_gains,
+                &self.state.mono_gains,
+                chunk,
+                &mut caches,
+            );
+            for voice in &mut *rest {
+                voice.generate_cached_samples(
+                    self.state.sample_rate,
+                    &self.state.panning_gains,
+                    &self.state.mono_gains,
+                    &mut voice_output[..chunk.len()],
+                    &mut caches,
+                );
+                for (out, value) in chunk.iter_mut().zip(&voice_output) {
+                    out[0] += value[0];
+                    out[1] += value[1];
+                }
+            }
+        }
+    }
+
     pub fn generate_sample(&mut self) -> [f64; 2] {
         if self.state.unused_pending {
             self.update_unused_sample();
@@ -405,8 +491,10 @@ impl Synthesizer {
     /// EQ・Limiter・Masterを系列で適用する。
     #[inline(never)]
     fn finish_samples(&mut self, samples: &mut [[f64; 2]]) {
-        for sample in &mut *samples {
-            *sample = self.state.eq.process_sample(*sample);
+        if self.state.eq.enabled() {
+            for sample in &mut *samples {
+                *sample = self.state.eq.process_sample(*sample);
+            }
         }
         self.state.limiter.process_samples(samples);
         for sample in samples {
@@ -433,6 +521,11 @@ impl Synthesizer {
 
     /// フィルタまでのVoice出力を加算する。
     fn mix_sample(&mut self) -> [f64; 2] {
+        // 単一Voiceには再利用先がないため、共有cacheの照合自体を省く。
+        #[cfg(windows)]
+        if self.state.used_voices > 1 {
+            return self.mix_cached_sample();
+        }
         let mut sum = [0.0; 2];
         for voice in &mut self.state.voices[..self.state.used_voices] {
             let sample = voice.generate_sample(
@@ -445,10 +538,64 @@ impl Synthesizer {
         }
         sum
     }
+
+    #[cfg(windows)]
+    #[inline(never)]
+    fn mix_cached_sample(&mut self) -> [f64; 2] {
+        // Windows CRTの指数計算を、同じサンプル時刻のVoice間で共用する。
+        let mut cache = CutoffRatioCache::new();
+        let mut sum = [0.0; 2];
+        for voice in &mut self.state.voices[..self.state.used_voices] {
+            let sample = voice.generate_cached_sample(
+                self.state.sample_rate,
+                &self.state.panning_gains,
+                &self.state.mono_gains,
+                &mut cache,
+            );
+            sum[0] += sample[0];
+            sum[1] += sample[1];
+        }
+        sum
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn numeric_snapshot_preserves_audio_with_mixed_signed_zero_changes() {
+        let mut actual = super::Synthesizer::new();
+        assert!(actual.set_sample_rate(44100.0));
+        let mut values = crate::parameters::sine_preset();
+        actual.set_parameters(values);
+        actual.note_on(
+            crate::voice::Note {
+                id: 1,
+                channel: 0,
+                pitch: 69,
+            },
+            0.0,
+            1.0,
+        );
+        let mut reference = actual.clone();
+        for step in 0..8 {
+            for value in &mut values {
+                if *value == 0.0 {
+                    *value = if step % 2 == 0 { -0.0 } else { 0.0 };
+                }
+            }
+            values[13] = crate::parameters::to_normalized(13, [-12.0, -6.0, 0.0][step % 3]);
+            actual.set_parameters(values);
+            reference.set_parameters(values);
+            reference.state.parameters = values;
+            assert_eq!(actual.parameters(), values);
+            let mut a = [[0.0; 2]; 257];
+            let mut b = a;
+            actual.generate_samples(&mut a);
+            reference.generate_samples(&mut b);
+            assert_eq!(a, b);
+        }
+    }
+
     use super::*;
     use crate::envelope::DEFAULT_ENVELOPE;
     use crate::oscillator::Waveform;
@@ -1120,6 +1267,64 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn amount_only_updates_preserve_envelope_history_across_rate_and_voice_changes() {
+        let mut synth = Synthesizer::new();
+        let mut reference = Synthesizer::new();
+        let mut values = parameters::defaults();
+        values[9] = parameters::to_normalized(9, 2.0);
+        values[12] = parameters::to_normalized(12, 1.0);
+        for sample in 0..1024 {
+            if sample % 64 == 0 {
+                values[19] = parameters::to_normalized(19, (sample % 257) as f64 * 16.0);
+                if sample == 128 {
+                    values[14] = parameters::to_normalized(14, 20.0);
+                }
+                if sample == 256 {
+                    values[8] = parameters::to_normalized(8, 4.0);
+                }
+                if sample == 512 {
+                    values[14..19].copy_from_slice(&parameters::defaults()[14..19]);
+                }
+                if sample == 768 {
+                    values[8] = parameters::to_normalized(8, 1.0);
+                }
+                synth.set_parameters(values);
+                reference.set_parameters(values);
+                // Amountの更新でも従来どおりAHDSR全体を通知する基準経路。
+                for voice in &mut reference.state.voices[..reference.state.polyphony] {
+                    voice.set_cutoff_envelope(
+                        parameters::envelope(&values, 14),
+                        parameters::to_plain(19, values[19]),
+                    );
+                }
+            }
+            if sample == 0 || sample == 256 || sample == 768 {
+                for id in 0..synth.state.polyphony {
+                    let event = note(id as i32, 0, 60 + id as i16);
+                    synth.note_on(event, 0.0, 0.8);
+                    reference.note_on(event, 0.0, 0.8);
+                }
+            }
+            if sample == 640 {
+                for id in 0..synth.state.polyphony {
+                    let event = note(id as i32, 0, 60 + id as i16);
+                    synth.note_off(event);
+                    reference.note_off(event);
+                }
+            }
+            if sample == 384 {
+                assert!(synth.set_sample_rate(96000.0));
+                assert!(reference.set_sample_rate(96000.0));
+            }
+            assert_eq!(
+                synth.mix_sample(),
+                reference.mix_sample(),
+                "sample {sample}"
+            );
         }
     }
 
