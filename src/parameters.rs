@@ -130,6 +130,25 @@ impl ParameterChanges {
         Self(words)
     }
 
+    /// 呼出し元が更新した候補だけ比較する。候補外の値は既存値と同じであること。
+    #[inline]
+    pub fn from_candidates(
+        values: &[f64; COUNT],
+        previous: &[f64; COUNT],
+        candidates: [u64; COUNT.div_ceil(64)],
+    ) -> Self {
+        let mut words = [0; COUNT.div_ceil(64)];
+        for (word, mut pending) in candidates.into_iter().enumerate() {
+            while pending != 0 {
+                let bit = pending.trailing_zeros() as usize;
+                let index = word * 64 + bit;
+                pending &= pending - 1;
+                words[word] |= u64::from(values[index] != previous[index]) << bit;
+            }
+        }
+        Self(words)
+    }
+
     /// DSPの保存値を更新するための、64項目ずつの数値変更mask。
     #[inline]
     pub fn words(&self) -> [u64; COUNT.div_ceil(64)] {
@@ -1454,6 +1473,10 @@ mod tests {
                 values[index] = a;
                 previous[index] = b;
                 let changes = ParameterChanges::new(&values, &previous);
+                let mut candidates = [0; COUNT.div_ceil(64)];
+                candidates[index / 64] = 1 << (index % 64);
+                let selected = ParameterChanges::from_candidates(&values, &previous, candidates);
+                assert_eq!(changes.words(), selected.words());
                 for position in 0..COUNT {
                     assert_eq!(changes.contains(position), index == position && a != b);
                 }

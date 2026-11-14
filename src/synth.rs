@@ -119,6 +119,28 @@ impl Synthesizer {
     /// 設定は呼出し中だけ借用し、有効な枠へ反映する。Polyphony増加時は追加枠も同期する。
     pub fn set_parameters(&mut self, values: &[f64; parameters::COUNT]) -> bool {
         let changes = parameters::ParameterChanges::new(values, &self.state.parameters);
+        self.apply_parameters(values, changes)
+    }
+
+    /// キューが更新した項目だけ比較する。候補外の設定は既存値から変えないこと。
+    pub fn set_automated_parameters(
+        &mut self,
+        values: &[f64; parameters::COUNT],
+        candidates: [u64; parameters::COUNT.div_ceil(64)],
+    ) -> bool {
+        let changes = parameters::ParameterChanges::from_candidates(
+            values,
+            &self.state.parameters,
+            candidates,
+        );
+        self.apply_parameters(values, changes)
+    }
+
+    fn apply_parameters(
+        &mut self,
+        values: &[f64; parameters::COUNT],
+        changes: parameters::ParameterChanges,
+    ) -> bool {
         if !changes.any(0, parameters::COUNT) {
             return false;
         }
@@ -561,6 +583,44 @@ impl Synthesizer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn automation_candidates_match_full_parameter_updates() {
+        let mut actual = Synthesizer::new();
+        assert!(actual.set_sample_rate(48000.0));
+        let mut values = parameters::sine_preset();
+        actual.set_parameters(&values);
+        let mut reference = actual.clone();
+        for first in 0..parameters::COUNT {
+            let mut candidates = [0; parameters::COUNT.div_ceil(64)];
+            for index in [
+                first,
+                (first + 63) % parameters::COUNT,
+                (first + 127) % parameters::COUNT,
+            ] {
+                values[index] = (values[index] + 0.25) % 1.0;
+                candidates[index / 64] |= 1 << (index % 64);
+            }
+            assert_eq!(
+                actual.set_automated_parameters(&values, candidates),
+                reference.set_parameters(&values)
+            );
+            assert!(!actual.set_automated_parameters(&values, candidates));
+            if first % 17 == 0 {
+                let note = Note {
+                    id: first as i32,
+                    channel: 0,
+                    pitch: 60 + (first % 12) as i16,
+                };
+                actual.note_on(note, 0.0, 0.8);
+                reference.note_on(note, 0.0, 0.8);
+            }
+            assert_eq!(actual.parameters(), reference.parameters());
+            for _ in 0..8 {
+                assert_eq!(actual.generate_sample(), reference.generate_sample());
+            }
+        }
+    }
+
     #[test]
     fn numeric_snapshot_preserves_audio_with_mixed_signed_zero_changes() {
         let mut actual = super::Synthesizer::new();

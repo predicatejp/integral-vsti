@@ -1215,7 +1215,11 @@ fn apply_parameters(
             values[i] = changes[i].value_at(offset);
         }
     }
-    let changed = synth.set_parameters(values);
+    let changed = if loaded {
+        synth.set_parameters(values)
+    } else {
+        synth.set_automated_parameters(values, controls)
+    };
     if loaded {
         plugin.processor_parameters.store(*values);
     } else if changed {

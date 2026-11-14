@@ -440,7 +440,10 @@ impl Playback {
                             s.synth.set_pitch_bend(black_box(value));
                         } else {
                             s.parameters[index] = value;
-                            s.synth.set_parameters(black_box(&s.parameters));
+                            let mut candidates = [0; parameters::COUNT.div_ceil(64)];
+                            candidates[index / 64] = 1 << (index % 64);
+                            s.synth
+                                .set_automated_parameters(black_box(&s.parameters), candidates);
                         }
                     }
                     while let Some(event) = scenario.events.get(s.event) {
