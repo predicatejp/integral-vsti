@@ -431,6 +431,7 @@ impl Voice {
     /// 親が検証したOsc2・Osc3のMod設定を配送する。
     pub fn set_phase_modulation(&mut self, depths: [f64; 2]) {
         for (i, (&old, &new)) in self.state.phase_depths.iter().zip(&depths).enumerate() {
+            self.state.oscillator_inputs[i].phase_modulated = new != 0.0;
             if (old != 0.0) != (new != 0.0) {
                 self.state.oscillators_prepared &= !(1 << i);
             }
@@ -681,7 +682,6 @@ impl Voice {
         let input = &mut self.state.oscillator_inputs[I];
         input.active = true;
         input.phase_modulation = modulation;
-        input.phase_modulated = I < 2 && self.state.phase_depths[I] != 0.0;
         debug_assert!(input.phase_modulated || input.phase_modulation == 0.0);
         // SAFETY: 定常入力は親とVoiceで検証済み。設定・ノート変更で準備を失効させる。
         if !PREPARED && self.state.oscillators_prepared & (1 << I) == 0 {
