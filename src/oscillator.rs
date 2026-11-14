@@ -503,6 +503,12 @@ impl Oscillator {
     fn update_sample<const SINGLE: bool>(&mut self) {
         // generate_prepared_sampleが発音中であることを確認してから呼ぶ。
         let count = if SINGLE { 1 } else { self.state.rendered_count };
+        // 1発振器では不要なlaneとmaskを構築せず、同じ式を直接評価する。
+        if count == 1 {
+            let next = self.state.phases[0] + self.state.phase_increments[0];
+            self.state.phases[0] = next - f64::from((next >= 1.0) as u8);
+            return;
+        }
         for (phase, increment) in self.state.phases[..count]
             .iter_mut()
             .zip(&self.state.phase_increments)
