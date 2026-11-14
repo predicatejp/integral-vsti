@@ -8,7 +8,12 @@ use super::Waveform;
 #[path = "wavetable_data.rs"]
 mod data;
 
-static COEFFICIENTS: &[u8] = include_bytes!("wavetable.bin");
+// 32byteセルを同じ境界に配置し、ベクトル読出しのcacheline跨ぎを避ける。
+#[repr(align(32))]
+struct AlignedCoefficients([u8; include_bytes!("wavetable.bin").len()]);
+static ALIGNED_COEFFICIENTS: AlignedCoefficients =
+    AlignedCoefficients(*include_bytes!("wavetable.bin"));
+static COEFFICIENTS: &[u8] = &ALIGNED_COEFFICIENTS.0;
 
 struct Table {
     /// 各区間4個のlittle-endian f64係数を格納した位置（バイト）。
@@ -239,6 +244,7 @@ mod tests {
 
     #[test]
     fn generated_table_positions_fit_fast_integer_conversion() {
+        assert_eq!(COEFFICIENTS.as_ptr() as usize % 32, 0);
         for wave in [Waveform::Sawtooth, Waveform::Square, Waveform::Triangle] {
             let end = if wave == Waveform::Sawtooth {
                 0.5
