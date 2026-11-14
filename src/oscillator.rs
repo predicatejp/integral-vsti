@@ -76,7 +76,8 @@ fn detune_ratio(cents: f64) -> f64 {
 /// 1/4周期1024区間と対称性による正弦波。入力位相は[0, 1)。実効値補正は行わない。
 fn sine_sample(phase: f64) -> f64 {
     let position = phase * 4.0;
-    let quadrant = position as u32;
+    // SAFETY: 検証済みの保持位相は有限の[0,1]で、positionは[0,4]。
+    let quadrant = unsafe { position.to_int_unchecked::<i32>() };
     let fraction = position - f64::from(quadrant);
     // 偶数象限はfraction、奇数象限は1-fractionへ折り返す。
     let folded = (f64::from(quadrant & 1) - fraction).abs();
