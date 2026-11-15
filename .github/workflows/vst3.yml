@@ -1,6 +1,8 @@
 name: VST3 Build
 
 on:
+  push:
+    tags: ['v[0-9]*']
   workflow_dispatch:
     inputs:
       pr_number:
@@ -106,12 +108,12 @@ jobs:
           if ($dependencies -match '(?i)(VCRUNTIME|MSVCP)\d[^\s]*\.dll') {
             throw 'Unexpected dynamic VC runtime dependency'
           }
-      # upload-artifactのZIPにバンドルを直接格納し、ZIPの二重梱包を避ける。
+      # 手動ビルドはバンドルを直接格納し、タグ起動ではRelease添付用ZIPを引き渡す。
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: artifact
         with:
           name: ${{ steps.bundle.outputs.artifact_name }}
-          path: target/vst3/
+          path: ${{ github.event_name == 'push' && 'target/dist/*.zip' || 'target/vst3/' }}
           if-no-files-found: error
           retention-days: 14
       - name: Download information
@@ -123,3 +125,26 @@ jobs:
           echo "[Download VST3 bundle ZIP]($ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
           echo "Version: $PLUGIN_VERSION" >> "$GITHUB_STEP_SUMMARY"
           echo "Commit: $BUILD_COMMIT" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: bundle
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download release bundles
+        run: gh run download "$GITHUB_RUN_ID" --pattern 'Integral-*' --dir target/release-artifacts
+      - name: Create release with generated notes
+        run: |
+          shopt -s nullglob
+          assets=(target/release-artifacts/*/*.zip)
+          [[ ${#assets[@]} == 2 ]]
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --verify-tag --generate-notes --title "$RELEASE_TAG"
