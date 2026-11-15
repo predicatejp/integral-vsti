@@ -84,16 +84,17 @@ fn main() {
             .is_empty();
     let release = env::var("INTEGRAL_RELEASE_VERSION")
         .ok()
-        .filter(|v| !v.is_empty())
-        .map(|v| v.strip_prefix('v').unwrap_or(&v).to_owned());
-    let version = if let Some(release) = &release {
+        .filter(|v| !v.is_empty());
+    let display_version = release.as_deref().unwrap_or("dev");
+    let version = if let Some(release) = release.as_deref() {
+        let release = release.strip_prefix('v').unwrap_or(release);
         assert_eq!(
             release,
             &env::var("CARGO_PKG_VERSION").unwrap(),
             "Release version must match Cargo.toml"
         );
         assert!(!dirty, "Official releases require a clean working tree");
-        release.clone()
+        release.to_owned()
     } else {
         format!("dev-{commit}")
     };
@@ -102,9 +103,10 @@ fn main() {
         "Version exceeds VST3 PClassInfo2 capacity"
     );
     println!("cargo:rustc-env=INTEGRAL_VERSION={version}");
+    println!("cargo:rustc-env=INTEGRAL_DISPLAY_VERSION={display_version}");
     let target = env::var("TARGET").unwrap();
     let info = format!(
-        "{{\n  \"version\": \"{version}\",\n  \"commit\": \"{commit}\",\n  \"dirty\": {dirty},\n  \"official_release\": {},\n  \"target\": \"{target}\"\n}}\n",
+        "{{\n  \"version\": \"{version}\",\n  \"display_version\": \"{display_version}\",\n  \"commit\": \"{commit}\",\n  \"dirty\": {dirty},\n  \"official_release\": {},\n  \"target\": \"{target}\"\n}}\n",
         release.is_some()
     );
     fs::write(

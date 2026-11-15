@@ -82,15 +82,15 @@
 READMEへ実装詳細や開発経緯を追記しないこと。生成物は`target/`以下へ配置する。
 VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体のビルド依存ではない。
 
-CIの起動はユーザーの明示的な操作・実行指示に限定し、`workflow_dispatch`だけを使用する。エージェントが検証目的で独自に起動・再実行しないこと。push・タグ作成・PR作成／更新・コメント・定期実行による自動起動を追加しないこと。
-ActionsのRust CIでPRの先頭ブランチと`pr_number`を指定する。`PR target`でopen PR・base=`main`・同一リポジトリ・先頭コミット・ブランチを照合する。`main`のマージ条件はGitHub Actionsによる`PR target`と`CI result`の成功、および最新の`main`の取り込みとし、管理者もCI条件を迂回しない。手動実行の結果は対象コミットのstatusへ通知し、再実行時はpendingへ戻す。正式版はリリースタグを選んで手動起動する。
+Rust CIと通常のVST3 Buildはユーザーの明示的な操作・実行指示に限定し、`workflow_dispatch`で起動する。エージェントが検証目的で独自に起動・再実行しないこと。リリース用の`v[0-9]*`タグのpushではVST3 Buildを自動起動し、Linux・Windowsのビルド成功後に配布ZIPと自動生成リリースノートを添えたGitHub Releaseを作成する。それ以外のpush・PR作成／更新・コメント・定期実行による自動起動を追加しないこと。
+ActionsのRust CIでPRの先頭ブランチと`pr_number`を指定する。`PR target`でopen PR・base=`main`・同一リポジトリ・先頭コミット・ブランチを照合する。`main`のマージ条件はGitHub Actionsによる`PR target`と`CI result`の成功、および最新の`main`の取り込みとし、管理者もCI条件を迂回しない。手動実行の結果は対象コミットのstatusへ通知し、再実行時はpendingへ戻す。
 変更時は該当ジョブをローカルでも検証し、
 GitHub上での実行結果とローカルでの確認を区別して報告すること。
 テストとCIの実行時間は可能な限り短く保つこと。walltimeを合否条件にせず、ワークフロー独自の経過時間制限や`timeout-minutes`は設定しない。Miri・SDKによるABI検証・GUI検証・Validatorは通常PRのCIから除外し、必要な変更でローカル検証を明示的に実行する。通常PRではRustのテスト・静的解析・依存関係監査・カバレッジを実行する。MSRVとstableの全テストをLinux/Windowsのtestプロファイルで実行し、releaseプロファイルの検査はLinuxで行う。PR対象の検査と各検証ジョブは並列に開始し、すべての結果を集約してマージ条件を判定する。
 CI用ツールの固定バージョンは `scripts/ci-versions.sh` で更新し、MSRVは `Cargo.toml` の `rust-version` と一致させること。
-開発版は `dev-<完全なコミットID>`、正式版はCargo.tomlのSemantic Versioningとする。
-配布バンドル生成は独立した`VST3 Build`（`.github/workflows/vst3.yml`）へ分離し、必要な場合だけユーザーが手動起動する。通常CIの起動・成功やPRのマージ条件へ連動させない。PRでは先頭ブランチとPR番号を指定し、先頭コミットをビルドして成果物名・ホスト向けバージョン・build-info.jsonのコミットを一致させること。
-最適化ビルドと正式リリースを区別し、正式版は `INTEGRAL_RELEASE_VERSION` で明示すること。
+ホスト向けバージョンは開発版を `dev-<完全なコミットID>`、正式版をCargo.tomlのSemantic Versioningとする。GUIのロゴ右側には`INTEGRAL_RELEASE_VERSION`で指定された文字列をそのまま表示し、未指定・空文字の場合は`dev`を表示する。文字列は右揃えで描き、先頭をロゴの可視右端から6物理px空け、ベースラインをロゴの文字へ揃える。表示文字列もbuild-info.jsonの`display_version`へ保存する。
+配布バンドル生成は独立した`VST3 Build`（`.github/workflows/vst3.yml`）で行う。通常CIの起動・成功やPRのマージ条件へ連動させない。PRでは先頭ブランチとPR番号を指定し、先頭コミットをビルドして成果物名・ホスト向けバージョン・build-info.jsonのコミットを一致させること。
+最適化ビルドと正式リリースを区別し、正式版は `INTEGRAL_RELEASE_VERSION` へリリースタグ名を指定すること。先頭の`v`を除いた値とCargo.tomlのバージョンの一致、および作業ツリーに変更がないことを検証する。
 バンドルZIPにはライセンス通知とビルド情報を含める。バージョン生成の変更時は `python3 tests/build-metadata.py` を実行すること。
 MiriやRustのカバレッジだけで、ホストとのABI互換性を検証済みとしないこと。
 

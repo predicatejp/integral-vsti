@@ -1174,7 +1174,7 @@ impl WindowHandler for Editor {
                 let state = self.state.borrow();
                 let logo = &state.logo_texture;
                 let logo_size = logo.size_vec2() / UI_SCALE;
-                let min = title.left_center() + egui::vec2(GAP, -logo_size.y / 2.0);
+                let min = title.left_center() + egui::vec2(-GAP, -logo_size.y / 2.0);
                 let min = (min.to_vec2() * UI_SCALE).round().to_pos2() / UI_SCALE;
                 painter.image(
                     logo.id(),
@@ -1182,6 +1182,23 @@ impl WindowHandler for Editor {
                     egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
+                let mut version = egui::text::LayoutJob::simple_singleline(
+                    env!("INTEGRAL_DISPLAY_VERSION").to_owned(),
+                    egui::FontId::proportional(FONT_SIZE * 0.75),
+                    KNOB_INK,
+                );
+                version.halign = egui::Align::RIGHT;
+                let version = painter.layout_job(version);
+                // 文字列はビルド時に非空へ確定する。ロゴ素材の右端226pxから6px空け、
+                // SVGの文字基準線に対応する素材内42pxへフォントのベースラインを揃える。
+                let row = &version.rows[0];
+                let baseline = row.pos.y + row.glyphs[0].pos.y;
+                let position = min
+                    + egui::vec2(
+                        232.0 / UI_SCALE + version.size().x,
+                        42.0 / UI_SCALE - baseline,
+                    );
+                painter.galley(position, version, KNOB_INK);
             });
             let meter_x = effects_x + (side_width - 254.0) / 2.0;
             let button_size = egui::vec2(64.0, 32.0);

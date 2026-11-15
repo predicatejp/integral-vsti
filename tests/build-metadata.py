@@ -29,7 +29,8 @@ with tempfile.TemporaryDirectory(prefix="integral-version-") as temporary:
     )
     (directory / ".gitignore").write_text("/target/\n")
     (directory / "src").mkdir()
-    source = 'fn main() { println!("{}", env!("INTEGRAL_VERSION")); }\n'
+    source = ('fn main() { println!("{}\\n{}", env!("INTEGRAL_VERSION"), '
+              'env!("INTEGRAL_DISPLAY_VERSION")); }\n')
     (directory / "src/main.rs").write_text(source)
     environment = dict(os.environ)
     for key in ("INTEGRAL_COMMIT", "INTEGRAL_RELEASE_VERSION", "CARGO_TARGET_DIR"):
@@ -55,7 +56,10 @@ with tempfile.TemporaryDirectory(prefix="integral-version-") as temporary:
                 message = json.loads(line)
                 if message["reason"] == "build-script-executed":
                     cargo.info_path = Path(message["out_dir"]) / "build-info.json"
-        return "\n".join(line for line in lines if not line.startswith("{"))
+        version, display_version = [line for line in lines if not line.startswith("{")]
+        assert display_version == (env.get("INTEGRAL_RELEASE_VERSION") or "dev")
+        assert metadata()["display_version"] == display_version
+        return version
 
     def metadata():
         return json.loads(cargo.info_path.read_text())
@@ -63,6 +67,8 @@ with tempfile.TemporaryDirectory(prefix="integral-version-") as temporary:
     assert cargo() == f"dev-{commit}"
     assert metadata()["dirty"] is False
     assert cargo() == f"dev-{commit}"  # Cached build.
+    assert cargo(dict(environment, INTEGRAL_RELEASE_VERSION="")) == f"dev-{commit}"
+    assert metadata()["official_release"] is False
     run(directory, "git", "commit", "--allow-empty", "-m", "New revision")
     commit = run(directory, "git", "rev-parse", "HEAD")
     assert cargo() == f"dev-{commit}"  # No source change; Git ref must invalidate cache.
@@ -80,6 +86,8 @@ with tempfile.TemporaryDirectory(prefix="integral-version-") as temporary:
     release_environment = dict(environment, INTEGRAL_RELEASE_VERSION="1.2.3")
     assert cargo(release_environment) == "1.2.3"
     assert metadata()["official_release"] is True
+    assert cargo(dict(environment, INTEGRAL_RELEASE_VERSION="v1.2.3")) == "1.2.3"
+    assert cargo(release_environment) == "1.2.3"  # Only the displayed prefix changed.
     assert cargo() == f"dev-{commit}"  # Switching back must invalidate cache too.
     assert "Release version must match" in cargo(
         dict(environment, INTEGRAL_RELEASE_VERSION="1.2.4"), succeeds=False
@@ -102,4 +110,4 @@ with tempfile.TemporaryDirectory(prefix="integral-version-") as temporary:
         dict(environment, INTEGRAL_COMMIT="invalid"), succeeds=False
     )
 
-print("Build metadata checks passed: cached commits, dev/release, dirty tree, archive provenance")
+print("Build metadata checks passed: cached commits, dev/release display, dirty tree, archive provenance")
