@@ -1,70 +1,65 @@
+![Integralの操作画面](artwork/example.png)
+
 # Integral
 
-Integralは、3基のオシレータと最大32音のポリフォニーを備えたVST3シンセサイザーです。Rustで開発しています。
+Integralは、3基のオシレータと最大32音の同時発音に対応したVST3シンセサイザーです。ユニゾンや位相変調による音作り、フィルタ、エフェクトをひとつの操作画面にまとめています。
 
 ## 主な機能
 
-- サイン波・三角波・矩形波・ノコギリ波・ホワイトノイズ。Osc1は最大7声のユニゾンに対応し、Osc3→Osc2→Osc1の位相変調も可能です。
-- 音量とカットオフの独立したAHDSRエンベロープ、ベロシティ感度、ローパス・ハイパス・バンドパスフィルタ。
-- 順序を自由に設定できる3つのエフェクトスロット。Chorus、Compressor、Delay、Distortion、Phaser、Reverbを選択できます。
-- 3帯域EQ、マスターの音量・定位・リミッタ。
-- ノブ中心のGUI、VST3オートメーション、DAWプロジェクトへの設定保存、内蔵プリセット「Sine」。
+- **3基のオシレータ**：サイン波・三角波・矩形波・ノコギリ波・ホワイトノイズを選択。Osc1は最大7声のユニゾンに対応し、デチューンと左右の広がりを調整できます。
+- **位相変調**：Osc3→Osc2→Osc1の変調で音色を変化させます。
+- **演奏表現**：最大32音のポリフォニー、モノフォニック時のポルタメント、ピッチベンドに対応。
+- **音量とフィルタ**：独立したAHDSRエンベロープとベロシティ感度。フィルタはローパス・ハイパス・バンドパスを選択できます。
+- **3つのエフェクトスロット**：Chorus、Compressor、テンポ同期Delay、Distortion、Phaser、Reverbを自由な順序で組み合わせ、3帯域EQとリミッタで仕上げられます。
+- **DAWとの連携**：パラメーターのオートメーション、プロジェクトへの音色保存、内蔵プリセット「Sine」に対応。
 
 ## 動作環境
 
 | 項目 | 対応 |
 | --- | --- |
-| OS | Windows x86_64、Linux x86_64（GNU） |
-| CPU | AVX2・FMA3対応（OSによるAVX状態の保存・復元も必要） |
-| プラグイン形式 | VST3 Instrument / Synth |
-| 音声出力 | ステレオ、float32 / float64 |
+| OS | Windows / Linux（GNU）、いずれもx86_64版 |
+| CPU | AVX2・FMA3対応。OSでもAVXを利用できること |
+| ホスト | VST3音源に対応したDAW |
+| 音声出力 | ステレオ |
 | サンプルレート | 44.1 kHz以上 |
-| ノート入力 | Note On / Note Off、16チャンネル合計で最大32音 |
 
 LinuxのGUIにはX11、libxkbcommon-x11、OpenGL/EGLが必要です。
 
 ## インストール
 
-使用するOS向けのZIPを展開し、`Integral.vst3`フォルダー全体をVST3の探索先へ配置します。
+1. 使用するOS向けのZIPを展開します。
+2. 以下のパスになるよう、`Integral.vst3`フォルダー全体を配置します。
+3. DAWでプラグインを再スキャンし、音源トラックに **Integral** を読み込みます。
 
-| OS | 配置先の例 |
+| OS | 配置後のパス |
 | --- | --- |
 | Windows | `C:\Program Files\Common Files\VST3\Integral.vst3` |
 | Linux | `~/.vst3/Integral.vst3` |
 
-DAWでプラグインを再スキャンし、音源一覧から **Integral** を読み込みます。
-内蔵プリセット「Sine」で基本の発音を試せます。更新時はDAWを終了し、旧版のバンドルを置き換えてください。
+更新時はDAWを終了し、同じ場所の`Integral.vst3`フォルダーを新しいものに置き換えてください。
 
-## ビルド
+## 使い始める
 
-Rust 1.95以上、Python 3、Gitが必要です。LinuxではCリンカー、WindowsではVisual Studio Build Toolsの「C++によるデスクトップ開発」とWindows SDKを用意します。
+DAWのプリセット選択から内蔵音色 **Sine** を読み込み、MIDI鍵盤やピアノロールで発音を試せます。
 
-Linux:
+- **ノブ**：上下にドラッグして調整します。操作中はパラメーター名と現在値が表示されます。音程や音量などの基準値には吸着し、合わせやすくなっています。
+- **選択リスト**：クリックして波形やエフェクトの種類を選びます。エフェクト・フィルタ・EQは **Off** で無効にできます。
+- **エフェクトの順序**：各スロット右上の **↑ / ↓** で入れ替えます。
+- **Reset**：音色の設定を保ったまま、発音とエフェクトの残響をリセットします。
 
-```sh
-sh scripts/build-vst3.sh
-```
+作成した音色はDAWのプロジェクトと一緒に保存できます。各コントロールの詳細は[音源仕様・操作ガイド](https://github.com/predicatejp/integral-vsti/wiki/Instrument-Reference)を参照してください。
 
-Windows（PowerShell）:
+## ソースからビルドする
 
-```powershell
-rustup target add x86_64-pc-windows-msvc
-python scripts/build-vst3.py
-```
+[環境構築の手順](https://github.com/predicatejp/integral-vsti/wiki/Development)に沿って準備し、リポジトリのルートで実行します。
 
-`target/vst3/Integral.vst3`にバンドル、`target/dist/`にZIPを生成します。
-クロスコンパイルや正式リリースの手順は[開発資料](https://github.com/predicatejp/integral-vsti/wiki/Development)を参照してください。
+- Linux：`sh scripts/build-vst3.sh`
+- Windows（PowerShell）：`python scripts/build-vst3.py`
 
-## ドキュメント
-
-- [音源仕様・操作](https://github.com/predicatejp/integral-vsti/wiki/Instrument-Reference)：パラメーター、発音、信号処理、GUI。
-- [ビルド・検証・開発](https://github.com/predicatejp/integral-vsti/wiki/Development)：環境構築、テスト、CI、ソース構成。
-- [Wiki](https://github.com/predicatejp/integral-vsti/wiki)：技術資料と性能・音響特性の調査。
+`target/vst3/Integral.vst3`にプラグイン、`target/dist/`に配布用ZIPを生成します。詳しいビルド手順と技術資料は[Wiki](https://github.com/predicatejp/integral-vsti/wiki)にまとめています。
 
 ## ライセンス
 
 Copyright (C) 2026 Yusuke Oda
 
-**AGPL-3.0-only**。全文は[LICENSE](LICENSE)、著作権表示は[COPYRIGHT](COPYRIGHT)を参照してください。
-VST3のABI定義に関する出典とMITライセンス通知は[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)に記載しています。
-配布バンドルには本体・依存ライブラリ・付属フォントのライセンス通知を同梱します。
+[GNU AGPL v3.0（AGPL-3.0-only）](LICENSE)で提供しています。[著作権表示](COPYRIGHT)・[第三者のライセンス通知](THIRD_PARTY_NOTICES.txt)も参照してください。
