@@ -768,7 +768,7 @@ fn parameter_queues_are_enumerated_once_and_keep_the_first_duplicate() {
     data.input_parameter_changes = ptr::from_mut(&mut queues).cast();
     let mut values = parameters::defaults();
     values[32] = 0.2;
-    let mut points = unsafe { parameters::ParameterPoints::all(&data, &values, 0.5) };
+    let mut points = unsafe { parameters::automation::ParameterPoints::all(&data, &values, 0.5) };
     assert_eq!(queues.visits, 6);
     assert_eq!(points[11].value_at(0), 0.4);
     assert_eq!(points[32].value_at(0), 0.2);

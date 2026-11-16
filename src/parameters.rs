@@ -1,15 +1,18 @@
 // Copyright (C) 2026 Yusuke Oda
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 音源パラメーターの値変換、VST3変更キューと保存ストリームの読み書き。
+//! 音源パラメーターの共通定義・値変換・共有値。
 
-use crate::abi::*;
 use crate::distortion::{ClipperType, DistortionParameters};
 use crate::envelope::{DEFAULT_ENVELOPE, EnvelopeParameters};
 use crate::filter::FilterType;
 use crate::oscillator::{PhaseMode, Waveform};
-use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "parameters/automation.rs"]
+pub mod automation;
+#[path = "parameters/state.rs"]
+pub mod state;
 
 pub const COUNT: usize = 134;
 pub const PORTAMENTO: usize = 132;
@@ -250,279 +253,152 @@ pub const FILTER_NAMES: [&str; 7] = [
     "BandPass2",
 ];
 
-/// 波形IDは従来どおり。追加IDも保存済みオートメーションとの対応を維持する。
-pub const IDS: [u32; COUNT] = [
-    WAVEFORM_ID,
-    0x4154544b,
-    0x484f4c44,
-    0x44454359,
-    0x53555354,
-    0x52454c53,
-    0x554e4953, // UNIS
-    0x4454554e, // DTUN
-    0x504f4c59, // POLY
-    0x46545950, // FTYP
-    0x46435554, // FCUT
-    0x46524553, // FRES
-    0x50484153, // PHAS
-    0x4d564f4c, // MVOL
-    0x43415454, // CATT
-    0x43484c44, // CHLD
-    0x43444543, // CDEC
-    0x43535553, // CSUS
-    0x4352454c, // CREL
-    0x43414d54, // CAMT
-    0x57494454, // WIDT
-    0x4d50414e, // MPAN
-    0x4f31564c, // O1VL
-    0x4f325746, // O2WF
-    0x4f32544e, // O2TN
-    0x4f32564c, // O2VL
-    0x4f335746, // O3WF
-    0x4f33544e, // O3TN
-    0x4f33564c, // O3VL
-    0x4f32464d, // O2FM
-    0x4f33464d, // O3FM
-    0x43545950, // CTYP
-    0x43474149, // CGAI
-    0x434d4958, // CMIX
-    0x4551_0000,
-    0x4551_0001,
-    0x4551_0002,
-    0x4551_0003,
-    0x4551_0004,
-    0x4551_0005,
-    0x4551_0006,
-    0x4551_0007,
-    0x4546_3154, // EF1T
-    0x4546_3254, // EF2T
-    0x4546_3354, // EF3T
-    0x4546_3243, // EF2C
-    0x4546_3247, // EF2G
-    0x4546_324d, // EF2M
-    0x4546_3343, // EF3C
-    0x4546_3347, // EF3G
-    0x4546_334d, // EF3M
-    0x4546_3142,
-    0x4546_3146,
-    0x4546_3144, // EF1B / EF1F / EF1D
-    0x4546_3242,
-    0x4546_3246,
-    0x4546_3244,
-    0x4546_3342,
-    0x4546_3346,
-    0x4546_3344,
-    0x4546_3153, // EF1S
-    0x4546_3253, // EF2S
-    0x4546_3353, // EF3S
-    0x52314443,  // R1DC
-    0x5231444d,  // R1DM
-    0x5231535a,  // R1SZ
-    0x52314d58,  // R1MX
-    0x52324443,  // R2DC
-    0x5232444d,  // R2DM
-    0x5232535a,  // R2SZ
-    0x52324d58,  // R2MX
-    0x52334443,  // R3DC
-    0x5233444d,  // R3DM
-    0x5233535a,  // R3SZ
-    0x52334d58,  // R3MX
-    0x4331544d,  // C1TM
-    0x43314450,  // C1DP
-    0x43315254,  // C1RT
-    0x43314454,  // C1DT
-    0x43314642,  // C1FB
-    0x43314d58,  // C1MX
-    0x4332544d,  // C2TM
-    0x43324450,  // C2DP
-    0x43325254,  // C2RT
-    0x43324454,  // C2DT
-    0x43324642,  // C2FB
-    0x43324d58,  // C2MX
-    0x4333544d,  // C3TM
-    0x43334450,  // C3DP
-    0x43335254,  // C3RT
-    0x43334454,  // C3DT
-    0x43334642,  // C3FB
-    0x43334d58,  // C3MX
-    0x50314346,  // P1CF
-    0x50314450,  // P1DP
-    0x50315254,  // P1RT
-    0x50314642,  // P1FB
-    0x50314d58,  // P1MX
-    0x50324346,  // P2CF
-    0x50324450,  // P2DP
-    0x50325254,  // P2RT
-    0x50324642,  // P2FB
-    0x50324d58,  // P2MX
-    0x50334346,  // P3CF
-    0x50334450,  // P3DP
-    0x50335254,  // P3RT
-    0x50334642,  // P3FB
-    0x50334d58,  // P3MX
-    0x4c490000,  // Limiter
-    0x43500100,  // Compressor 1: Threshold
-    0x43500101,  // Compressor 1: Ratio
-    0x43500102,  // Compressor 1: Attack
-    0x43500103,  // Compressor 1: Release
-    0x43500104,  // Compressor 1: Knee
-    0x43500105,  // Compressor 1: Makeup
-    0x43500106,  // Compressor 1: Mix
-    0x43500200,  // Compressor 2: Threshold
-    0x43500201,  // Compressor 2: Ratio
-    0x43500202,  // Compressor 2: Attack
-    0x43500203,  // Compressor 2: Release
-    0x43500204,  // Compressor 2: Knee
-    0x43500205,  // Compressor 2: Makeup
-    0x43500206,  // Compressor 2: Mix
-    0x43500300,  // Compressor 3: Threshold
-    0x43500301,  // Compressor 3: Ratio
-    0x43500302,  // Compressor 3: Attack
-    0x43500303,  // Compressor 3: Release
-    0x43500304,  // Compressor 3: Knee
-    0x43500305,  // Compressor 3: Makeup
-    0x43500306,  // Compressor 3: Mix
-    0x4153_454e, // ASEN: Amp velocity sensitivity
-    0x4653_454e, // FSEN: Filter Amount velocity sensitivity
-    0x504f_5254, // PORT: Portamento
-    0x5049_5443, // PITC: Pitch bend range
-];
-pub const NAMES: [&str; COUNT] = [
-    "Osc1 Waveform",
-    "Attack",
-    "Hold",
-    "Decay",
-    "Sustain",
-    "Release",
-    "Unison",
-    "Detune",
-    "Polyphony",
-    "Filter",
-    "Cutoff",
-    "Resonance",
-    "Phase",
-    "Volume",
-    "Cutoff Attack",
-    "Cutoff Hold",
-    "Cutoff Decay",
-    "Cutoff Sustain",
-    "Cutoff Release",
-    "Cutoff Amount",
-    "Width",
-    "Pan",
-    "Osc1 Volume",
-    "Osc2 Waveform",
-    "Osc2 Tune",
-    "Osc2 Volume",
-    "Osc3 Waveform",
-    "Osc3 Tune",
-    "Osc3 Volume",
-    "Osc2 Mod",
-    "Osc3 Mod",
-    "Effect 1 Clipper",
-    "Effect 1 Gain",
-    "Effect 1 Mix",
-    "EQ Enable",
-    "EQ Low Frequency",
-    "EQ Low Gain",
-    "EQ Mid Frequency",
-    "EQ Mid Gain",
-    "EQ Mid Q",
-    "EQ High Frequency",
-    "EQ High Gain",
-    "Effect 1",
-    "Effect 2",
-    "Effect 3",
-    "Effect 2 Clipper",
-    "Effect 2 Gain",
-    "Effect 2 Mix",
-    "Effect 3 Clipper",
-    "Effect 3 Gain",
-    "Effect 3 Mix",
-    "Effect 1 Delay Time",
-    "Effect 1 Feedback",
-    "Effect 1 Delay Mix",
-    "Effect 2 Delay Time",
-    "Effect 2 Feedback",
-    "Effect 2 Delay Mix",
-    "Effect 3 Delay Time",
-    "Effect 3 Feedback",
-    "Effect 3 Delay Mix",
-    "Effect 1 Stereo",
-    "Effect 2 Stereo",
-    "Effect 3 Stereo",
-    "Effect 1 Reverb Decay",
-    "Effect 1 Reverb Damping",
-    "Effect 1 Reverb Size",
-    "Effect 1 Reverb Mix",
-    "Effect 2 Reverb Decay",
-    "Effect 2 Reverb Damping",
-    "Effect 2 Reverb Size",
-    "Effect 2 Reverb Mix",
-    "Effect 3 Reverb Decay",
-    "Effect 3 Reverb Damping",
-    "Effect 3 Reverb Size",
-    "Effect 3 Reverb Mix",
-    "Effect 1 Chorus Time",
-    "Effect 1 Chorus Depth",
-    "Effect 1 Chorus Rate",
-    "Effect 1 Chorus Detune",
-    "Effect 1 Chorus Feedback",
-    "Effect 1 Chorus Mix",
-    "Effect 2 Chorus Time",
-    "Effect 2 Chorus Depth",
-    "Effect 2 Chorus Rate",
-    "Effect 2 Chorus Detune",
-    "Effect 2 Chorus Feedback",
-    "Effect 2 Chorus Mix",
-    "Effect 3 Chorus Time",
-    "Effect 3 Chorus Depth",
-    "Effect 3 Chorus Rate",
-    "Effect 3 Chorus Detune",
-    "Effect 3 Chorus Feedback",
-    "Effect 3 Chorus Mix",
-    "Effect 1 Phaser Center",
-    "Effect 1 Phaser Depth",
-    "Effect 1 Phaser Rate",
-    "Effect 1 Phaser Feedback",
-    "Effect 1 Phaser Mix",
-    "Effect 2 Phaser Center",
-    "Effect 2 Phaser Depth",
-    "Effect 2 Phaser Rate",
-    "Effect 2 Phaser Feedback",
-    "Effect 2 Phaser Mix",
-    "Effect 3 Phaser Center",
-    "Effect 3 Phaser Depth",
-    "Effect 3 Phaser Rate",
-    "Effect 3 Phaser Feedback",
-    "Effect 3 Phaser Mix",
-    "Limiter",
-    "Effect 1 Compressor Threshold",
-    "Effect 1 Compressor Ratio",
-    "Effect 1 Compressor Attack",
-    "Effect 1 Compressor Release",
-    "Effect 1 Compressor Knee",
-    "Effect 1 Compressor Makeup",
-    "Effect 1 Compressor Mix",
-    "Effect 2 Compressor Threshold",
-    "Effect 2 Compressor Ratio",
-    "Effect 2 Compressor Attack",
-    "Effect 2 Compressor Release",
-    "Effect 2 Compressor Knee",
-    "Effect 2 Compressor Makeup",
-    "Effect 2 Compressor Mix",
-    "Effect 3 Compressor Threshold",
-    "Effect 3 Compressor Ratio",
-    "Effect 3 Compressor Attack",
-    "Effect 3 Compressor Release",
-    "Effect 3 Compressor Knee",
-    "Effect 3 Compressor Makeup",
-    "Effect 3 Compressor Mix",
-    "Amp Sensitivity",
-    "Filter Amount Sensitivity",
-    "Portamento",
-    "Pitch",
-];
+// 同じ行から従来と同じ配列を生成し、ID検索のメモリ配置も維持する。
+macro_rules! define_parameters {
+    ($($id:expr, $name:literal, $default:expr;)*) => {
+        pub const IDS: [u32; COUNT] = [$($id),*];
+        pub const NAMES: [&str; COUNT] = [$($name),*];
+        const DEFAULT_PLAIN: [f64; COUNT] = [$($default),*];
+    };
+}
+
+define_parameters! {
+    WAVEFORM_ID, "Osc1 Waveform", 0.0;
+    0x4154544b, "Attack", DEFAULT_ENVELOPE.attack_ms;
+    0x484f4c44, "Hold", DEFAULT_ENVELOPE.hold_ms;
+    0x44454359, "Decay", DEFAULT_ENVELOPE.decay_ms;
+    0x53555354, "Sustain", DEFAULT_ENVELOPE.sustain;
+    0x52454c53, "Release", DEFAULT_ENVELOPE.release_ms;
+    0x554e4953, "Unison", 1.0;
+    0x4454554e, "Detune", 0.0;
+    0x504f4c59, "Polyphony", 1.0;
+    0x46545950, "Filter", FilterType::LowPass1 as u32 as f64;
+    0x46435554, "Cutoff", 4800.0;
+    0x46524553, "Resonance", 1.0;
+    0x50484153, "Phase", 0.0;
+    0x4d564f4c, "Volume", 0.0;
+    0x43415454, "Cutoff Attack", DEFAULT_ENVELOPE.attack_ms;
+    0x43484c44, "Cutoff Hold", DEFAULT_ENVELOPE.hold_ms;
+    0x43444543, "Cutoff Decay", DEFAULT_ENVELOPE.decay_ms;
+    0x43535553, "Cutoff Sustain", DEFAULT_ENVELOPE.sustain;
+    0x4352454c, "Cutoff Release", DEFAULT_ENVELOPE.release_ms;
+    0x43414d54, "Cutoff Amount", 0.0;
+    0x57494454, "Width", 0.0;
+    0x4d50414e, "Pan", 0.0;
+    0x4f31564c, "Osc1 Volume", 0.0;
+    0x4f325746, "Osc2 Waveform", 0.0;
+    0x4f32544e, "Osc2 Tune", 0.0;
+    0x4f32564c, "Osc2 Volume", f64::NEG_INFINITY;
+    0x4f335746, "Osc3 Waveform", 0.0;
+    0x4f33544e, "Osc3 Tune", 0.0;
+    0x4f33564c, "Osc3 Volume", f64::NEG_INFINITY;
+    0x4f32464d, "Osc2 Mod", 0.0;
+    0x4f33464d, "Osc3 Mod", 0.0;
+    0x43545950, "Effect 1 Clipper", 0.0;
+    0x43474149, "Effect 1 Gain", 0.0;
+    0x434d4958, "Effect 1 Mix", 100.0;
+    0x4551_0000, "EQ Enable", 0.0;
+    0x4551_0001, "EQ Low Frequency", 250.0;
+    0x4551_0002, "EQ Low Gain", 0.0;
+    0x4551_0003, "EQ Mid Frequency", 1000.0;
+    0x4551_0004, "EQ Mid Gain", 0.0;
+    0x4551_0005, "EQ Mid Q", 1.0;
+    0x4551_0006, "EQ High Frequency", 4000.0;
+    0x4551_0007, "EQ High Gain", 0.0;
+    0x4546_3154, "Effect 1", 0.0;
+    0x4546_3254, "Effect 2", 0.0;
+    0x4546_3354, "Effect 3", 0.0;
+    0x4546_3243, "Effect 2 Clipper", 0.0;
+    0x4546_3247, "Effect 2 Gain", 0.0;
+    0x4546_324d, "Effect 2 Mix", 100.0;
+    0x4546_3343, "Effect 3 Clipper", 0.0;
+    0x4546_3347, "Effect 3 Gain", 0.0;
+    0x4546_334d, "Effect 3 Mix", 100.0;
+    0x4546_3142, "Effect 1 Delay Time", 5.0;
+    0x4546_3146, "Effect 1 Feedback", 35.0;
+    0x4546_3144, "Effect 1 Delay Mix", 25.0;
+    0x4546_3242, "Effect 2 Delay Time", 5.0;
+    0x4546_3246, "Effect 2 Feedback", 35.0;
+    0x4546_3244, "Effect 2 Delay Mix", 25.0;
+    0x4546_3342, "Effect 3 Delay Time", 5.0;
+    0x4546_3346, "Effect 3 Feedback", 35.0;
+    0x4546_3344, "Effect 3 Delay Mix", 25.0;
+    0x4546_3153, "Effect 1 Stereo", 0.0;
+    0x4546_3253, "Effect 2 Stereo", 0.0;
+    0x4546_3353, "Effect 3 Stereo", 0.0;
+    0x52314443, "Effect 1 Reverb Decay", 2.0;
+    0x5231444d, "Effect 1 Reverb Damping", 6000.0;
+    0x5231535a, "Effect 1 Reverb Size", 100.0;
+    0x52314d58, "Effect 1 Reverb Mix", 25.0;
+    0x52324443, "Effect 2 Reverb Decay", 2.0;
+    0x5232444d, "Effect 2 Reverb Damping", 6000.0;
+    0x5232535a, "Effect 2 Reverb Size", 100.0;
+    0x52324d58, "Effect 2 Reverb Mix", 25.0;
+    0x52334443, "Effect 3 Reverb Decay", 2.0;
+    0x5233444d, "Effect 3 Reverb Damping", 6000.0;
+    0x5233535a, "Effect 3 Reverb Size", 100.0;
+    0x52334d58, "Effect 3 Reverb Mix", 25.0;
+    0x4331544d, "Effect 1 Chorus Time", 20.0;
+    0x43314450, "Effect 1 Chorus Depth", 2.0;
+    0x43315254, "Effect 1 Chorus Rate", 0.7;
+    0x43314454, "Effect 1 Chorus Detune", 0.0;
+    0x43314642, "Effect 1 Chorus Feedback", 0.0;
+    0x43314d58, "Effect 1 Chorus Mix", 50.0;
+    0x4332544d, "Effect 2 Chorus Time", 20.0;
+    0x43324450, "Effect 2 Chorus Depth", 2.0;
+    0x43325254, "Effect 2 Chorus Rate", 0.7;
+    0x43324454, "Effect 2 Chorus Detune", 0.0;
+    0x43324642, "Effect 2 Chorus Feedback", 0.0;
+    0x43324d58, "Effect 2 Chorus Mix", 50.0;
+    0x4333544d, "Effect 3 Chorus Time", 20.0;
+    0x43334450, "Effect 3 Chorus Depth", 2.0;
+    0x43335254, "Effect 3 Chorus Rate", 0.7;
+    0x43334454, "Effect 3 Chorus Detune", 0.0;
+    0x43334642, "Effect 3 Chorus Feedback", 0.0;
+    0x43334d58, "Effect 3 Chorus Mix", 50.0;
+    0x50314346, "Effect 1 Phaser Center", 1000.0;
+    0x50314450, "Effect 1 Phaser Depth", 1200.0;
+    0x50315254, "Effect 1 Phaser Rate", 0.5;
+    0x50314642, "Effect 1 Phaser Feedback", 50.0;
+    0x50314d58, "Effect 1 Phaser Mix", 50.0;
+    0x50324346, "Effect 2 Phaser Center", 1000.0;
+    0x50324450, "Effect 2 Phaser Depth", 1200.0;
+    0x50325254, "Effect 2 Phaser Rate", 0.5;
+    0x50324642, "Effect 2 Phaser Feedback", 50.0;
+    0x50324d58, "Effect 2 Phaser Mix", 50.0;
+    0x50334346, "Effect 3 Phaser Center", 1000.0;
+    0x50334450, "Effect 3 Phaser Depth", 1200.0;
+    0x50335254, "Effect 3 Phaser Rate", 0.5;
+    0x50334642, "Effect 3 Phaser Feedback", 50.0;
+    0x50334d58, "Effect 3 Phaser Mix", 50.0;
+    0x4c490000, "Limiter", 0.0;
+    0x43500100, "Effect 1 Compressor Threshold", -18.0;
+    0x43500101, "Effect 1 Compressor Ratio", 4.0;
+    0x43500102, "Effect 1 Compressor Attack", 10.0;
+    0x43500103, "Effect 1 Compressor Release", 100.0;
+    0x43500104, "Effect 1 Compressor Knee", 6.0;
+    0x43500105, "Effect 1 Compressor Makeup", 0.0;
+    0x43500106, "Effect 1 Compressor Mix", 100.0;
+    0x43500200, "Effect 2 Compressor Threshold", -18.0;
+    0x43500201, "Effect 2 Compressor Ratio", 4.0;
+    0x43500202, "Effect 2 Compressor Attack", 10.0;
+    0x43500203, "Effect 2 Compressor Release", 100.0;
+    0x43500204, "Effect 2 Compressor Knee", 6.0;
+    0x43500205, "Effect 2 Compressor Makeup", 0.0;
+    0x43500206, "Effect 2 Compressor Mix", 100.0;
+    0x43500300, "Effect 3 Compressor Threshold", -18.0;
+    0x43500301, "Effect 3 Compressor Ratio", 4.0;
+    0x43500302, "Effect 3 Compressor Attack", 10.0;
+    0x43500303, "Effect 3 Compressor Release", 100.0;
+    0x43500304, "Effect 3 Compressor Knee", 6.0;
+    0x43500305, "Effect 3 Compressor Makeup", 0.0;
+    0x43500306, "Effect 3 Compressor Mix", 100.0;
+    0x4153_454e, "Amp Sensitivity", 100.0;
+    0x4653_454e, "Filter Amount Sensitivity", 0.0;
+    0x504f_5254, "Portamento", 0.0;
+    0x5049_5443, "Pitch", 200.0;
+}
+
 /// 離散リストの表示順。連続値や数値ノブでは空のスライスを返す。
 pub fn choices(index: usize) -> &'static [&'static str] {
     if (42..=44).contains(&index) {
@@ -929,142 +805,11 @@ pub fn defaults() -> [f64; COUNT] {
 
 /// 初期音色とSineに共通する固定値。編集済みのパラメーターは参照しない。
 fn initial_values(p: EnvelopeParameters, filter: FilterType) -> [f64; COUNT] {
-    let plain: [f64; COUNT] = [
-        0.0,
-        p.attack_ms,
-        p.hold_ms,
-        p.decay_ms,
-        p.sustain,
-        p.release_ms,
-        1.0,
-        0.0,
-        1.0,
-        f64::from(filter as u32),
-        4800.0, // ノートから+4 oct
-        1.0,
-        0.0, // Phase: Keep
-        0.0, // Volume: 0 dB
-        p.attack_ms,
-        p.hold_ms,
-        p.decay_ms,
-        p.sustain,
-        p.release_ms,
-        0.0, // Cutoff Amount: 0 cent
-        0.0, // Width: 0%
-        0.0, // Pan: 中央
-        0.0, // Osc1 Volume
-        0.0,
-        0.0,
-        f64::NEG_INFINITY, // Osc2
-        0.0,
-        0.0,
-        f64::NEG_INFINITY, // Osc3
-        0.0,               // Osc2 Mod
-        0.0,               // Osc3 Mod
-        0.0,               // Clipper: Soft（スロット自体はOff）
-        0.0,               // Gain: 0 dB
-        100.0,             // Mix: 100%
-        0.0,
-        250.0,
-        0.0,
-        1000.0,
-        0.0,
-        1.0,
-        4000.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0, // 3スロットともOff
-        0.0,
-        0.0,
-        100.0, // Effect 2: Soft / 0 dB / 100%
-        0.0,
-        0.0,
-        100.0, // Effect 3
-        5.0,
-        35.0,
-        25.0,
-        5.0,
-        35.0,
-        25.0,
-        5.0,
-        35.0,
-        25.0, // Delay: 1/8, 35%, 25%
-        0.0,
-        0.0,
-        0.0, // Stereo
-        2.0,
-        6000.0,
-        100.0,
-        25.0, // Reverb
-        2.0,
-        6000.0,
-        100.0,
-        25.0, // Reverb
-        2.0,
-        6000.0,
-        100.0,
-        25.0, // Reverb
-        20.0,
-        2.0,
-        0.7,
-        0.0,
-        0.0,
-        50.0, // Chorus
-        20.0,
-        2.0,
-        0.7,
-        0.0,
-        0.0,
-        50.0, // Chorus
-        20.0,
-        2.0,
-        0.7,
-        0.0,
-        0.0,
-        50.0, // Chorus
-        1000.0,
-        1200.0,
-        0.5,
-        50.0,
-        50.0, // Phaser
-        1000.0,
-        1200.0,
-        0.5,
-        50.0,
-        50.0,
-        1000.0,
-        1200.0,
-        0.5,
-        50.0,
-        50.0,
-        0.0, // Limiter: Off
-        -18.0,
-        4.0,
-        10.0,
-        100.0,
-        6.0,
-        0.0,
-        100.0,
-        -18.0,
-        4.0,
-        10.0,
-        100.0,
-        6.0,
-        0.0,
-        100.0,
-        -18.0,
-        4.0,
-        10.0,
-        100.0,
-        6.0,
-        0.0,
-        100.0,
-        100.0, // Amp velocity sensitivity
-        0.0,   // Filter Amount velocity sensitivity
-        0.0,   // Portamento (ms)
-        200.0, // Pitch bend range (cent)
-    ];
+    let mut plain = DEFAULT_PLAIN;
+    let envelope = [p.attack_ms, p.hold_ms, p.decay_ms, p.sustain, p.release_ms];
+    plain[1..6].copy_from_slice(&envelope);
+    plain[14..19].copy_from_slice(&envelope);
+    plain[9] = f64::from(filter as u32);
     std::array::from_fn(|i| to_normalized(i, plain[i]))
 }
 pub fn eq(values: &[f64; COUNT]) -> crate::eq::EqParameters {
@@ -1199,245 +944,6 @@ pub fn from_normalized(value: f64) -> Option<Waveform> {
     (0.0..=1.0)
         .contains(&value)
         .then(|| WAVEFORMS[((value * 5.0) as usize).min(4)])
-}
-
-/// 1回のprocess中だけホストから借用する、1パラメーターの変更点のカーソル。
-pub struct ParameterPoints<'a> {
-    /// ホスト所有のIParamValueQueue。利用可能なキューがなければnull。
-    queue: This,
-    /// dataと同じ呼び出し中だけ有効な関数表。所有参照を取得しない。
-    table: Option<&'a ParamValueQueueVTable>,
-    /// キューが申告した変更点数。
-    count: i32,
-    /// 次に読み出す変更点の列挙位置。
-    index: i32,
-    /// 最後に受理したoffset。後戻りする変更点を除外するために保持する。
-    previous_offset: i32,
-    /// 今回のブロック長。0ではoffset 0だけを受理する。
-    samples: i32,
-    /// 次に適用する変更点。同じoffsetの変更はキュー順に適用する。
-    next: Option<(i32, f64)>,
-    /// 補間の始点。前ブロックの最終値をoffset=-1として扱う。
-    previous: (i32, f64),
-    /// holds_between_pointsの指定値は変更点まで保持し、それ以外は正規化空間で線形補間する。
-    parameter: usize,
-    /// キュー作成時に確定する補間モード。サンプルごとのParamID分類を省く。
-    interpolates: bool,
-    /// 有効な変更点があるキューだけをDSPから共有値へ書き戻す。
-    /// 他パラメーターの状態復元を、無関係なオートメーションで上書きしない。
-    pub automated: bool,
-}
-
-impl<'a> ParameterPoints<'a> {
-    /// ホストのキューを1回列挙し、ParamIDごとのカーソルを構成する。
-    /// SAFETY: dataの入れ子のインターフェースはホスト所有で、dataの借用期間中有効。
-    pub unsafe fn all(
-        data: &'a ProcessData,
-        values: &[f64; COUNT],
-        pitch_bend: f64,
-    ) -> [Self; HOST_COUNT] {
-        let mut points = std::array::from_fn(|i| {
-            Self::empty(
-                data.num_samples,
-                i,
-                values.get(i).copied().unwrap_or(if i == PITCH_BEND_INDEX {
-                    pitch_bend
-                } else {
-                    0.0
-                }),
-            )
-        });
-        if !data.input_parameter_changes.is_null() {
-            // SAFETY: ホストのIParameterChangesと借用キューを読み、process中だけ保持する。
-            unsafe {
-                let changes = data.input_parameter_changes;
-                let table = &**changes.cast::<*const ParameterChangesVTable>();
-                for at in 0..(table.get_parameter_count)(changes) {
-                    let queue = (table.get_parameter_data)(changes, at);
-                    if queue.is_null() {
-                        continue;
-                    }
-                    let queue_table = &**queue.cast::<*const ParamValueQueueVTable>();
-                    let id = (queue_table.get_parameter_id)(queue);
-                    let parameter = if id == PROGRAM_ID {
-                        Some(PROGRAM_INDEX)
-                    } else if id == PITCH_BEND_ID {
-                        Some(PITCH_BEND_INDEX)
-                    } else {
-                        index(id)
-                    };
-                    let Some(parameter) = parameter else {
-                        continue;
-                    };
-                    let point = &mut points[parameter];
-                    if point.table.is_some() {
-                        continue; // ParamID重複時は最初のキューを採用する。
-                    }
-                    point.queue = queue;
-                    point.table = Some(queue_table);
-                    point.count = (queue_table.get_point_count)(queue);
-                    point.advance();
-                    point.automated = point.next.is_some();
-                }
-            }
-        }
-        points
-    }
-
-    fn empty(samples: i32, parameter: usize, previous_value: f64) -> Self {
-        Self {
-            queue: ptr::null_mut(),
-            table: None,
-            count: 0,
-            index: 0,
-            previous_offset: 0,
-            samples,
-            next: None,
-            previous: (-1, previous_value),
-            parameter,
-            interpolates: !holds_between_points(parameter),
-            automated: false,
-        }
-    }
-
-    /// Programは同じ番号の再選択もロード要求として扱う。
-    pub fn take_program_at(&mut self, offset: i32) -> bool {
-        let changed = self.next.is_some_and(|(at, _)| at <= offset);
-        self.value_at(offset);
-        changed
-    }
-
-    /// プログラム切替点を次の補間の始点とする。同位置の明示的な変更点を優先する。
-    pub fn reset_value(&mut self, offset: i32, value: f64) {
-        self.previous = (offset, value);
-    }
-
-    pub fn value_at(&mut self, offset: i32) -> f64 {
-        while let Some((at, value)) = self.next {
-            if at > offset {
-                break;
-            }
-            self.previous = (at, value);
-            self.advance();
-        }
-        if self.interpolates
-            && let Some((at, value)) = self.next
-        {
-            let fraction = f64::from(offset - self.previous.0) / f64::from(at - self.previous.0);
-            return self.previous.1 + (value - self.previous.1) * fraction;
-        }
-        self.previous.1
-    }
-
-    pub fn advance(&mut self) {
-        self.next = None;
-        let Some(table) = self.table else {
-            return;
-        };
-        while self.index < self.count {
-            let mut offset = -1;
-            let mut value = f64::NAN;
-            // SAFETY: allの契約によりキューは生存中。出力先は型の一致したローカル変数。
-            let status =
-                unsafe { (table.get_point)(self.queue, self.index, &mut offset, &mut value) };
-            self.index += 1;
-            if status != OK
-                || offset < self.previous_offset
-                || (self.samples == 0 && offset != 0)
-                || (self.samples > 0 && offset >= self.samples)
-            {
-                continue;
-            }
-            if (0.0..=1.0).contains(&value) {
-                self.previous_offset = offset;
-                self.next = Some((offset, canonical(self.parameter, value)));
-                break;
-            }
-        }
-    }
-}
-
-// v37: 固定1076バイト。波形番号u32と、その他の実単位f64を保持する。
-const STATE_SIZE: usize = 12 + (COUNT - 1) * 8;
-const STATE_HEADER: [u8; 8] = *b"SVST\x25\0\0\0";
-
-/// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
-pub unsafe fn read_state(stream: This) -> Result<[f64; COUNT], TResult> {
-    if stream.is_null() {
-        return Err(INVALID_ARGUMENT);
-    }
-    // SAFETY: IBStreamの関数表を借用し、固定長領域の範囲だけを読み取る。
-    let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; STATE_SIZE];
-    let mut position = 0;
-    while position < bytes.len() {
-        let mut read = 0;
-        let remaining = bytes.len() - position;
-        let status = unsafe {
-            (table.read)(
-                stream,
-                bytes.as_mut_ptr().add(position).cast(),
-                remaining as i32,
-                &mut read,
-            )
-        };
-        if status != OK || read <= 0 || read as usize > remaining {
-            return Err(FALSE);
-        }
-        position += read as usize;
-    }
-    if bytes[..8] != STATE_HEADER {
-        return Err(FALSE);
-    }
-    let waveform = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    if waveform > 4 {
-        return Err(FALSE);
-    }
-    let mut values = [0.0; COUNT];
-    values[0] = f64::from(waveform) / 4.0;
-    for (i, value) in values.iter_mut().enumerate().skip(1) {
-        let offset = 12 + (i - 1) * 8;
-        let plain = f64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-        if !valid_plain(i, plain) {
-            return Err(FALSE);
-        }
-        *value = to_normalized(i, plain);
-    }
-    Ok(values)
-}
-
-/// SAFETY: streamは呼び出し中有効なホスト所有のIBStream、またはnull。
-pub unsafe fn write_state(stream: This, values: [f64; COUNT]) -> TResult {
-    if stream.is_null() {
-        return INVALID_ARGUMENT;
-    }
-    // SAFETY: IBStreamは固定長バッファを呼び出し中だけ読む。
-    let table = unsafe { &**stream.cast::<*const StreamVTable>() };
-    let mut bytes = [0u8; STATE_SIZE];
-    bytes[..8].copy_from_slice(&STATE_HEADER);
-    bytes[8..12].copy_from_slice(&(to_plain(0, values[0]) as u32).to_le_bytes());
-    for (i, &value) in values.iter().enumerate().skip(1) {
-        let offset = 12 + (i - 1) * 8;
-        bytes[offset..offset + 8].copy_from_slice(&to_plain(i, value).to_le_bytes());
-    }
-    let mut position = 0;
-    while position < bytes.len() {
-        let mut written = 0;
-        let remaining = bytes.len() - position;
-        let status = unsafe {
-            (table.write)(
-                stream,
-                bytes.as_mut_ptr().add(position).cast(),
-                remaining as i32,
-                &mut written,
-            )
-        };
-        if status != OK || written <= 0 || written as usize > remaining {
-            return FALSE;
-        }
-        position += written as usize;
-    }
-    OK
 }
 
 #[cfg(test)]
@@ -1580,95 +1086,6 @@ mod tests {
     }
 
     #[test]
-    fn sample_positions_interpolate_only_known_continuous_intervals() {
-        let mut points = ParameterPoints::empty(8, 32, 0.2);
-        points.previous = (0, 0.2);
-        points.next = Some((4, 1.0));
-        for (at, expected) in [(0, 0.2), (1, 0.4), (2, 0.6), (3, 0.8)] {
-            assert!((points.value_at(at) - expected).abs() < 1e-15);
-        }
-        points.next = None;
-        assert_eq!(points.value_at(1), 0.2);
-        points.next = Some((4, 1.0));
-        points.interpolates = false;
-        assert_eq!(points.value_at(1), 0.2);
-    }
-
-    #[repr(C)]
-    struct Stream {
-        /// このテストだけで使うIBStream関数表。
-        vtable: &'static StreamVTable,
-        /// 形式の最大長だけを用意したテスト用領域。
-        bytes: [u8; STATE_SIZE],
-        /// 初期化済みデータの長さ。
-        length: usize,
-        /// 次の読み書き位置。
-        position: usize,
-    }
-
-    unsafe extern "system" fn query(_: This, _: *const Tuid, _: *mut This) -> TResult {
-        NO_INTERFACE
-    }
-    unsafe extern "system" fn retain(_: This) -> u32 {
-        panic!("stream is borrowed")
-    }
-    unsafe extern "system" fn read(this: This, out: This, size: i32, actual: *mut i32) -> TResult {
-        // SAFETY: テストのStreamと、呼び出し元が確保した出力領域。両者は重ならない。
-        unsafe {
-            let stream = &mut *this.cast::<Stream>();
-            let count = (size as usize).min(3).min(stream.length - stream.position);
-            ptr::copy_nonoverlapping(
-                stream.bytes.as_ptr().add(stream.position),
-                out.cast(),
-                count,
-            );
-            stream.position += count;
-            actual.write(count as i32);
-        }
-        OK
-    }
-    unsafe extern "system" fn write(
-        this: This,
-        input: This,
-        size: i32,
-        actual: *mut i32,
-    ) -> TResult {
-        // SAFETY: テストのStreamと、呼び出し元が確保した入力領域。両者は重ならない。
-        unsafe {
-            let stream = &mut *this.cast::<Stream>();
-            let count = (size as usize)
-                .min(2)
-                .min(stream.bytes.len() - stream.position);
-            ptr::copy_nonoverlapping(
-                input.cast(),
-                stream.bytes.as_mut_ptr().add(stream.position),
-                count,
-            );
-            stream.position += count;
-            stream.length = stream.position;
-            actual.write(count as i32);
-        }
-        OK
-    }
-    unsafe extern "system" fn seek(_: This, _: i64, _: i32, _: *mut i64) -> TResult {
-        panic!("unexpected seek")
-    }
-    unsafe extern "system" fn tell(_: This, _: *mut i64) -> TResult {
-        panic!("unexpected tell")
-    }
-    static STREAM_TABLE: StreamVTable = StreamVTable {
-        unknown: UnknownVTable {
-            query_interface: query,
-            add_ref: retain,
-            release: retain,
-        },
-        read,
-        write,
-        seek,
-        tell,
-    };
-
-    #[test]
     fn controls_cover_all_steps_and_defaults() {
         let values = defaults();
         assert_eq!(to_plain(9, values[9]), 1.0);
@@ -1713,49 +1130,6 @@ mod tests {
                 if choices(index).is_empty() {
                     assert_eq!(max_tick(index), max);
                     assert_eq!(to_tick(index, normalized), tick);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn velocity_sensitivity_accepts_percentages_and_linear_automation() {
-        for index in [130, 131] {
-            for plain in [0.0, 37.25, 100.0] {
-                assert!(valid_plain(index, plain));
-                assert!((to_plain(index, to_normalized(index, plain)) - plain).abs() < 1e-12);
-            }
-            for plain in [-0.1, 100.1, f64::NAN, f64::INFINITY] {
-                assert!(!valid_plain(index, plain));
-            }
-            let mut points = ParameterPoints::empty(8, index, 1.0);
-            points.next = Some((3, 0.0));
-            for expected in [0.75, 0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0]
-                .into_iter()
-                .enumerate()
-            {
-                assert_eq!(points.value_at(expected.0 as i32), expected.1);
-            }
-        }
-    }
-
-    #[test]
-    fn delay_stereo_switches_at_automation_point_in_each_slot() {
-        for (slot, indices) in EFFECT_SLOTS.iter().enumerate() {
-            let index = indices[7];
-            assert_eq!(choices(index), ["Dual", "Cross", "PP-L", "PP-R"]);
-            let mut values = defaults();
-            for (mode, expected) in DELAY_STEREO_MODES.into_iter().enumerate() {
-                let value = to_normalized(index, mode as f64);
-                values[index] = value;
-                assert_eq!(delay(&values, slot).stereo, expected);
-                let mut points = ParameterPoints::empty(8, index, 0.0);
-                points.next = Some((4, value));
-                for sample in 0..4 {
-                    assert_eq!(points.value_at(sample), 0.0);
-                }
-                for sample in 4..8 {
-                    assert_eq!(points.value_at(sample), value);
                 }
             }
         }
@@ -1808,168 +1182,6 @@ mod tests {
             assert_eq!(tick_to_plain(index, 600), 0.0);
             assert_eq!(tick_to_plain(index, 720), 12.0);
             assert_eq!(10.0_f64.powf(to_plain(index, 0.0) / 20.0), 0.0);
-        }
-    }
-
-    #[test]
-    fn state_stream_handles_short_transfers_and_rejects_truncation() {
-        for waveform in WAVEFORMS {
-            let mut stream = Stream {
-                vtable: &STREAM_TABLE,
-                bytes: [0; STATE_SIZE],
-                length: 0,
-                position: 0,
-            };
-            let stream = ptr::from_mut(&mut stream);
-            // SAFETY: スタック上のStreamを同じポインターから順に使う。借用を外へ保持しない。
-            unsafe {
-                let mut values = defaults();
-                for index in [1, 2, 3, 5] {
-                    values[index] = to_normalized(index, 10000.0);
-                }
-                for (i, v) in values.iter_mut().enumerate().skip(34) {
-                    *v = canonical(i, 0.625);
-                }
-                values[0] = normalized(waveform);
-                values[6] = to_normalized(6, 7.0);
-                values[7] = to_normalized(7, 37.125);
-                values[8] = to_normalized(8, 32.0);
-                values[9] = to_normalized(9, 6.0);
-                values[10] = to_normalized(10, -1200.125);
-                values[11] = to_normalized(11, 5.125);
-                values[12] = to_normalized(12, 2.0);
-                values[13] = to_normalized(13, -59.95);
-                values[20] = to_normalized(20, 62.5);
-                values[21] = to_normalized(21, -35.25);
-                for (i, plain) in [7500.25, 10000.0, 6000.0, 0.4567, 10000.0, -1234.125]
-                    .into_iter()
-                    .enumerate()
-                {
-                    values[14 + i] = to_normalized(14 + i, plain);
-                }
-                assert_eq!(write_state(stream.cast(), values), OK);
-                (*stream).position = 0;
-                let restored = read_state(stream.cast()).unwrap();
-                for (actual, expected) in restored.into_iter().zip(values) {
-                    assert!((actual - expected).abs() < 1e-12);
-                }
-                for length in 0..STATE_SIZE {
-                    (*stream).length = length;
-                    (*stream).position = 0;
-                    assert_eq!(read_state(stream.cast()), Err(FALSE));
-                }
-                (*stream).length = STATE_SIZE;
-                for version in (0..=37).filter(|v| *v != STATE_HEADER[4]) {
-                    (*stream).bytes[4] = version;
-                    (*stream).position = 0;
-                    assert_eq!(read_state(stream.cast()), Err(FALSE));
-                }
-                (*stream).bytes[4] = STATE_HEADER[4];
-                // ボイス数の範囲外・端数、detuneの範囲外/非有限を拒否。
-                for (index, bad) in [
-                    (93, 99.0),
-                    (98, 4001.0),
-                    (104, 2401.0),
-                    (95, 0.0),
-                    (100, f64::NAN),
-                    (106, 95.1),
-                    (107, 100.1),
-                    (6, 0.0_f64),
-                    (6, 8.0),
-                    (6, 2.5),
-                    (7, -1.0),
-                    (7, 101.0),
-                    (7, f64::NAN),
-                    (8, 0.0),
-                    (8, 33.0),
-                    (8, 1.5),
-                    (8, f64::INFINITY),
-                    (9, 7.0),
-                    (9, 1.5),
-                    (10, -2410.0),
-                    (10, 9601.0),
-                    (10, f64::NAN),
-                    (11, 0.49),
-                    (11, 10.1),
-                    (11, f64::NAN),
-                    (12, -1.0),
-                    (12, 3.0),
-                    (12, 1.5),
-                    (12, f64::NAN),
-                    (13, -60.1),
-                    (13, 12.1),
-                    (13, f64::NAN),
-                    (13, f64::INFINITY),
-                    (14, -1.0),
-                    (15, 10000.1),
-                    (16, f64::NAN),
-                    (17, -0.1),
-                    (17, 1.1),
-                    (18, f64::INFINITY),
-                    (19, -4800.1),
-                    (19, 4800.1),
-                    (19, f64::NAN),
-                    (20, -0.1),
-                    (20, 100.1),
-                    (20, f64::NAN),
-                    (21, -100.1),
-                    (21, 100.1),
-                    (21, f64::INFINITY),
-                    (22, -60.1),
-                    (25, f64::INFINITY),
-                    (28, f64::NAN),
-                    (23, 5.0),
-                    (26, 1.5),
-                    (24, -2400.1),
-                    (27, 2400.1),
-                    (29, -0.1),
-                    (30, 200.1),
-                    (29, f64::NAN),
-                    (30, f64::INFINITY),
-                    (31, -1.0),
-                    (31, 2.0),
-                    (31, 1.5),
-                    (32, -0.1),
-                    (32, 48.1),
-                    (32, f64::NAN),
-                    (33, -0.1),
-                    (33, 100.1),
-                    (33, f64::INFINITY),
-                    (34, -1.0),
-                    (34, 2.0),
-                    (34, 0.5),
-                    (34, f64::NAN),
-                    (35, 19.0),
-                    (35, 20001.0),
-                    (35, f64::INFINITY),
-                    (36, -18.1),
-                    (36, 18.1),
-                    (36, f64::NAN),
-                    (37, 19.0),
-                    (37, 20001.0),
-                    (37, f64::NAN),
-                    (38, -18.1),
-                    (38, 18.1),
-                    (38, f64::INFINITY),
-                    (39, 0.09),
-                    (39, 10.1),
-                    (39, f64::INFINITY),
-                    (40, 19.0),
-                    (40, 20001.0),
-                    (40, f64::INFINITY),
-                    (41, -18.1),
-                    (41, 18.1),
-                    (41, f64::NAN),
-                ] {
-                    let offset = 12 + (index - 1) * 8;
-                    let original: [u8; 8] =
-                        (&(*stream).bytes)[offset..offset + 8].try_into().unwrap();
-                    (&mut (*stream).bytes)[offset..offset + 8].copy_from_slice(&bad.to_le_bytes());
-                    (*stream).position = 0;
-                    assert_eq!(read_state(stream.cast()), Err(FALSE));
-                    (&mut (*stream).bytes)[offset..offset + 8].copy_from_slice(&original);
-                }
-            }
         }
     }
 
