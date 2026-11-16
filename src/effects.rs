@@ -197,20 +197,6 @@ impl Effect {
     }
 
     fn process_sample(&mut self, input: [f64; 2]) -> [f64; 2] {
-        let output = match self.state.kind {
-            EffectType::Off => return input,
-            EffectType::Distortion => return self.process_distortion_sample(input),
-            EffectType::Delay => self.state.delay.process_sample(input),
-            EffectType::Reverb => self.state.reverb.process_sample(input),
-            EffectType::Chorus => self.state.chorus.process_sample(input),
-            EffectType::Phaser => self.state.phaser.process_sample(input),
-            EffectType::Compressor => self.state.compressor.process_sample(input),
-        };
-        self.state.started = true;
-        output
-    }
-
-    fn process_distortion_sample(&mut self, input: [f64; 2]) -> [f64; 2] {
         self.state.started = true;
         if self.state.transition == 0 && self.state.processing != self.state.parameters.clipper {
             self.state.transition = 66;
@@ -288,7 +274,7 @@ impl Effect {
         }
         if self.state.transition != 0 || self.state.processing != self.state.parameters.clipper {
             for sample in samples {
-                *sample = self.process_distortion_sample(*sample);
+                *sample = self.process_sample(*sample);
             }
             return;
         }
@@ -437,7 +423,30 @@ impl Effects {
 
     pub fn process_sample(&mut self, mut sample: [f64; 2]) -> [f64; 2] {
         for slot in &mut self.state.slots {
-            sample = slot.process_sample(sample);
+            sample = match slot.state.kind {
+                EffectType::Off => sample,
+                EffectType::Distortion => slot.process_sample(sample),
+                EffectType::Delay => {
+                    slot.state.started = true;
+                    slot.state.delay.process_sample(sample)
+                }
+                EffectType::Chorus => {
+                    slot.state.started = true;
+                    slot.state.chorus.process_sample(sample)
+                }
+                EffectType::Phaser => {
+                    slot.state.started = true;
+                    slot.state.phaser.process_sample(sample)
+                }
+                EffectType::Compressor => {
+                    slot.state.started = true;
+                    slot.state.compressor.process_sample(sample)
+                }
+                EffectType::Reverb => {
+                    slot.state.started = true;
+                    slot.state.reverb.process_sample(sample)
+                }
+            };
         }
         self.delay_sample(sample)
     }
