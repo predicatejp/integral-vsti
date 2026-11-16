@@ -82,7 +82,7 @@
 READMEへ実装詳細や開発経緯を追記しないこと。生成物は`target/`以下へ配置する。
 VST3 SDKとC++コンパイラーはABI検証・Validator用であり、本体のビルド依存ではない。
 
-Rust CIと通常のVST3 Buildはユーザーの明示的な操作・実行指示に限定し、`workflow_dispatch`で起動する。エージェントが検証目的で独自に起動・再実行しないこと。リリース用の`v[0-9]*`タグのpushではVST3 Buildを自動起動し、Linux・Windowsのビルド成功後に配布ZIPと自動生成リリースノートを添えたGitHub Releaseを作成する。それ以外のpush・PR作成／更新・コメント・定期実行による自動起動を追加しないこと。
+Rust CIと通常のVST3 Buildはユーザーの明示的な操作・実行指示に限定し、`workflow_dispatch`で起動する。Rust CIはPR画面へ`/check`だけを新規コメントすることでも起動できる。`.github/workflows/check.yml`が投稿者のwrite以上の権限と、open・base=`main`・同一リポジトリのPRを確認し、先頭ブランチとPR番号を指定してRust CIをdispatchする。エージェントが検証目的で独自に起動・再実行しないこと。リリース用の`v[0-9]*`タグのpushではVST3 Buildを自動起動し、Linux・Windowsのビルド成功後に配布ZIPと自動生成リリースノートを添えたGitHub Releaseを作成する。それ以外のpush・PR作成／更新・コメント・定期実行による自動起動を追加しないこと。
 ActionsのRust CIでPRの先頭ブランチと`pr_number`を指定する。`PR target`でopen PR・base=`main`・同一リポジトリ・先頭コミット・ブランチを照合する。`main`のマージ条件はGitHub Actionsによる`PR target`と`CI result`の成功、および最新の`main`の取り込みとし、管理者もCI条件を迂回しない。手動実行の結果は対象コミットのstatusへ通知し、再実行時はpendingへ戻す。
 変更時は該当ジョブをローカルでも検証し、
 GitHub上での実行結果とローカルでの確認を区別して報告すること。

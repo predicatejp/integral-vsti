@@ -1,0 +1,53 @@
+name: PR check command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  check:
+    name: Dispatch required checks
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.comment.user.type == 'User' &&
+      github.event.comment.body == '/check'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Authorize command and dispatch Rust CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          # Actionsの文字列比較は大文字小文字を区別しないため、ここで完全一致を確認する。
+          command=$(jq -r '.comment.body' "$GITHUB_EVENT_PATH")
+          [[ "$command" == /check ]] || exit 0
+
+          author=$(jq -r '.comment.user.login' "$GITHUB_EVENT_PATH")
+          permission=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$author/permission" --jq .permission)
+          case "$permission" in
+            admin|write) ;;
+            *) echo '::error::/check requires repository write permission.'; exit 1 ;;
+          esac
+
+          pr_number=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
+          details=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number")
+          if ! jq -e --arg repository "$GITHUB_REPOSITORY" '
+            .state == "open" and .base.ref == "main" and
+            .base.repo.full_name == $repository and .head.repo.full_name == $repository
+          ' <<< "$details" > /dev/null; then
+            echo '::error::/check requires an open pull request from this repository targeting main.'
+            exit 1
+          fi
+
+          branch=$(jq -r '.head.ref' <<< "$details")
+          # PRのコードはこの権限付きジョブでは取得・実行しない。
+          # Rust CIが起動時の先頭コミットとPRを照合し、必須statusを更新する。
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/rust.yml/dispatches" \
+            -f "ref=$branch" -f "inputs[pr_number]=$pr_number"
+          echo "Requested Rust CI for PR #$pr_number." >> "$GITHUB_STEP_SUMMARY"
