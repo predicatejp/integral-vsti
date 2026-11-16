@@ -402,6 +402,22 @@ void checkGlContext(IEditController* controller) {
         assert(!GuiReentry::failTimer && restored());
         assert(view->attached(parent.handle(), kPlatformTypeHWND) == kResultOk);
         assert(restored());
+        // 空矩形でも更新要求を完了し、WM_PAINTをキューへ残さない。
+        GuiReentry::emptyUpdateBounds = true;
+        assert(InvalidateRect(parent.child(), nullptr, FALSE));
+        assert(UpdateWindow(parent.child()));
+        assert(!GetUpdateRect(parent.child(), nullptr, FALSE));
+        GuiReentry::emptyUpdateBounds = false;
+        MSG pending;
+        assert(!PeekMessageW(&pending, parent.child(), WM_PAINT, WM_PAINT, PM_REMOVE));
+        // 描画終了直後に生じた非空の更新領域は、次の描画へ引き継ぐ。
+        GuiReentry::invalidateAfterValidation = true;
+        assert(InvalidateRect(parent.child(), nullptr, FALSE));
+        assert(UpdateWindow(parent.child()));
+        assert(!GuiReentry::invalidateAfterValidation);
+        assert(GetUpdateRect(parent.child(), nullptr, FALSE));
+        assert(UpdateWindow(parent.child()));
+        assert(!GetUpdateRect(parent.child(), nullptr, FALSE));
         for (int i = 0; i < 100; ++i) {
             const auto before = GuiReentry::draws;
             InvalidateRect(parent.child(), nullptr, FALSE);
@@ -417,7 +433,7 @@ void checkGlContext(IEditController* controller) {
     assert(!wglGetCurrentContext() && !wglGetCurrentDC());
     assert(wglDeleteContext(context));
     ReleaseDC(parent.window, dc);
-    std::cout << "GL context: " << draws << " redraws, 4 opens/closes and 4 creation failures preserved host context/DC\n";
+    std::cout << "GL context: " << draws << " redraws, 4 opens/closes and 4 creation failures preserved host context/DC; empty paint requests consumed\n";
 }
 #endif
 

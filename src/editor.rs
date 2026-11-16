@@ -11,6 +11,8 @@ pub(crate) mod edits;
 #[cfg(target_os = "windows")]
 pub(crate) mod gl_context;
 mod lcd;
+#[cfg(target_os = "windows")]
+mod paint;
 mod pointer;
 mod skin;
 use edits::{Edit, Edits};
@@ -323,6 +325,8 @@ fn move_tick(index: usize, mut tick: u32, mut remainder: f32, dy: f32) -> (u32, 
 }
 
 pub(super) struct Editor {
+    #[cfg(target_os = "windows")]
+    _paint_completion: paint::PaintCompletion,
     /// 描画スレッド内のノブ操作状態。
     state: RefCell<EditorState>,
     /// 描画スレッド内だけで使う子ウィンドウの操作口。
@@ -377,6 +381,8 @@ impl Editor {
         let gl = window
             .gl_context()
             .ok_or_else(|| std::io::Error::other("OpenGL unavailable"))?;
+        #[cfg(target_os = "windows")]
+        let paint_completion = paint::PaintCompletion::new(&window)?;
         let timer = window.create_timer(Duration::from_millis(16))?;
         // SAFETY: baseviewの描画スレッドで、このウィンドウのGLだけを使用する。
         let (painter, fixed) = unsafe {
@@ -432,6 +438,8 @@ impl Editor {
         );
         output_peak.store(0, Ordering::Relaxed);
         let editor = Self {
+            #[cfg(target_os = "windows")]
+            _paint_completion: paint_completion,
             state: RefCell::new(EditorState {
                 panel_texture,
                 logo_texture,
