@@ -94,6 +94,95 @@ impl Effect {
         }
     }
 
+    fn apply_parameters<const SLOT: usize>(
+        &mut self,
+        values: &[f64; parameters::COUNT],
+        changes: &parameters::ParameterChanges,
+    ) -> bool {
+        let indices = &EFFECT_SLOTS[SLOT];
+        let changed = |first, last| changes.any(first, last + 1);
+        let kind_changed = changes.contains(indices[0]);
+        let distortion_changed = changed(indices[1], indices[3]);
+        let delay_changed = changed(indices[4], indices[6]) | (changes.contains(indices[7]));
+        let reverb_changed = changed(indices[8], indices[11]);
+        let chorus_changed = changed(indices[12], indices[17]);
+        let phaser_changed = changed(indices[18], indices[22]);
+        let compressor_changed = changed(indices[23], indices[29]);
+        if kind_changed
+            | distortion_changed
+            | delay_changed
+            | reverb_changed
+            | chorus_changed
+            | phaser_changed
+            | compressor_changed
+        {
+            if reverb_changed {
+                let reverb = &mut self.state.reverb;
+                if changed(indices[8], indices[10]) {
+                    reverb.set_parameters(parameters::reverb(values, SLOT));
+                } else {
+                    reverb.set_mix(values[indices[11]]);
+                }
+            }
+            if chorus_changed {
+                let chorus = &mut self.state.chorus;
+                if changes.contains(indices[12]) | changed(indices[14], indices[17]) {
+                    chorus.set_parameters(parameters::chorus(values, SLOT));
+                } else {
+                    chorus.set_depth_ms(parameters::plain_for::<76>(values[indices[13]]));
+                }
+            }
+            if phaser_changed {
+                let phaser = &mut self.state.phaser;
+                if changed(indices[19], indices[22]) {
+                    phaser.set_parameters(parameters::phaser(values, SLOT));
+                } else {
+                    phaser.set_center_hz(parameters::plain_for::<93>(values[indices[18]]));
+                }
+            }
+            if compressor_changed {
+                let compressor = &mut self.state.compressor;
+                if changed(indices[24], indices[29]) {
+                    compressor.set_parameters(parameters::compressor(values, SLOT));
+                } else {
+                    compressor.set_threshold_db(parameters::plain_for::<109>(values[indices[23]]));
+                }
+            }
+            // 他のエフェクト設定変更でDistortionのGain換算をやり直さない。
+            let distortion = if distortion_changed {
+                if changed(indices[1], indices[2]) {
+                    parameters::distortion(values, SLOT)
+                } else {
+                    DistortionParameters {
+                        mix: values[indices[3]],
+                        ..self.state.parameters
+                    }
+                }
+            } else {
+                self.state.parameters
+            };
+            if delay_changed {
+                let delay = &mut self.state.delay;
+                if changes.contains(indices[4])
+                    | changes.contains(indices[6])
+                    | changes.contains(indices[7])
+                {
+                    delay.set_parameters(parameters::delay(values, SLOT));
+                } else {
+                    delay.set_feedback(values[indices[5]]);
+                }
+            }
+            let kind = if kind_changed {
+                parameters::EFFECT_TYPES
+                    [parameters::to_plain(indices[0], values[indices[0]]) as usize]
+            } else {
+                self.state.kind
+            };
+            self.set_parameters(kind, distortion);
+        }
+        kind_changed
+    }
+
     fn reset(&mut self) {
         self.state.distortion.reset();
         self.state.delay.reset();
@@ -108,6 +197,20 @@ impl Effect {
     }
 
     fn process_sample(&mut self, input: [f64; 2]) -> [f64; 2] {
+        let output = match self.state.kind {
+            EffectType::Off => return input,
+            EffectType::Distortion => return self.process_distortion_sample(input),
+            EffectType::Delay => self.state.delay.process_sample(input),
+            EffectType::Reverb => self.state.reverb.process_sample(input),
+            EffectType::Chorus => self.state.chorus.process_sample(input),
+            EffectType::Phaser => self.state.phaser.process_sample(input),
+            EffectType::Compressor => self.state.compressor.process_sample(input),
+        };
+        self.state.started = true;
+        output
+    }
+
+    fn process_distortion_sample(&mut self, input: [f64; 2]) -> [f64; 2] {
         self.state.started = true;
         if self.state.transition == 0 && self.state.processing != self.state.parameters.clipper {
             self.state.transition = 66;
@@ -185,7 +288,7 @@ impl Effect {
         }
         if self.state.transition != 0 || self.state.processing != self.state.parameters.clipper {
             for sample in samples {
-                *sample = self.process_sample(*sample);
+                *sample = self.process_distortion_sample(*sample);
             }
             return;
         }
@@ -307,9 +410,9 @@ impl Effects {
         changes: &parameters::ParameterChanges,
     ) {
         // 共有した変更位置を使う。|は3スロットすべての更新を実行する。
-        let changed = self.set_slot_parameters::<0>(values, changes)
-            | self.set_slot_parameters::<1>(values, changes)
-            | self.set_slot_parameters::<2>(values, changes);
+        let changed = self.state.slots[0].apply_parameters::<0>(values, changes)
+            | self.state.slots[1].apply_parameters::<1>(values, changes)
+            | self.state.slots[2].apply_parameters::<2>(values, changes);
         if !changed {
             return;
         }
@@ -325,95 +428,6 @@ impl Effects {
         }
     }
 
-    fn set_slot_parameters<const SLOT: usize>(
-        &mut self,
-        values: &[f64; parameters::COUNT],
-        changes: &parameters::ParameterChanges,
-    ) -> bool {
-        let indices = &EFFECT_SLOTS[SLOT];
-        let changed = |first, last| changes.any(first, last + 1);
-        let kind_changed = changes.contains(indices[0]);
-        let distortion_changed = changed(indices[1], indices[3]);
-        let delay_changed = changed(indices[4], indices[6]) | (changes.contains(indices[7]));
-        let reverb_changed = changed(indices[8], indices[11]);
-        let chorus_changed = changed(indices[12], indices[17]);
-        let phaser_changed = changed(indices[18], indices[22]);
-        let compressor_changed = changed(indices[23], indices[29]);
-        if kind_changed
-            | distortion_changed
-            | delay_changed
-            | reverb_changed
-            | chorus_changed
-            | phaser_changed
-            | compressor_changed
-        {
-            if reverb_changed {
-                let reverb = &mut self.state.slots[SLOT].state.reverb;
-                if changed(indices[8], indices[10]) {
-                    reverb.set_parameters(parameters::reverb(values, SLOT));
-                } else {
-                    reverb.set_mix(values[indices[11]]);
-                }
-            }
-            if chorus_changed {
-                let chorus = &mut self.state.slots[SLOT].state.chorus;
-                if changes.contains(indices[12]) | changed(indices[14], indices[17]) {
-                    chorus.set_parameters(parameters::chorus(values, SLOT));
-                } else {
-                    chorus.set_depth_ms(parameters::plain_for::<76>(values[indices[13]]));
-                }
-            }
-            if phaser_changed {
-                let phaser = &mut self.state.slots[SLOT].state.phaser;
-                if changed(indices[19], indices[22]) {
-                    phaser.set_parameters(parameters::phaser(values, SLOT));
-                } else {
-                    phaser.set_center_hz(parameters::plain_for::<93>(values[indices[18]]));
-                }
-            }
-            if compressor_changed {
-                let compressor = &mut self.state.slots[SLOT].state.compressor;
-                if changed(indices[24], indices[29]) {
-                    compressor.set_parameters(parameters::compressor(values, SLOT));
-                } else {
-                    compressor.set_threshold_db(parameters::plain_for::<109>(values[indices[23]]));
-                }
-            }
-            // 他のエフェクト設定変更でDistortionのGain換算をやり直さない。
-            let distortion = if distortion_changed {
-                if changed(indices[1], indices[2]) {
-                    parameters::distortion(values, SLOT)
-                } else {
-                    DistortionParameters {
-                        mix: values[indices[3]],
-                        ..self.state.slots[SLOT].state.parameters
-                    }
-                }
-            } else {
-                self.state.slots[SLOT].state.parameters
-            };
-            if delay_changed {
-                let delay = &mut self.state.slots[SLOT].state.delay;
-                if changes.contains(indices[4])
-                    | changes.contains(indices[6])
-                    | changes.contains(indices[7])
-                {
-                    delay.set_parameters(parameters::delay(values, SLOT));
-                } else {
-                    delay.set_feedback(values[indices[5]]);
-                }
-            }
-            let kind = if kind_changed {
-                parameters::EFFECT_TYPES
-                    [parameters::to_plain(indices[0], values[indices[0]]) as usize]
-            } else {
-                self.state.slots[SLOT].state.kind
-            };
-            self.state.slots[SLOT].set_parameters(kind, distortion);
-        }
-        kind_changed
-    }
-
     pub fn reset(&mut self) {
         for slot in &mut self.state.slots {
             slot.reset();
@@ -423,30 +437,7 @@ impl Effects {
 
     pub fn process_sample(&mut self, mut sample: [f64; 2]) -> [f64; 2] {
         for slot in &mut self.state.slots {
-            sample = match slot.state.kind {
-                EffectType::Off => sample,
-                EffectType::Distortion => slot.process_sample(sample),
-                EffectType::Delay => {
-                    slot.state.started = true;
-                    slot.state.delay.process_sample(sample)
-                }
-                EffectType::Chorus => {
-                    slot.state.started = true;
-                    slot.state.chorus.process_sample(sample)
-                }
-                EffectType::Phaser => {
-                    slot.state.started = true;
-                    slot.state.phaser.process_sample(sample)
-                }
-                EffectType::Compressor => {
-                    slot.state.started = true;
-                    slot.state.compressor.process_sample(sample)
-                }
-                EffectType::Reverb => {
-                    slot.state.started = true;
-                    slot.state.reverb.process_sample(sample)
-                }
-            };
+            sample = slot.process_sample(sample);
         }
         self.delay_sample(sample)
     }

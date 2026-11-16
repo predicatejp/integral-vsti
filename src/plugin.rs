@@ -3,7 +3,8 @@
 
 use crate::abi::*;
 use crate::host::HostRef;
-use crate::parameters::{self, IDS, NAMES, ParameterPoints, SharedParameters};
+use crate::parameters::automation::ParameterPoints;
+use crate::parameters::{self, IDS, NAMES, SharedParameters};
 use crate::synth::Synthesizer;
 use crate::voice::Note;
 
@@ -53,9 +54,9 @@ struct Plugin {
     /// イベント入力バス0の有効状態。falseならprocessで消音し、イベントを受け付けない。
     /// initialize時は互換性のためtrueとし、その後はactivateBusの明示的な指定に従う。
     event_active: AtomicBool,
-    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す22パラメーター。保存時にもatomicで読む。
+    /// DSPへ適用済み、またはsetStateから次のprocessへ渡す音色パラメーター。保存時にもatomicで読む。
     processor_parameters: SharedParameters,
-    /// Controllerが表示する22パラメーター。ホストの値通知とComponentの状態復元で更新する。
+    /// Controllerが表示する音色パラメーター。ホストの値通知とComponentの状態復元で更新する。
     controller_parameters: Arc<SharedParameters>,
     /// 音声ブロック末尾の発音数。GUIはこのatomicだけを読み、DSP状態に触れない。
     active_voices: Arc<AtomicU32>,
@@ -425,7 +426,7 @@ unsafe extern "system" fn empty_state(_: This, stream: This) -> TResult {
 
 unsafe extern "system" fn set_processor_state(this: This, stream: This) -> TResult {
     // SAFETY: ホストのストリームを検証し、成功時だけatomicへ反映する。
-    match unsafe { parameters::read_state(stream) } {
+    match unsafe { parameters::state::read_state(stream) } {
         Ok(values) => {
             // SAFETY: thisは生存中のComponentインターフェース。
             let plugin = unsafe { instance(this) };
@@ -440,11 +441,13 @@ unsafe extern "system" fn set_processor_state(this: This, stream: This) -> TResu
 }
 unsafe extern "system" fn get_processor_state(this: This, stream: This) -> TResult {
     // SAFETY: thisとstreamは生存中。DSPを借用せずatomicの値を保存する。
-    unsafe { parameters::write_state(stream, instance(this).processor_parameters.snapshot()) }
+    unsafe {
+        parameters::state::write_state(stream, instance(this).processor_parameters.snapshot())
+    }
 }
 unsafe extern "system" fn set_controller_component_state(this: This, stream: This) -> TResult {
     // SAFETY: ホストの状態を検証し、表示だけへ適用する。編集通知は送らない。
-    match unsafe { parameters::read_state(stream) } {
+    match unsafe { parameters::state::read_state(stream) } {
         Ok(values) => {
             unsafe { instance(this) }
                 .controller_parameters
