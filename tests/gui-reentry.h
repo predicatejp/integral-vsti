@@ -3,15 +3,35 @@
 // Windowsの実描画中に再描画と編集配送を再入させる、継続実行用の回帰試験。
 // 検証プロセス内のプラグインIATだけを差し替え、通常のOS呼び出しへ転送する。
 namespace GuiReentry {
+static_assert(sizeof(PAINTSTRUCT) == 72 && offsetof(PAINTSTRUCT, rcPaint) == 12);
 inline HWND target = nullptr, timerWindow = nullptr;
 inline UINT_PTR timerId = 0;
 inline WNDPROC windowProc = nullptr;
 inline bool armed = false, insideDraw = false;
 inline bool failTimer = false;
+inline bool emptyUpdateBounds = false;
+inline bool invalidateAfterValidation = false;
 inline unsigned draws = 0;
 inline unsigned injections = 0;
 inline void (WINAPI* clear)(unsigned) = nullptr;
 inline PROC (WINAPI* getGlProc)(LPCSTR) = nullptr;
+
+BOOL WINAPI getUpdateRect(HWND hwnd, LPRECT rect, BOOL erase) {
+    const auto result = GetUpdateRect(hwnd, rect, erase);
+    // 実機ログと同じ「更新あり、矩形だけ空」をプラグインの照会に再現する。
+    if (result && rect && emptyUpdateBounds) *rect = {};
+    return result;
+}
+
+BOOL WINAPI validateRect(HWND hwnd, const RECT* rect) {
+    const auto result = ValidateRect(hwnd, rect);
+    if (result && invalidateAfterValidation) {
+        invalidateAfterValidation = false;
+        const RECT damage {10, 10, 20, 20};
+        assert(InvalidateRect(hwnd, &damage, FALSE));
+    }
+    return result;
+}
 
 void WINAPI clearWithReentry(unsigned mask) {
     ++draws;
@@ -104,6 +124,8 @@ void install(HMODULE module) {
                 replacement = reinterpret_cast<uintptr_t>(resolveGl);
             }
             if (std::strcmp(name, "SetTimer") == 0) replacement = reinterpret_cast<uintptr_t>(setTimer);
+            if (std::strcmp(name, "GetUpdateRect") == 0) replacement = reinterpret_cast<uintptr_t>(getUpdateRect);
+            if (std::strcmp(name, "ValidateRect") == 0) replacement = reinterpret_cast<uintptr_t>(validateRect);
             if (!replacement) continue;
             DWORD old;
             assert(VirtualProtect(&slots->u1.Function, sizeof(uintptr_t), PAGE_READWRITE, &old));
@@ -113,6 +135,6 @@ void install(HMODULE module) {
             ++patched;
         }
     }
-    assert(patched == 3);
+    assert(patched == 5);
 }
 } // namespace GuiReentry
